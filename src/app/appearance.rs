@@ -63,8 +63,8 @@ impl Theme<&mut App> {
     /// Read the selected source and apply one fully parsed palette to GPUI Kit.
     ///
     /// # Errors
-    /// Returns an error for invalid opacity, unavailable source files, disabled Qt
-    /// custom palettes, or unsupported/malformed palette data.
+    /// Returns an error for invalid opacity, unavailable source files, inactive
+    /// desktop shells, or unsupported/malformed palette data.
     pub fn apply(
         &mut self,
         appearance: &theme::Appearance,

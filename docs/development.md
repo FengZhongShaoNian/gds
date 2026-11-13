@@ -245,7 +245,7 @@ src/
 
 `appearance` 提供外观规则：主题解析、字体应用和视觉默认值；它可以接入 GPUI，但不归入组件目录。`ui` 只放可复用组件，以及这些组件专属的状态、事件和渲染辅助实现。例如时间戳的刷新时钟、通知队列、终端的输入适配均随组件保存；全局主题、字体和视觉默认值统一从 `appearance` 使用；应用直接使用 `appearance`。
 
-主题来源集中在 `appearance/theme/provider`，按 `system`（DMS 活动方案）、`config`（Qt 配置指定的色板）、`builtin`（内置配色）分组。来源负责发现、读取和解析，`palette` 保存通用颜色角色，主题应用及热更新协调留在外层。具体目录和明暗解析规则见 [主题文档](vistual-language/theme.md#4-固定配色分工)。
+主题来源集中在 `appearance/theme/provider`，按 `system`（KDE / GNOME / Noctalia / DMS）、`builtin`（内置配色）、`custom`（自定义配色）分组。来源负责发现、读取和解析，`palette` 保存通用颜色角色，主题应用及热更新协调留在外层。具体目录和明暗解析规则见 [主题文档](vistual-language/theme.md#4-固定配色分工)。
 
 内置主题为竹林、怀旧、霓虹、马卡龙、高对比和 Aero，每套包含明暗两版，配色配置在 `appearance/theme/provider/builtin/assets/*.toml` 中并编入二进制。应用保存内置配色选择，修改主题不重置明暗偏好或透明度。
 
@@ -393,8 +393,8 @@ gds::ui::notifications::error("操作失败的原因", cx);
 - Files 状态：`$XDG_STATE_HOME/gds/files/state.sqlite`，默认 `~/.local/state/gds/files/state.sqlite`。`locations` 保存收藏、最近访问和固定位置，远程 URI 使用独立记录；`view_settings` 保存应用默认值与各位置的列布局、列宽、排序、详情栏开关和列表／网格模式。列编辑器默认只作用于当前位置；“本应用默认”在同一 Toasty 事务中更新数据库默认列并清除当前位置的列覆盖，其它视图字段保留。`settings.toml` 保存主题、字体、语言、隐藏文件、侧栏等应用偏好，列与视图状态统一由 SQLite 管理。
 - Agents 的连接历史缓存继续位于 `$XDG_CACHE_HOME/gds/agents/history-v1/history.sqlite`（默认 `~/.cache/gds/agents/history-v1/history.sqlite`）。数据库执行接入公共 `service::storage`，窗口边界、连接命名空间和 512 MiB 淘汰策略仍由 Agents 管理；缓存可删除重建，不与 Files 的持久状态共库。
 - GNOME 系统来源在进程内通过纯 Rust 结合 XDG Settings Portal、Adwaita 基准色板与用户 GTK 3/4 `settings.ini` / `gtk.css` 解析颜色，监听 Portal、dconf 与用户 GTK 配置；不启动 Python 或依赖 GTK 运行时库。详见 [主题来源](vistual-language/theme.md#gnome)。
-- Qt 来源沿实际 qtct 配置中的 `color_scheme_path` 读取，不硬编码某个桌面生成文件。DMS 来源读取已经生成的 `DankMaterialShell/dms-colors.json`。缺失 / 不支持 / 格式错误会报错，不把内置主题伪装成成功跟随。
-- 外部主题在启动或主题 / 明暗选择变化时读取。DMS 的跟随系统模式读取导出的活动模式；内置 / Qt 读取平台明暗偏好。`theme::Observer` 统一监听 DMS、Qt 配置及解析后的色板路径，跟随原子替换与托管符号链接；后台读取成功后才安装，失败保留最后有效主题，旧来源结果不覆盖新选择。透明度变化只更新材质，不重读色板。
+- KDE 系统来源读取 `$XDG_CONFIG_HOME/kdeglobals`；Noctalia 与 DMS 系统来源分别读取 `gds/theme/noctalia.json` 与 `DankMaterialShell/dms-colors.json`。缺失 / 不支持 / 格式错误会报错，不把内置主题伪装成成功跟随。
+- 外部主题在启动或主题 / 明暗选择变化时读取。Noctalia / DMS 的跟随系统模式读取导出的活动模式；KDE 从窗口底色推导明暗；GNOME 结合 Portal、GTK 配置与平台窗口外观；内置 / 自定义主题的系统模式读取平台明暗偏好。`theme::Observer` 统一监听活动系统来源与自定义 TOML 路径，跟随原子替换与托管符号链接；后台读取成功后才安装，失败保留最后有效主题，旧来源结果不覆盖新选择。透明度变化只更新材质，不重读色板。
 - 透明度仅影响表面；窗口允许 alpha，Root 清除不透明垫底。整条左列（顶栏左区、文件或设置侧栏、终端左区、底部留白）各区域仅绘制一次相同侧栏背景，不叠加内容底色；右侧区域独立绘制内容背景。底部左区没有分割顶线。没有启用或宣称支持 Niri 的桌面背板模糊。
 
 ## 文件选择器

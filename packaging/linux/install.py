@@ -41,6 +41,8 @@ def main():
         app_id = "io.github.GanDesktop.GdsFiles"
         install(project / "assets/files/icon-desktop.svg",
                 f"usr/share/icons/hicolor/scalable/apps/{app_id}.svg")
+        install(project / "src/appearance/theme/provider/system/noctalia/assets/gds.json",
+                "usr/share/gds-files/noctalia/gds.json")
         labels = tomllib.loads((project / "assets/files/desktop.toml").read_text())
         desktop = ["[Desktop Entry]", "Type=Application"]
         for locale, entries in labels.items():

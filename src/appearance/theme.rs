@@ -36,9 +36,9 @@ pub enum SourceKind {
 impl From<&Source> for SourceKind {
     fn from(source: &Source) -> Self {
         match source {
+            Source::System => Self::System,
             Source::Builtin => Self::Builtin,
             Source::Custom(_) => Self::Custom,
-            _ => Self::System,
         }
     }
 }
@@ -114,7 +114,7 @@ impl Default for Appearance {
 pub struct Applied {
     pub source: Source,
     pub mode: Mode,
-    /// The palette actually read, not just the qtct configuration pointer.
+    /// The resolved palette file read by the active source, when file-backed.
     pub source_path: Option<PathBuf>,
 }
 
@@ -122,6 +122,8 @@ pub struct Applied {
 pub enum Error {
     #[error("could not determine the user's XDG directories")]
     NoUserDirectories,
+    #[error("no supported desktop shell is active")]
+    UnsupportedDesktop,
     #[error("could not read theme file {path}: {source}")]
     Read {
         path: PathBuf,
@@ -142,8 +144,6 @@ pub enum Error {
     },
     #[error("theme field {field}: {detail}")]
     Invalid { field: String, detail: String },
-    #[error("custom_palette is not enabled in {0}")]
-    CustomPaletteDisabled(PathBuf),
     #[error("{name} must be finite and between 0 and 1, got {value}")]
     InvalidOpacity { name: &'static str, value: f32 },
     #[error("apply an appearance before updating its opacity")]
@@ -198,8 +198,8 @@ impl Global for CurrentApplied {}
 /// application-owned panels draw their material once using the helpers below.
 ///
 /// # Errors
-/// Returns an error for invalid opacity, unavailable source files, disabled Qt
-/// custom palettes, or unsupported/malformed palette data. The previous valid
+/// Returns an error for invalid opacity, unavailable source files, inactive
+/// desktop shells, or unsupported/malformed palette data. The previous valid
 /// theme and material settings are retained on every such failure.
 pub(crate) fn apply(appearance: &Appearance, cx: &mut App) -> Result<Applied, Error> {
     appearance.prepare(cx.window_appearance())?.install(cx)
@@ -214,7 +214,7 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Files that can change this prepared appearance, including palette indirection.
+    /// Files that can change this prepared appearance.
     pub fn source_paths(&self) -> Vec<PathBuf> {
         let mut paths = self.appearance.source_paths();
         paths.extend(self.loaded.source_path.clone());

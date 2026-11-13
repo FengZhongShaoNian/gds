@@ -32,14 +32,22 @@ pub fn run() -> anyhow::Result<()> {
                 cx.gds_mut().tasks().request_quit();
                 return;
             }
-            if let Err(error) = cx
-                .gds_mut()
+            let appearance = theme::Appearance::default();
+            if let Err(error) = cx.gds_mut().appearance().theme().apply(&appearance) {
+                eprintln!("{error}");
+                if let Err(fallback_error) = cx
+                    .gds_mut()
+                    .appearance()
+                    .theme()
+                    .apply(&appearance.builtin_fallback())
+                {
+                    eprintln!("{fallback_error}");
+                }
+            }
+            cx.gds_mut()
                 .appearance()
                 .theme()
-                .apply(&theme::Appearance::default())
-            {
-                eprintln!("{error}");
-            }
+                .init_hot_reload(appearance);
             if let Err(error) = cx
                 .gds_mut()
                 .appearance()
@@ -73,6 +81,7 @@ pub fn run() -> anyhow::Result<()> {
                 ..gds::ui::window::window_options()
             };
             if let Err(error) = gpui_kit::open_window(options, cx, move |window, cx| {
+                cx.gds_mut().appearance().theme().attach_observer(window);
                 window.set_window_title("GDS Nixes");
                 cx.new(|cx| crate::pages::home::HomePage::new(tasks, args.flake, window, cx))
             }) {

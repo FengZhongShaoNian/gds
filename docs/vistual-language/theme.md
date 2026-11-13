@@ -7,28 +7,42 @@
 外观设置只影响当前应用。来源读取、语义映射、Kit 桥接和界面消费依次执行：
 
 ```text
-DMS 导出 / KDE 当前配色 / Qt 配置色板 / 内置 TOML
-                 ↓
-      provider：色板、实际明暗、依赖路径
-                 ↓
-       Palette / Colors 完整主题快照
-                 ↓
-        GPUI Kit 与 GDS 公共组件
+Noctalia / DMS 导出 / KDE 当前配色 / GNOME Portal 与 GTK 配置 / 内置与自定义 TOML
+                                  ↓
+                   provider：色板、实际明暗、依赖路径
+                                  ↓
+                    Palette / Colors 完整主题快照
+                                  ↓
+                     GPUI Kit 与 GDS 公共组件
 ```
 
 应用读取语义角色，不复制来源解析或私有配色表。外部主题只提供颜色；布局、图标语义和交互由 GDS 定义。加载只读配置，不执行 QML/QSS、触发 Matugen 或修改桌面文件。
 
 ## 2. 来源与明暗
 
-主题下拉提供“系统主题”和“内置”。系统来源在 KDE Plasma 会话中读取当前 KDE 配色，GNOME 会话通过纯 Rust 读取桌面 Portal 明暗与强调色、Adwaita 基准配色及用户 GTK 配置，其它会话沿用 DankMaterialShell 的导出；Qt5ct / Qt6ct 保留代码与配置兼容，但不出现在主题下拉中。
+主题下拉提供「跟随系统 / 内置 / 自定义」。系统来源在 KDE Plasma 会话中读取当前 KDE 配色，GNOME 会话通过纯 Rust 读取桌面 Portal 明暗与强调色、Adwaita 基准配色及用户 GTK 3/4 配置；独立合成器会话按 `$XDG_RUNTIME_DIR` 中当前存活的 IPC Socket 识别正在运行的 Noctalia v5 或 DankMaterialShell，未检测到受支持桌面时不读取残留缓存文件。
 
-Files defaults to the system palette and follows the desktop light/dark preference. 明暗还可单独选择浅色或深色。系统主题按当前会话选择来源，已有 `dms` 配置兼容读取为 `system`。`ModePreference` 表示系统 / 浅 / 深，实际 `Mode` 只有浅 / 深。切换来源不重置明暗、字体、内置配色或表面不透明度。
+Files defaults to the system palette and follows the desktop light/dark preference. 明暗还可单独选择浅色或深色。系统主题按当前会话与活跃 Shell 选择来源，已有 `dms` 配置兼容读取为 `system`。`ModePreference` 表示系统 / 浅 / 深，实际 `Mode` 只有浅 / 深。切换来源不重置明暗、字体、内置配色或表面不透明度。
+
+### Noctalia v5
+
+在非 KDE / 非 GNOME 会话中，当 `$XDG_RUNTIME_DIR/noctalia-${WAYLAND_DISPLAY:-wayland-0}.sock`（未注入 `WAYLAND_DISPLAY` 时扫描 `noctalia-*.sock`）可连接时识别为 Noctalia v5，读取 `$XDG_CACHE_HOME/gds/theme/noctalia.json`（默认 `~/.cache/gds/theme/noctalia.json`）。
+
+软件包随附模板 `share/<binary>/noctalia/gds.json`（源码位于 [gds.json](../../src/appearance/theme/provider/system/noctalia/assets/gds.json)）。用户在 `~/.config/noctalia/gds.toml`（Noctalia 会自动合并配置目录下所有 `*.toml`）中登记模板后由 Noctalia 渲染输出：
+
+```toml
+[theme.templates.user.gds]
+input_path = "/usr/share/gds-files/noctalia/gds.json"
+output_path = "~/.cache/gds/theme/noctalia.json"
+```
+
+Nix / Home Manager 环境可将 `input_path` 指向 `"${config.programs.gds-files.package}/share/gds-files/noctalia/gds.json"`（或 `gds-agents` 包下对应路径）。模板导出 `schema_version = 1`、活动应用明暗 `mode`、`colors.{dark,light}` 的 Material 3 语义角色以及可选的 `terminal.{dark,light}` 22 项终端配色。跟随系统时使用导出的 `mode`，显式浅色／深色同时切换 UI 与终端的对应组。`terminal` 段整体缺失时回退到公共终端色表；一旦存在则原子校验全部角色与 16 色 ANSI 数组，任一缺失或非法均拒绝整次更新。实现见 [Noctalia provider](../../src/appearance/theme/provider/system/noctalia.rs)。
 
 ### DMS
 
-读取 `$XDG_CACHE_HOME/DankMaterialShell/dms-colors.json`，默认 `~/.cache/DankMaterialShell/dms-colors.json`。解析器读取 `colors.light` / `colors.dark` 的颜色角色；跟随系统时要求 `mode` 为 `light` 或 `dark`，显式明暗只读取对应组。
+在未检测到存活 Noctalia Socket 且 `DMS_SOCKET` 或 `$XDG_RUNTIME_DIR/{dms,danklinux}*.sock` 可连接时识别为 DMS，读取 `$XDG_CACHE_HOME/DankMaterialShell/dms-colors.json`，默认 `~/.cache/DankMaterialShell/dms-colors.json`。解析器读取 `colors.light` / `colors.dark` 的颜色角色；跟随系统时要求 `mode` 为 `light` 或 `dark`，显式明暗只读取对应组。
 
-请求的组缺失、必需角色缺失、颜色非法或文件不可读均返回错误。可选表面角色从同一来源中补齐；未提供的业务状态色使用公共默认值。文件存在只说明导出可读取，不证明桌面正在使用该配色。实现见 [DMS provider](../../src/appearance/theme/provider/system/dms.rs)。
+请求的组缺失、必需角色缺失、颜色非法或文件不可读均返回错误。可选表面角色从同一来源中补齐；未提供的业务状态色使用公共默认值。实现见 [DMS provider](../../src/appearance/theme/provider/system/dms.rs)。
 
 ### GNOME
 
@@ -40,25 +54,19 @@ Files defaults to the system palette and follows the desktop light/dark preferen
 
 当 `XDG_CURRENT_DESKTOP` 的冒号分隔列表包含 `KDE` 时，读取 `$XDG_CONFIG_HOME/kdeglobals`，默认 `~/.config/kdeglobals`。导入当前 `Colors:Window`、`Colors:View`、`Colors:Selection`、`Colors:Button` 与 `Colors:Tooltip`，不根据方案名重新读取原始 `.colors` 文件，因此保留 Plasma 应用后的强调色、染色和用户调整。Plasma 的写入逻辑见 [applyScheme](https://invent.kde.org/plasma/plasma-workspace/-/blob/master/kcms/colors/colorsapplicator.cpp)。
 
-跟随系统时，从活动窗口背景推导明暗，与 KDE Settings Portal 的判断一致。Plasma 只导出一套活动配色，显式浅色／深色只覆盖 GDS 模式和缺失角色的默认值，不会生成另一套 KDE 配色；要完整跟随，请使用“系统”明暗。KConfig 的嵌套组独立解析，不混入非活动窗口颜色。配置缺失或颜色无效时使用既有错误处理，不切到残留的 DMS 导出。
-
-### Qt
-
-读取 XDG 配置目录内的 `qt5ct/qt5ct.conf` 或 `qt6ct/qt6ct.conf`，要求 `[Appearance] custom_palette` 启用，并沿 `color_scheme_path` 解析实际文件。路径可为绝对路径、相对配置目录的路径或 `~/` 路径。
-
-色板支持 qtct `[ColorScheme]` 角色数组，以及 KDE `.colors` 的基本命名颜色组。它不是 QStyle、QSS、Kvantum 或完整 Plasma 主题渲染器。跟随系统明暗使用 GPUI 平台通知。Qt 配置和 Plasma 来源共用 [Qt/KDE parser](../../src/appearance/theme/provider/qt.rs)。
+跟随系统时，从活动窗口背景推导明暗，与 KDE Settings Portal 的判断一致。Plasma 只导出一套活动配色，显式浅色／深色只覆盖 GDS 模式和缺失角色的默认值，不会生成另一套 KDE 配色；要完整跟随，请使用“系统”明暗。KConfig 的嵌套组独立解析，不混入非活动窗口颜色。配置缺失或颜色无效时使用既有错误处理，不切到残留的 DMS 导出。实现见 [KDE provider](../../src/appearance/theme/provider/system/kde.rs)。
 
 ## 3. 加载与刷新
 
 启动时使用应用保存的来源；无法加载时明确报告并使用内置回退。运行中加载失败保留最后有效主题，不把失败表示为成功跟随。来源切换后的旧加载结果不能覆盖新选择。
 
-`theme::Observer` 为每个进程统一监听 DMS 导出、KDE `kdeglobals`、Qt 配置及解析后的色板文件。父目录监听支持原子替换，缺失路径创建后重新定位，托管符号链接同时监听目标。窗口只转发平台外观事件，不各自建立监听线程。
+`theme::Observer` 为每个进程统一监听 Noctalia 与 DMS 导出、Noctalia IPC Socket 启停、KDE `kdeglobals`、GNOME Portal/dconf/GTK 配置及自定义 TOML 主题文件。父目录监听支持原子替换，缺失路径创建后重新定位，托管符号链接同时监听目标。窗口只转发平台外观事件，不各自建立监听线程。
 
 读取和解析在后台完成，成功后一次安装完整快照。事件源合并尚未消费的变化，不使用定时轮询或额外防抖。透明度变化只更新材质 alpha，不重新读取色板；字体与其它应用偏好保持独立。
 
 ## 4. 固定配色分工
 
-Files、Agents 与公共组件共用 `src/appearance/theme/palette.rs` 的角色快照和 Kit 桥接。DMS / Matugen、KDE、Qt 和内置来源只提供角色的值；应用不另设配色表。常规组件读取 Kit 的语义字段，自绘面板及状态层通过 `cx.gds().appearance().theme().colors()` 读取同一快照。主题热更新一次替换整份快照，透明度设置只改变材质 alpha。
+Files、Agents 与公共组件共用 `src/appearance/theme/palette.rs` 的角色快照和 Kit 桥接。Noctalia、DMS / Matugen、GNOME、KDE 和内置／自定义来源只提供角色的值；应用不另设配色表。常规组件读取 Kit 的语义字段，自绘面板及状态层通过 `cx.gds().appearance().theme().colors()` 读取同一快照。主题热更新一次替换整份快照，透明度设置只改变材质 alpha。
 
 来源实现按输入职责集中在 `theme/provider`：
 
@@ -66,11 +74,14 @@ Files、Agents 与公共组件共用 `src/appearance/theme/palette.rs` 的角色
 theme/
 ├── provider.rs              # Source、来源分派、加载结果与共同文件读取
 ├── provider/
-│   ├── system.rs + system/  # 按会话选择 KDE、GNOME 或 DMS 系统来源
-│   │   ├── dms.rs           # 跟随 DMS 导出的活动方案
+│   ├── system.rs + system/  # 按桌面会话与活跃 Shell Socket 选择系统来源
+│   │   ├── material.rs      # Noctalia 与 DMS 共用的 Material 3 语义映射
+│   │   ├── noctalia.rs      # 解析 Noctalia v5 模板渲染的 UI 与终端配色
+│   │   ├── noctalia/assets/ # 随包发布的 gds.json Noctalia 模板
+│   │   ├── dms.rs           # 跟随 DMS 导出的活动方案与 dank16 终端色
+│   │   ├── kde.rs           # 读取 KDE Plasma 当前 kdeglobals 配色
 │   │   └── gnome.rs         # Portal、Adwaita 基准与用户 GTK 3/4 覆盖
-│   ├── config.rs            # Qt5ct/Qt6ct 配置所指定的色板路径
-│   ├── qt.rs                # Qt 角色数组与 KDE 命名颜色组的共享解析
+│   ├── custom.rs            # 用户自定义 TOML 主题目录与解析
 │   ├── builtin.rs           # 内置主题目录、嵌入与配置解析
 │   ├── builtin/assets/      # 各套内置主题的 TOML 明暗配色
 │   └── color.rs             # 文件来源共用的颜色语法解析
@@ -79,9 +90,9 @@ theme/
 └── hot_reload.rs            # 加载、监听和安装的协调
 ```
 
-provider 决定输入文件、解析方式与明暗来源，统一返回色板、实际模式和已读取色板路径。`system` 的 DMS 模式来自导出中的活动方案，KDE 模式来自当前配色；`config` 与 `builtin` 的系统模式来自平台明暗偏好。主题层负责应用色板及表面材质，热更新通过 provider 的依赖信息决定何时重新加载。
+provider 决定输入文件、解析方式与明暗来源，统一返回色板、实际模式和已读取色板路径。`system` 的 Noctalia 与 DMS 模式来自导出中的活动方案，KDE 模式来自当前配色，GNOME 结合 Portal、GTK 配置与平台窗口外观；`custom` 与 `builtin` 的系统模式来自平台明暗偏好。主题层负责应用色板及表面材质，热更新通过 provider 的依赖信息决定何时重新加载。
 
-公开的 `theme::Source` 从 `provider::Source` 导出，保存值为 `system`、`qt5ct`、`qt6ct`、`builtin`；旧的 `dms` 是 `system` 的反序列化别名。`config` 当前对应 Qt 配置来源；界面中的来源选项仍遵循下文的产品约定。
+公开的 `theme::Source` 从 `provider::Source` 导出，保存值为 `system`、`builtin` 与 `{ custom = "..." }`；`dms` 是 `system` 的反序列化兼容别名，界面中统一展示为「跟随系统 / 内置 / 自定义」。
 
 ### 内置主题配置
 
@@ -107,27 +118,27 @@ builtin = "retro"
 mode = "system"
 ```
 
-明暗选择独立于主题：跟随系统使用相应明暗版，手动浅色或深色覆盖平台模式。DMS / Qt 中缺少的业务状态角色继续使用竹林的公共默认值。修改配色只需编辑对应 TOML 并重新构建；增加主题时同时登记 `BuiltinTheme` 目录和嵌入文件。
+明暗选择独立于主题：跟随系统使用相应明暗版，手动浅色或深色覆盖平台模式。Noctalia / DMS / KDE / GNOME 中缺少的业务状态角色继续使用竹林的公共默认值。修改配色只需编辑对应 TOML 并重新构建；增加主题时同时登记 `BuiltinTheme` 目录和嵌入文件。
 
-| GDS 语义 | Qt 输入 | DMS / Material 输入 | 说明 |
+| GDS 语义 | KDE Plasma 输入 | Noctalia / DMS（Material 3）输入 | 说明 |
 | --- | --- | --- | --- |
-| `surface.window` | Window | surface | 窗口底色 |
-| `surface.content` | Base | surface | 文件内容 / 输入内容底色 |
-| `surface.sidebar` | Window / 派生层级 | surface_container_low | 缺失时回到 surface，并用分隔线保证层级 |
-| `surface.control` | Button | surface_container | 普通控件背景 |
-| `surface.panel` | Button / ButtonText | surface_container_high / on_surface | Agents 遥控面板等抬升表面；对应 `Colors.panel` / `panel_foreground` |
-| `surface.overlay` | ToolTipBase / ToolTipText | surface_container_high / on_surface | 菜单、提示、拖动预览与弹出层；对应 Kit `popover` / `popover_foreground`，保持不透明 |
-| `text.primary` | WindowText / Text | on_surface | 按所在表面选择成对的前景色 |
-| `text.secondary` | 由有效前景派生 | on_surface_variant | 检查可读性，不机械降低全控件 alpha |
-| `accent` | Highlight / HighlightedText | primary / on_primary | 强调，不等同所有选中背景 |
-| `selection.bg` / `fg` | Highlight / HighlightedText | primary_container / on_primary_container | 成对导入，不能强制白字 |
-| `border.subtle` | Mid / 派生 | outline_variant | 优先保留表面区分度 |
-| `border.control` | Mid / 派生 | outline | 输入框等需要辨认的边界；对应 Kit `input`，不替代细分隔线 |
-| `focus` / `progress` | Highlight | primary | 焦点环、插入光标、进度和活动标记；不作为普通面板的染色 |
+| `surface.window` | `Colors:Window` | surface | 窗口底色 |
+| `surface.content` | `Colors:View` | surface | 文件内容 / 输入内容底色 |
+| `surface.sidebar` | `Colors:Window` | surface_container_low | 缺失时回到 surface，并用分隔线保证层级 |
+| `surface.control` | `Colors:Button` | surface_container | 普通控件背景 |
+| `surface.panel` | `Colors:Button`（背景／前景） | surface_container_high / on_surface | Agents 遥控面板等抬升表面；对应 `Colors.panel` / `panel_foreground` |
+| `surface.overlay` | `Colors:Tooltip`（背景／前景） | surface_container_high / on_surface | 菜单、提示、拖动预览与弹出层；对应 Kit `popover` / `popover_foreground`，保持不透明 |
+| `text.primary` | `Colors:Window` / `Colors:View` `ForegroundNormal` | on_surface | 按所在表面选择成对的前景色 |
+| `text.secondary` | `Colors:View.ForegroundInactive` | on_surface_variant | 检查可读性，不机械降低全控件 alpha |
+| `accent` | `Colors:Selection`（背景／前景） | primary / on_primary | 强调，不等同所有选中背景 |
+| `selection.bg` / `fg` | `Colors:Selection`（背景／前景） | primary_container / on_primary_container | 成对导入，不能强制白字 |
+| `border.subtle` | `Colors:Window.ForegroundInactive` / 派生 | outline_variant | 优先保留表面区分度 |
+| `border.control` | `Colors:Window.ForegroundInactive` / 派生 | outline | 输入框等需要辨认的边界；对应 Kit `input`，不替代细分隔线 |
+| `focus` / `progress` | `Colors:Selection.BackgroundNormal` | primary | 焦点环、插入光标、进度和活动标记；不作为普通面板的染色 |
 | `shadow` | 公共阴影色 | shadow | 仅用于投影；玻璃面板的边缘高光取自自身前景色 |
-| `status.error` | 公共状态色补全 | error / on_error | Qt 标准角色没有完整业务状态语义 |
+| `status.error` | 公共状态色补全 | error / on_error | KDE 标准颜色组没有完整业务状态语义 |
 | `status.success` / `status.warning` | 公共状态色补全 | 公共状态色补全 | 成功、警告使用套件的明暗成对默认值；不把任意 secondary / tertiary 色解释成绿或黄 |
-| disabled / inactive | 对应 ColorGroup | 基于语义角色生成 | 非活动窗口不等于禁用窗口 |
+| disabled / inactive | 非活动 KConfig 子组不混入活动表面 | 基于语义角色生成 | 非活动窗口不等于禁用窗口 |
 
 容器色与文字色成对使用。Files 的页签、文件行、卷行及容量文字，Agents 的会话、命令候选、附件、队列编辑项和书签标记，在选中时使用 `primary_container` / `on_primary_container`，不强制白字，也不保留选中前的次级文字色。正文用 `on_surface`，侧栏正文用所在来源的侧栏前景，分区标题、路径和辅助动作使用不透明的 `on_surface_variant`。
 
@@ -139,7 +150,7 @@ mode = "system"
 
 玻璃遥控面板只取 `surface.panel`，采用统一半透明材质、圆角、边缘和投影；不额外混入白色、主色或大面积渐变。主内容和侧栏分别保持用户设置的不透明度，文字和图标不跟随表面透明度变淡。语法高亮、终端 ANSI 与内容图片沿用各自的内容配色，不用 UI 角色覆盖。
 
-缺失角色由公共映射补齐：DMS 的 control 缺失时取导入的 content，panel 缺失时取 control，outline 缺失时取 subtle border；Qt 的 panel 使用 Button / ButtonText，overlay 继续使用 ToolTipBase / ToolTipText。外部来源缺失层级时不掺入内置主题的表面色。外部主题的布局、圆角和交互不会透传。
+缺失角色由公共映射补齐：Noctalia 与 DMS 的 control 缺失时取导入的 content，panel 缺失时取 control，outline 缺失时取 subtle border；KDE 的 panel 使用 `Colors:Button`，overlay 使用 `Colors:Tooltip`。外部来源缺失层级时不掺入内置主题的表面色。外部主题的布局、圆角和交互不会透传。
 
 ## 5. 表面与平台能力
 
@@ -151,7 +162,7 @@ mode = "system"
 
 Files 保存到 `$XDG_CONFIG_HOME/gds/app/files/settings.toml`，Agents 保存到自己的前端配置；不存在套件全局外观同步。应用真实变化后自动保存，失败通过共享通知报告。
 
-声明式符号链接与只读文件允许读取，但不会被替换或覆盖。运行态修改已成功、写入失败时明确报告“已生效但未保存”。外部主题文件始终只读；GDS 不替用户安装 DMS、Qt 插件或修改会话环境。
+声明式符号链接与只读文件允许读取，但不会被替换或覆盖。运行态修改已成功、写入失败时明确报告“已生效但未保存”。外部主题文件始终只读；GDS 不替用户安装 Noctalia、DMS 或修改会话环境。
 
 ## Window frames and initial size
 

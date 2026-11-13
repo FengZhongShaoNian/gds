@@ -1,9 +1,7 @@
 //! Palette providers grouped by system state, configured files and built-in data.
 pub mod builtin;
 mod color;
-mod config;
 pub mod custom;
-mod qt;
 pub(crate) mod system;
 
 use gpui_kit::WindowAppearance;
@@ -19,11 +17,7 @@ pub enum Source {
     Custom(PathBuf),
     /// An embedded palette; System mode follows the native platform appearance.
     Builtin,
-    /// Palette selected by the user's Qt6ct configuration.
-    Qt6ct,
-    /// Palette selected by the user's Qt5ct configuration.
-    Qt5ct,
-    /// The current desktop's palette: GNOME, KDE Plasma or DankMaterialShell.
+    /// The current desktop's palette: GNOME, KDE Plasma, Noctalia or DankMaterialShell.
     #[default]
     #[serde(alias = "dms")]
     System,
@@ -48,8 +42,6 @@ impl Source {
             Self::Builtin => Vec::new(),
             Self::Custom(path) => custom::resolve(path).into_iter().collect(),
             Self::System => system::source_paths(),
-            Self::Qt5ct => config::Qt::V5.source_paths(),
-            Self::Qt6ct => config::Qt::V6.source_paths(),
         }
     }
 
@@ -70,8 +62,6 @@ impl Source {
             Self::Builtin => Ok(builtin::load(builtin, preference, platform)),
             Self::Custom(path) => custom::load(path, preference.resolve(platform)),
             Self::System => system::load(preference, platform),
-            Self::Qt5ct => config::Qt::V5.load(preference, platform),
-            Self::Qt6ct => config::Qt::V6.load(preference, platform),
         }
     }
 }

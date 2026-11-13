@@ -5,15 +5,21 @@ background, cursor and cursor text, selection and selected text, and eight norma
 plus eight bright ANSI colors. Terminal rendering converts these roles to the
 emulator's color table; it does not derive ANSI colors from UI status roles.
 
-DMS imports `dank16.color0` through `color15`, selecting each entry's `light` or
-`dark` value using the same resolved mode as the Material palette. Explicit mode
-preferences override the exported active mode; System follows it. `default` is
-never substituted. A missing `dank16` supports older exports; a present but
-incomplete, null, wrongly typed or invalid requested scheme rejects the entire
-update, retaining the last valid installed appearance.
+Noctalia v5 imports `terminal.light` or `terminal.dark` from the rendered GDS
+template (`foreground`, `background`, `cursor`, `cursor_text`, `selection`,
+`selection_text`, plus eight `normal` and eight `bright` ANSI entries), using the
+same resolved mode as the Material palette. DMS imports `dank16.color0` through
+`color15`, selecting each entry's `light` or `dark` value using the same resolved
+mode while deriving terminal surface/cursor/selection pairs from the Material UI
+roles. Explicit mode preferences override the exported active mode; System follows
+it. `default` is never substituted. An omitted terminal section (`terminal` in
+Noctalia or `dank16` in DMS) uses the fallback below; a present but incomplete,
+null, wrongly typed or invalid requested scheme rejects the entire update,
+retaining the last valid installed appearance.
 
-Built-in themes, Qt/KDE imports and legacy DMS exports share the maintained
-light/dark ANSI fallback in `src/appearance/theme/terminal.rs`. Their terminal
+Built-in themes, custom TOML themes, GNOME/KDE imports and minimal shell
+exports without terminal data share the maintained light/dark ANSI fallback in
+`src/appearance/theme/terminal.rs`. Their terminal
 foreground/background and selection pairs follow the provider's resolved UI
 roles; cursor text/background form the inverse default text pair. ANSI ink is
 independent of error/success/warning colors. No standalone Alacritty installation,

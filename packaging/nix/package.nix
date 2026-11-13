@@ -61,6 +61,7 @@ rustPlatform.buildRustPackage {
   postInstall = ''
     install -Dm644 LICENSE "$out/share/licenses/${binary}/LICENSE"
     install -Dm644 assets/${application}/icon-desktop.svg "$out/share/icons/hicolor/scalable/apps/${desktopItem.name}.svg"
+    install -Dm644 src/appearance/theme/provider/system/noctalia/assets/gds.json "$out/share/${binary}/noctalia/gds.json"
     ${postInstall}
   '';
 

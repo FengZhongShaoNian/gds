@@ -97,7 +97,7 @@ For a local reproduction of the release build, check out its tag in a separate
 worktree and run:
 
 ```sh
-python3 scripts/build-linux-package.py arch --profile release --release-tag v0.0.2
+python3 scripts/build-linux-package.py arch --profile release --release-tag v0.0.3
 ```
 
 Replace the example tag with the intended version. The publication recipe is

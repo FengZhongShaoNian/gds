@@ -40,7 +40,7 @@ Documentation is organized into **Current State**, **Technical Decisions & Compr
 ## Visual Language & Settings
 
 - **[Visual Language Overview](visual-language/README.md)** — 3-layer contract, layout tokens, responsive sizing, state rules, and icon vocabulary
-  - [Themes & Materials](visual-language/theme.md) — System (KDE, GNOME, DMS), Built-in, and Custom TOML palettes, opacity, and hot-reload
+  - [Themes & Materials](visual-language/theme.md) — System (Noctalia, DMS, KDE, GNOME), Built-in, and Custom TOML palettes, opacity, and hot-reload
   - [Shortcuts & Focus Scopes](visual-language/shortcuts.md) — suite bindings, `ShortcutBadge`, modifier keytips, and scope routing
   - [Component Composition](visual-language/composition.md) — UIM anatomy (`ContentPage`, `SettingRow`, `DragCard`, `DialogActions`, `About`)
   - [Sidebar Anatomy](visual-language/sidebar.md) — `SideBar` structure, 160 ms width transition, and spatial stability
@@ -52,3 +52,4 @@ Documentation is organized into **Current State**, **Technical Decisions & Compr
 
 - **[Technical Decisions & Compromises](decisions/README.md)** — why active upstream forks, runtime boundaries, PTY workers, and external CLI integrations work the way they do, and when to retire them
 - **[Roadmap](roadmap/README.md)** — planned milestones across Files, distribution channels, GPUI cold-start optimization, and companion apps
+- **[Changelog](../CHANGELOG.md)** — release history by version

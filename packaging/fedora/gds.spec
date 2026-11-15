@@ -74,6 +74,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.GanDesktop.
 %license %{_datadir}/licenses/gds-files/LICENSE
 %{_bindir}/gds-files
 %{_datadir}/applications/io.github.GanDesktop.GdsFiles.desktop
+%{_datadir}/gds-files/noctalia/gds.json
 %{_datadir}/icons/hicolor/scalable/apps/io.github.GanDesktop.GdsFiles.svg
 
 %files -n xdg-desktop-portal-gds

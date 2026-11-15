@@ -85,6 +85,9 @@ fn appearance_defaults_follow_system_without_changing_explicit_legacy_choices() 
         toml::from_str::<Appearance>(&encoded).expect("system appearance"),
         explicit
     );
+    for removed in ["qt5ct", "qt6ct"] {
+        assert!(toml::from_str::<Appearance>(&format!("source = '{removed}'")).is_err());
+    }
     for (stored, expected) in [
         ("light", ModePreference::Light),
         ("dark", ModePreference::Dark),

@@ -1,6 +1,6 @@
 # GDS Nixes
 
-GDS Nixes is a native GPUI browser for flake-based NixOS and Home Manager configurations. It shares GDS's window frame, sidebar, settings rows, semantic theme engine, typography, and Fluent translations.
+GDS Nixes is a native GPUI browser for flake-based NixOS and Home Manager configurations. It shares GDS's window frame, sidebar, settings rows, live-reloaded semantic theme engine (`theme::Observer`), typography, and Fluent translations.
 
 ## Running
 

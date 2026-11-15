@@ -3,7 +3,7 @@
 `src/appearance/theme` resolves external, built-in, and user-authored color palettes into one source-agnostic semantic snapshot (`Palette` / `Colors`) consumed by GPUI Kit and GDS components. External themes supply colors only—never layout metrics, corner radii, or widget chrome.
 
 ```text
-System (KDE / GNOME / DMS)  |  Built-in TOML  |  Custom User TOML  |  Legacy Qt5ct/Qt6ct
+System (Noctalia / DMS / KDE / GNOME)  |  Built-in TOML  |  Custom User TOML
                                       ↓
                provider: palette roles + effective light/dark mode + watched paths
                                       ↓
@@ -18,11 +18,19 @@ Appearance settings expose three user-selectable theme sources—**System**, **B
 
 ### System (`Source::System`)
 
-Selected by default (`dms` in legacy configs deserializes as `system`). Resolves automatically from the active desktop session:
+Selected by default (`dms` in legacy configs deserializes as `system`). Resolves from the active desktop session (`XDG_CURRENT_DESKTOP`) or, in standalone Wayland compositor sessions, from live IPC sockets in `$XDG_RUNTIME_DIR` (never reading stale cached exports when no supported shell is running):
 
-- **KDE Plasma** (`XDG_CURRENT_DESKTOP` contains `KDE`): Reads `$XDG_CONFIG_HOME/kdeglobals` (`Colors:Window`, `Colors:View`, `Colors:Selection`, `Colors:Button`, `Colors:Tooltip`), preserving Plasma accent tinting. System mode derives light/dark from the active window background; explicit Light/Dark overrides GDS mode defaults without synthesizing a second KDE scheme.
-- **GNOME**: Pure in-process Rust reader (`provider/system/gnome.rs`) combining the XDG Settings Portal (`org.freedesktop.appearance` `color-scheme` and `accent-color`), standard Adwaita light/dark baselines, and `$XDG_CONFIG_HOME/gtk-{4.0,3.0}/{settings.ini,gtk.css}` `@define-color` overrides (`gtk-4.0` takes precedence). Requires no Python helper or GTK runtime library.
-- **DankMaterialShell (DMS)**: Reads `$XDG_CACHE_HOME/DankMaterialShell/dms-colors.json` (`colors.light` / `colors.dark`, plus optional `dank16.color0..color15` terminal ANSI colors). Missing or malformed required roles return an explicit error rather than silently pretending a fallback succeeded.
+- **Noctalia v5** (live `$XDG_RUNTIME_DIR/noctalia-${WAYLAND_DISPLAY:-wayland-0}.sock`, or `noctalia-*.sock` when `WAYLAND_DISPLAY` is unset): Reads `$XDG_CACHE_HOME/gds/theme/noctalia.json` rendered from the bundled template `share/<binary>/noctalia/gds.json` ([gds.json](../../src/appearance/theme/provider/system/noctalia/assets/gds.json)), exporting `schema_version = 1`, active `mode`, `colors.{dark,light}` Material 3 roles, and an optional 22-color `terminal.{dark,light}` palette (`provider/system/noctalia.rs`). Register the template in `~/.config/noctalia/gds.toml` (for Nix / Home Manager, point `input_path` to `"${config.programs.gds-files.package}/share/gds-files/noctalia/gds.json"`):
+
+  ```toml
+  [theme.templates.user.gds]
+  input_path = "/usr/share/gds-files/noctalia/gds.json"
+  output_path = "~/.cache/gds/theme/noctalia.json"
+  ```
+
+- **DankMaterialShell (DMS)** (live `DMS_SOCKET` or `$XDG_RUNTIME_DIR/{dms,danklinux}*.sock` when Noctalia is not active): Reads `$XDG_CACHE_HOME/DankMaterialShell/dms-colors.json` (`colors.light` / `colors.dark`, active `mode`, plus optional `dank16.color0..color15` terminal ANSI colors). Missing or malformed required roles return an explicit error rather than silently pretending a fallback succeeded.
+- **KDE Plasma** (`XDG_CURRENT_DESKTOP` contains `KDE`): Reads `$XDG_CONFIG_HOME/kdeglobals` (`Colors:Window`, `Colors:View`, `Colors:Selection`, `Colors:Button`, `Colors:Tooltip`) via `provider/system/kde.rs`, preserving Plasma accent tinting. System mode derives light/dark from the active window background; explicit Light/Dark overrides GDS mode defaults without synthesizing a second KDE scheme.
+- **GNOME** (`XDG_CURRENT_DESKTOP` contains `GNOME`): Pure in-process Rust reader (`provider/system/gnome.rs`) combining the XDG Settings Portal (`org.freedesktop.appearance` `color-scheme` and `accent-color`), standard Adwaita light/dark baselines, and `$XDG_CONFIG_HOME/gtk-{4.0,3.0}/{settings.ini,gtk.css}` `@define-color` overrides (`gtk-4.0` takes precedence). Requires no Python helper or GTK runtime library.
 
 ### Built-in (`Source::Builtin`)
 
@@ -57,31 +65,27 @@ en-US = "Forest"
 - `name` is required; `i18n` maps case-insensitive BCP-47 tags (`en-US`, `zh-CN`) to localized menu labels, falling back directly to `name`.
 - Files stores `source = { custom = "personal/my-theme.toml" }` in `settings.toml`; Agents stores `{"theme_source": {"custom": "personal/my-theme.toml"}}` in `settings.json`. Reopen Appearance settings to discover newly added files; edits to the active file hot-reload automatically.
 
-### Legacy Qt Configuration (`Qt5ct` / `Qt6ct`)
-
-`provider/config.rs` and `provider/qt.rs` retain deserialization and loading compatibility for existing `qt5ct` / `qt6ct` configs (`custom_palette` + `color_scheme_path`), without listing Qt in the UI dropdown.
-
 ## 2. Semantic Palette & Terminal Mapping
 
 Components read semantic roles from GPUI Kit or `cx.gds().appearance().theme().colors()`:
 
-| GDS Role | Material / DMS Input | Qt / KDE Input | Contract |
+| GDS Role | Noctalia / DMS (Material 3) Input | KDE Plasma Input | Contract |
 | --- | --- | --- | --- |
-| `surface.window` / `content` | `surface` | `Window` / `Base` | Primary workspace surfaces |
-| `surface.sidebar` | `surface_container_low` | `Window` / derived | Left column surface (falls back to `surface` + hairline divider) |
-| `surface.control` / `panel` | `surface_container` / `surface_container_high` | `Button` | Controls and elevated panels (e.g., Agents glass remote panel) |
-| `surface.overlay` | `surface_container_high` | `ToolTipBase` | Opaque menus, tooltips, drag cards, and popovers |
-| `text.primary` / `secondary` | `on_surface` / `on_surface_variant` | `WindowText` / derived | Paired opaque foregrounds (never dim whole controls via alpha) |
-| `accent` | `primary` / `on_primary` | `Highlight` / `HighlightedText` | Primary emphasis, focus ring, and progress |
-| `selection.bg` / `fg` | `primary_container` / `on_primary_container` | `Highlight` / `HighlightedText` | Always imported as a contrast-safe pair (never force white text) |
-| `border.subtle` / `control` | `outline_variant` / `outline` | `Mid` / derived | Hairline dividers vs outlined `ui::field::{input,select}` borders |
+| `surface.window` / `content` | `surface` | `Colors:Window` / `Colors:View` | Primary workspace surfaces |
+| `surface.sidebar` | `surface_container_low` | `Colors:Window` / derived | Left column surface (falls back to `surface` + hairline divider) |
+| `surface.control` / `panel` | `surface_container` / `surface_container_high` | `Colors:Button` | Controls and elevated panels (e.g., Agents glass remote panel) |
+| `surface.overlay` | `surface_container_high` | `Colors:Tooltip` | Opaque menus, tooltips, drag cards, and popovers |
+| `text.primary` / `secondary` | `on_surface` / `on_surface_variant` | `ForegroundNormal` / `ForegroundInactive` | Paired opaque foregrounds (never dim whole controls via alpha) |
+| `accent` | `primary` / `on_primary` | `Colors:Selection` | Primary emphasis, focus ring, and progress |
+| `selection.bg` / `fg` | `primary_container` / `on_primary_container` | `Colors:Selection` | Always imported as a contrast-safe pair (never force white text) |
+| `border.subtle` / `control` | `outline_variant` / `outline` | `Colors:Window.ForegroundInactive` / derived | Hairline dividers vs outlined `ui::field::{input,select}` borders |
 | `status.error` / `warning` / `success` | `error` + GDS status defaults | GDS status defaults | Paired light/dark semantic feedback colors |
 
 - **Neutral interaction states**: `ui::button::Button` derives neutral hover (`8%` surface foreground) and press (`12%`) layers consistently; marquee and drop targets use `12%` `primary` fill with a `1 px` `primary` border.
-- **Terminal palette**: `appearance/theme/terminal.rs` supplies terminal foreground/background, inverse cursor pair, selection pair, and 16 ANSI colors (`dank16` when exported by DMS; curated light/dark ANSI table otherwise, keeping indices `16–255` on the standard xterm cube/ramp). Live theme changes update running and starting PTY sessions immediately for rendering and OSC color queries without restarting shells.
+- **Terminal palette**: `appearance/theme/terminal.rs` supplies terminal foreground/background, inverse cursor pair, selection pair, and 16 ANSI colors (`terminal.{light,dark}` when exported by Noctalia v5, `dank16` when exported by DMS, or GDS's curated light/dark ANSI table otherwise, keeping indices `16–255` on the standard xterm cube/ramp). Live theme changes update running and starting PTY sessions immediately for rendering and OSC color queries without restarting shells.
 
 ## 3. Surface Opacity, Corners & Hot-Reload
 
 - **Surface opacity**: Configured independently for **Main background** and **Sidebar background** (`100%` / `85%` default on floating desktops; `85%` / `50%` on recognized tiling compositors). Applied via `RootPlugin::style` so native dialogs, menus, tooltips, and text/icons remain `100%` opaque. Opacity changes update surface alpha without re-parsing theme files.
 - **Rounded window corners**: Opt-in per app (`appearance.rounded_corners`, default `false`). Applies a `10 px` radius to Linux client-side frames, content clip, and input hit regions while keeping maximized, fullscreen, and tiled edges square.
-- **Observer & hot-reload (`theme::Observer`)**: Watches parent directories and symlink targets for DMS exports, `kdeglobals`, dconf/Portal signals, GTK 3/4 CSS, and active custom TOML files. Parsing runs off the UI thread; invalid edits report an error and retain the last valid theme snapshot, and stale async loads never overwrite a newer source selection.
+- **Observer & hot-reload (`theme::Observer`)**: Watches parent directories and symlink targets for Noctalia and DMS exports, Noctalia IPC socket start/stop, `kdeglobals`, GNOME dconf/Portal signals, GTK 3/4 CSS, and active custom TOML files. Parsing runs off the UI thread; invalid edits report an error and retain the last valid theme snapshot, and stale async loads never overwrite a newer source selection.

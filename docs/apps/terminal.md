@@ -27,7 +27,7 @@ Files / Agents Host: session collection, tabs, dock split, cwd & shortcuts
 
 ## Appearance & Font Rendering
 
-- **Shared semantic palette**: `src/appearance/theme/terminal.rs` owns default foreground/background, inverse cursor pair, selection pair, and 16 ANSI colors (imported from DMS `dank16` when available, or GDS's light/dark ANSI table otherwise; indices `16–255` use the standard xterm cube and gray ramp).
+- **Shared semantic palette**: `src/appearance/theme/terminal.rs` owns default foreground/background, inverse cursor pair, selection pair, and 16 ANSI colors—importing `terminal.{light,dark}` (foreground/background, cursor, selection, and 16 ANSI entries) from Noctalia v5 or `dank16.color0..color15` from DMS when present, and falling back to GDS's maintained light/dark ANSI table otherwise (partial or malformed terminal sections reject the update atomically; indices `16–255` use the standard xterm cube and gray ramp).
 - **Live synchronization**: `ui::terminal` observes the installed appearance snapshot and updates a shared RGB palette created *before* shell launch so live, hidden, and still-starting sessions answer OSC color queries with the latest theme without restarting shells. Truecolor cells and emulator OSC overrides take precedence until reset.
 - **Single-pass surface & monospace grid**: Default background uses the window's content material painted once; `Dim` adjusts RGB rather than text alpha. System Fontconfig resolves concrete monospace families so CJK, Nerd Font glyphs, emoji, cursor, and IME share device-pixel-aligned cell advances.
 

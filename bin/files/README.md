@@ -143,6 +143,7 @@ Follow your system theme, choose a built-in theme, or use a custom theme.
 
 | Desktop environment | System appearance followed |
 | --- | --- |
+| Noctalia | System colors, terminal palette and light/dark mode through the bundled GDS template |
 | DankMaterialShell | System colors and light/dark mode, including colors generated from the wallpaper |
 | KDE Plasma | System color scheme |
 | GNOME | System light/dark preference and GTK appearance |

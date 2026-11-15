@@ -1,6 +1,5 @@
 //! Virtual grid rows over the same path-based file selection as the table.
 use super::*;
-use gds::ui::button::Button;
 use std::{cell::RefCell, rc::Rc};
 
 use gds::ui::thumbnail::Thumbnail;
@@ -205,7 +204,7 @@ struct TileContent {
 }
 
 impl TileContent {
-    fn render(&self, index: Option<usize>, play: Option<AnyElement>, cx: &App) -> Div {
+    fn render(&self, index: Option<usize>, cx: &App) -> Div {
         let entry = &self.entry;
         let geometry = self.geometry;
         let icon = FileIcon::for_entry(entry);
@@ -254,13 +253,7 @@ impl TileContent {
             } [
                 .div { relative; w_full; h: $(geometry.thumbnail_height).px; flex_shrink_0; flex; items_center; justify_center;
                     opacity: $appearance.opacity;
-                } [media,
-                    @if (let Some(play) = play)
-                        .div { absolute; right_1; bottom_1; rounded_md;
-                            bg: $(cx.theme().popover); text_color: $(cx.theme().popover_foreground);
-                        } [play],
-                    @end,
-                ],
+                } [media],
                 name,
                 @if (appearance.cut)
                     .div { absolute; top_1; right_1; } [IconName::Scissors.Icon::new { size: 12.0.px; }],
@@ -405,10 +398,6 @@ impl Browser {
             selection,
             appearance: EntryAppearance::of(entry, cx),
         };
-        let source = entry.thumbnail_source();
-        let is_video = source
-            .as_ref()
-            .is_some_and(|source| source.kind == gds::service::file_inspection::Kind::Video);
         let path = entry.path.clone();
         let target = path.clone();
         let browser = cx.entity().downgrade();
@@ -427,32 +416,10 @@ impl Browser {
                 this.activate_path(target.clone(), cx);
             }
         });
-        let play_path = path.clone();
-        let on_play = cx.listener(move |this, _: &ClickEvent, window, cx| {
-            cx.stop_propagation();
-            let Some(index) = this.active().and_then(|slot| {
-                slot.table_rows
-                    .iter()
-                    .position(|entry| entry.path == play_path)
-            }) else {
-                return;
-            };
-            this.select(index, Modifiers::default(), cx);
-            this.window.focus.focus(window, cx);
-            this.activate_path(play_path.clone(), cx);
-        });
-        let play = (is_video && self.picker.is_none()).then(|| {
-            el! { $(("video-play", index)).Button::icon_button {
-                control_icon: IconName::Play;
-                accessibility_label: $(i18n::text("video-play", cx));
-                tooltip: $(i18n::text("video-play", cx));
-                on_click: on_play;
-            } }
-        });
         let menu_path = path.clone();
         let menu_browser = browser.clone();
         let mut tile = el! {
-            $(content.render(Some(index), play.map(IntoElement::into_any_element), cx)) { # $("file-tile", index);
+            $(content.render(Some(index), cx)) { # $("file-tile", index);
                 role: Role::ListItem; aria_label: $(entry.display_name.clone()); aria_selected: selected;
                 cursor_pointer;
                 left: $(presented.origin.x - target_bounds.origin.x);
@@ -471,7 +438,7 @@ impl Browser {
                     DragPreview::new(
                         drag,
                         offset,
-                        move |_, cx| content.render(None, None, cx).into_any_element(),
+                        move |_, cx| content.render(None, cx).into_any_element(),
                         cx,
                     )
                 },
@@ -577,7 +544,7 @@ impl Browser {
                                         selection,
                                         appearance: EntryAppearance::of(entry, cx),
                                     }
-                                    .render(Some(index), None, cx)
+                                    .render(Some(index), cx)
                                 } else {
                                     el! { .div { flex; flex_col; flex_shrink_0; items_center;
                                         w: $(geometry.width).px; h: $(geometry.tile_height).px; p: PADDING.px; gap: CONTENT_GAP.px;

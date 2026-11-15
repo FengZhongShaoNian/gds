@@ -258,7 +258,6 @@ sort = 文件排序
 sort-descending = 降序排列
 
 view-toggle = 切换网格／列表视图
-video-play = 播放视频
 
 picker-save = 保存
 picker-file-name = 文件名

@@ -267,7 +267,6 @@ sort = Sort files
 sort-descending = Descending order
 
 view-toggle = Switch grid/list view
-video-play = Play video
 
 picker-save = Save
 picker-file-name = File name

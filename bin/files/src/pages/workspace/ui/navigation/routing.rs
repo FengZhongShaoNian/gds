@@ -26,8 +26,8 @@ impl Browser {
         volume: &storage::VolumeId,
         cx: &App,
     ) -> VolumeIdentity {
-        if let Some(stable) = &volume.stable {
-            if self
+        if let Some(stable) = &volume.stable
+            && self
                 .devices
                 .service
                 .read(cx)
@@ -37,9 +37,8 @@ impl Browser {
                 .filter(|candidate| candidate.id.stable.as_ref() == Some(stable))
                 .count()
                 == 1
-            {
-                return VolumeIdentity::Stable(stable.clone());
-            }
+        {
+            return VolumeIdentity::Stable(stable.clone());
         }
         VolumeIdentity::Attachment(volume.attachment.clone())
     }
@@ -276,23 +275,16 @@ impl Browser {
     }
 
     pub(in crate::pages::workspace) fn tab_title(&self, slot: &OpenTab, cx: &App) -> String {
-        if let Location::Volume { identity, relative } = slot.navigation.location() {
-            if relative.is_empty() {
-                if let Some(volume) =
-                    self.devices
-                        .service
-                        .read(cx)
-                        .snapshot
-                        .volumes
-                        .iter()
-                        .find(|volume| match identity {
-                            VolumeIdentity::Stable(id) => volume.id.stable.as_ref() == Some(id),
-                            VolumeIdentity::Attachment(id) => &volume.id.attachment == id,
-                        })
-                {
-                    return volume.name.clone();
-                }
-            }
+        if let Location::Volume { identity, relative } = slot.navigation.location()
+            && relative.is_empty()
+            && let Some(volume) = self.devices.service.read(cx).snapshot.volumes.iter().find(
+                |volume| match identity {
+                    VolumeIdentity::Stable(id) => volume.id.stable.as_ref() == Some(id),
+                    VolumeIdentity::Attachment(id) => &volume.id.attachment == id,
+                },
+            )
+        {
+            return volume.name.clone();
         }
         slot.title(cx)
     }

@@ -2,6 +2,7 @@
 name = "gds"
 version = "0.0.2"
 edition = "2024"
+rust-version = "1.100"
 autobins = false
 publish = false
 license = "Apache-2.0"
@@ -29,6 +30,42 @@ icon = "assets/agents/icon-solid.svg"
 [workspace]
 members = ["macros/gds-settings-derive"]
 resolver = "3"
+
+[workspace.lints.cargo]
+# build.rs 通过 CARGO_PKG_HOMEPAGE 注入应用主页链接，现阶段与仓库地址相同
+redundant_homepage = "allow"
+
+[workspace.lints.rust]
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+# 代码组织：禁止采用 mod.rs 组织方式（agents.md §子模块）
+mod_module_files = "deny"
+# 错误处理：禁止裸 unwrap()，使用 expect("reason") 替代（agents.md §错误处理）
+unwrap_used = "deny"
+# 错误处理：禁止用 `let _ =` 静默丢弃未 await 的 Future（agents.md §错误处理）
+let_underscore_future = "deny"
+# 错误处理：返回错误的公开函数在文档中提供 `# Errors` 说明（agents.md §错误处理）
+missing_errors_doc = "warn"
+# 测试与清理：禁止在代码中残留一次性调试宏与未完成占位符（agents.md §测试）
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+# 库函数优先：字符串前后缀优先使用 strip_prefix / strip_suffix（agents.md §相信经过验证的代码）
+manual_strip = "deny"
+# 控制流：使用 Rust 2024 的 `let ... else` 减少嵌套（agents.md §异步与控制流）
+manual_let_else = "warn"
+# 项目规范对齐豁免：
+# 1) 组件默认统一通过 `Default::default` 创建，包括无字段单元组件（agents.md §技术栈）
+default_constructed_unit_structs = "allow"
+# 2) 桌面/远程服务错误与会话枚举按设计保留双端完整底层错误与连接上下文（docs/development.md）
+result_large_err = "allow"
+large_enum_variant = "allow"
+# 3) `#[tokio::test]` 宏在测试中展开 Builder 调用；生产目标由 `just lint` 单独开启 `-D clippy::disallowed_methods`
+disallowed_methods = "allow"
+
+[lints]
+workspace = true
 
 [lib]
 path = "src/lib.rs"

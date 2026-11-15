@@ -362,10 +362,10 @@ impl Connector {
             cx.spawn(async move |_, cx| match work.await {
                 Ok(Ok(())) => (),
                 Ok(Err(error)) => {
-                    let _ = cx.update(|cx| notifications::error(error.to_string(), cx));
+                    cx.update(|cx| notifications::error(error.to_string(), cx));
                 }
                 Err(error) => {
-                    let _ = cx.update(|cx| notifications::error(error.to_string(), cx));
+                    cx.update(|cx| notifications::error(error.to_string(), cx));
                 }
             })
             .detach();

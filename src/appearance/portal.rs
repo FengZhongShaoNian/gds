@@ -29,19 +29,10 @@ pub(crate) struct Snapshot {
     pub primed: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct State {
     reduced_motion: bool,
     appearance: Snapshot,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self {
-            reduced_motion: false,
-            appearance: Snapshot::default(),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

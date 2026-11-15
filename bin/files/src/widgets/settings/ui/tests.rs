@@ -94,9 +94,11 @@ fn performance_form_projects_applies_and_resets_without_touching_basic_settings(
     let custom_form = PerformanceForm::from(&source);
     assert!(!custom_form.is_default());
 
-    let mut target = FilesPreferences::default();
-    target.show_hidden = true;
-    target.auto_focus_search = false;
+    let mut target = FilesPreferences {
+        show_hidden: true,
+        auto_focus_search: false,
+        ..Default::default()
+    };
     target.sidebar.show_volumes = false;
     target
         .volume_mount_points

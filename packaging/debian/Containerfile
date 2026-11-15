@@ -1,6 +1,6 @@
 ARG BASE_IMAGE=debian:trixie
 FROM ${BASE_IMAGE}
-ARG RUST_TOOLCHAIN=stable
+ARG RUST_TOOLCHAIN=1.100.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl build-essential clang lld pkg-config git python3 \
         libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \

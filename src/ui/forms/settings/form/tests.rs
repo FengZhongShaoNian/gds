@@ -185,8 +185,10 @@ fn common_catalogs_preserve_system_choices_and_uninstalled_fonts(cx: &mut TestAp
     let fixture = fixture(cx);
     cx.update(|cx| {
         let fields = Preferences::fields();
-        let mut value = Preferences::default();
-        value.family = Some("An unavailable custom font".into());
+        let value = Preferences {
+            family: Some("An unavailable custom font".into()),
+            ..Default::default()
+        };
         let fonts = fields
             .iter()
             .find(|field| field.id == "family")
@@ -627,9 +629,11 @@ fn number_validation_checks_exact_integer_bounds_and_localizes_errors(cx: &mut T
 fn disabled_editor_blocks_edits_and_resets_until_enabled(cx: &mut TestAppContext) {
     let fixture = fixture(cx);
     cx.update_window(fixture.window.into(), |_, window, cx| {
-        let mut modified = Preferences::default();
-        modified.enabled = true;
-        modified.count = 4;
+        let modified = Preferences {
+            enabled: true,
+            count: 4,
+            ..Default::default()
+        };
         fixture.editor.update(cx, |editor, cx| {
             editor.set_value(modified, window, cx);
             editor.set_disabled(true, cx);

@@ -1,6 +1,6 @@
-{ callPackage, buildTag ? "unknown" }:
+{ callPackage, rustPlatform, buildTag ? "unknown" }:
 callPackage ../../package.nix {
-  inherit buildTag;
+  inherit buildTag rustPlatform;
   application = "files";
   description = "Native GPUI file manager and file chooser";
   # Nix's Linux sandbox rejects chmod with setuid/setgid bits and mounts /build on

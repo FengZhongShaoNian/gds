@@ -1,11 +1,19 @@
 ARG FEDORA_VERSION=43
 FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION}
+ARG RUST_TOOLCHAIN=1.100.0
 
 RUN dnf --setopt=max_parallel_downloads=20 --setopt=install_weak_deps=False install -y \
-        cargo rust gcc-c++ clang lld pkgconf-pkg-config git python3 \
+        ca-certificates curl-minimal gcc-c++ clang lld pkgconf-pkg-config git python3 \
         wayland-devel libxkbcommon-devel libxkbcommon-x11-devel fontconfig-devel \
         freetype-devel libxcb-devel vulkan-loader-devel \
         rpm-build redhat-rpm-config desktop-file-utils systemd-rpm-macros \
     && dnf clean all
+
+ENV RUSTUP_HOME=/opt/rustup
+ENV CARGO_HOME=/opt/cargo
+ENV PATH=/opt/cargo/bin:$PATH
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh \
+    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain ${RUST_TOOLCHAIN} --no-modify-path \
+    && chmod -R a+rX /opt/rustup /opt/cargo && rm /tmp/rustup-init.sh
 
 WORKDIR /source

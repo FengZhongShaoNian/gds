@@ -20,6 +20,8 @@ struct Args {
 
 /// # Errors
 /// Reports unavailable D-Bus connections, name ownership or signal handling.
+// Standalone headless D-Bus daemon (does not run GPUI or `Supervisor`).
+#[allow(clippy::disallowed_methods)]
 #[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

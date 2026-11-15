@@ -18,8 +18,10 @@ fn older_configuration_retains_terminal_defaults_and_round_trips() {
 
 #[test]
 fn malformed_sizes_and_relative_shell_are_rejected() {
-    let mut prefs = Preferences::default();
-    prefs.font_size = f32::NAN;
+    let mut prefs = Preferences {
+        font_size: f32::NAN,
+        ..Default::default()
+    };
     assert!(prefs.validate().is_err());
     assert!(prefs.clone().normalized().font_size.is_finite());
     prefs.font_size = 14.;

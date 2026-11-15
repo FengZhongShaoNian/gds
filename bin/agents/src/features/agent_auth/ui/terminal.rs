@@ -242,6 +242,8 @@ fn terminal_command(
 
 /// Private helper mode: apply the method's environment only to the configured agent.
 /// The payload stays in memory/environment, never argv or a credentials file.
+// Runs before GPUI startup and exits immediately when invoked in helper mode.
+#[allow(clippy::disallowed_methods)]
 pub(crate) fn run_helper_if_requested() {
     if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(HELPER_FLAG)) {
         return;

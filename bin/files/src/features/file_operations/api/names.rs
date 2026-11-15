@@ -168,7 +168,7 @@ pub fn target_name<'a>(source: &'a Path, chosen: &'a [NamedTarget]) -> &'a OsStr
         .iter()
         .find(|target| target.source == source)
         .map_or_else(
-            || source.file_name().unwrap_or_else(|| source.as_os_str()),
+            || source.file_name().unwrap_or(source.as_os_str()),
             |target| target.name.as_os_str(),
         )
 }

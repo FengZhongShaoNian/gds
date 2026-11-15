@@ -522,7 +522,7 @@ impl Entry {
             name: item.name,
             original_path,
             deleted_at,
-            size: payload_metadata.is_file().then(|| payload_metadata.len()),
+            size: payload_metadata.is_file().then_some(payload_metadata.len()),
             items: None,
             kind: EntryKind::from(payload_metadata.file_type()),
             snapshot: Snapshot {

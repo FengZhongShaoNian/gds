@@ -1,0 +1,21 @@
+# Allow unwrap() and dbg!() in test targets (agents.md §Testing Philosophy).
+allow-unwrap-in-tests = true
+allow-dbg-in-tests = true
+
+# Fold long parameter lists into named structs (agents.md §Module Layout & Exports).
+too-many-arguments-threshold = 7
+
+# Accommodate standard GPUI callback signatures (e.g. Box<dyn Fn(..., &mut Window, &mut App)>) while catching extreme nesting.
+type-complexity-threshold = 600
+
+# Tokio runtime ownership and task spawning boundaries (agents.md §Dependencies & Runtime Boundaries).
+disallowed-methods = [
+    { path = "tokio::spawn", reason = "spawn tasks through task_manager::Scope instead of calling tokio::spawn directly (see agents.md §Dependencies & Runtime Boundaries)" },
+    { path = "tokio::task::spawn", reason = "spawn tasks through task_manager::Scope instead of calling tokio::task::spawn directly (see agents.md §Dependencies & Runtime Boundaries)" },
+    { path = "tokio::task::spawn_local", reason = "spawn tasks through task_manager::Scope instead of calling tokio::task::spawn_local directly (see agents.md §Dependencies & Runtime Boundaries)" },
+    { path = "tokio::runtime::Runtime::new", reason = "GUI applications own a single Tokio runtime in service::task_manager::Supervisor (see agents.md §Dependencies & Runtime Boundaries)" },
+    { path = "tokio::runtime::Builder::new_multi_thread", reason = "GUI applications own a single Tokio runtime in service::task_manager::Supervisor (see agents.md §Dependencies & Runtime Boundaries)" },
+    { path = "tokio::runtime::Builder::new_current_thread", reason = "GUI applications own a single Tokio runtime in service::task_manager::Supervisor (see agents.md §Dependencies & Runtime Boundaries)" },
+    { path = "tokio::runtime::Handle::current", reason = "pass a task_manager::Scope into services instead of looking up a global Tokio runtime handle (see agents.md §Dependencies & Runtime Boundaries)" },
+    { path = "tokio::runtime::Handle::try_current", reason = "pass a task_manager::Scope into services instead of looking up a global Tokio runtime handle (see agents.md §Dependencies & Runtime Boundaries)" },
+]

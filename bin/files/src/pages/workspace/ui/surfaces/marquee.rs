@@ -402,12 +402,12 @@ impl Browser {
                 * slot.grid.columns;
             return MarqueeHits::Paths(
                 (first..last.min(slot.table_rows.len()))
-                    .filter_map(|index| {
+                    .filter(|&index| {
                         slot.grid
                             .tile(index, bounds.origin, scroll_offset)
                             .intersects(&clipped)
-                            .then(|| slot.table_rows[index].path.clone())
                     })
+                    .map(|index| slot.table_rows[index].path.clone())
                     .collect(),
             );
         }

@@ -100,7 +100,9 @@ pub struct Completion {
 
 impl Scope {
     fn node(&self) -> &Node {
-        self.path.last().unwrap()
+        self.path
+            .last()
+            .expect("scope path always contains at least the root node")
     }
 
     pub fn inspection_enabled(&self) -> bool {
@@ -127,9 +129,13 @@ impl Scope {
         });
         if let Some(registry) = registry {
             registry.scopes.retain(|_, scope| scope.strong_count() > 0);
-            registry
-                .scopes
-                .insert(node.inspection.as_ref().unwrap().id, Arc::downgrade(&node));
+            registry.scopes.insert(
+                node.inspection
+                    .as_ref()
+                    .expect("child node carries inspection metadata when registry is active")
+                    .id,
+                Arc::downgrade(&node),
+            );
         }
         path.push(node);
         Owner(Self {
@@ -149,11 +155,15 @@ impl Scope {
         self.node().tasks.close();
     }
 
+    /// # Errors
+    /// Returns [`Closed`] once shutdown has started for this scope or an ancestor.
     #[track_caller]
     pub fn register(&self) -> Result<Completion, Closed> {
         self.register_named("", Execution::Supervisor)
     }
 
+    /// # Errors
+    /// Returns [`Closed`] once shutdown has started for this scope or an ancestor.
     #[track_caller]
     pub fn register_named(
         &self,
@@ -169,7 +179,12 @@ impl Scope {
             registry.tasks.insert(
                 id,
                 inspection::Record {
-                    scope: self.node().inspection.as_ref().unwrap().id,
+                    scope: self
+                        .node()
+                        .inspection
+                        .as_ref()
+                        .expect("scope carries inspection metadata when registry is active")
+                        .id,
                     name: name.to_string(),
                     execution,
                     started: std::time::Instant::now(),
@@ -192,6 +207,9 @@ impl Scope {
 
     /// The future must observe cancellation itself, or deliberately finish its work.
     /// No implicit select/abort: dropping a cleanup future can skip process reaping.
+    ///
+    /// # Errors
+    /// Returns [`Closed`] once shutdown has started for this scope or an ancestor.
     #[track_caller]
     pub fn track<F: Future>(
         &self,
@@ -200,6 +218,8 @@ impl Scope {
         self.track_named("", Execution::Supervisor, work)
     }
 
+    /// # Errors
+    /// Returns [`Closed`] once shutdown has started for this scope or an ancestor.
     #[track_caller]
     pub fn track_named<F: Future>(
         &self,
@@ -325,6 +345,10 @@ impl Scope {
         Ok(runtime.block_on(self.track_named(name, Execution::Supervisor, work)?))
     }
 
+    /// Start a native worker tracked by this scope.
+    ///
+    /// # Errors
+    /// Reports closed admission or thread creation failure.
     #[track_caller]
     pub fn spawn_thread<F>(
         &self,

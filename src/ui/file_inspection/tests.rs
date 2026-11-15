@@ -22,12 +22,8 @@ fn cached_images_are_shared_and_replacing_a_file_requests_a_new_preview(cx: &mut
     let cache = cx.update(|cx| cx.new(|_| Cache::default()));
     cx.update(|cx| {
         cache.update(cx, |cache, cx| {
-            cache
-                .request(source.clone(), Request::Thumbnail, cx)
-                .thumbnail;
-            cache
-                .request(source.clone(), Request::Thumbnail, cx)
-                .thumbnail;
+            let _ = cache.request(source.clone(), Request::Thumbnail, cx);
+            let _ = cache.request(source.clone(), Request::Thumbnail, cx);
         })
     });
     cx.run_until_parked();
@@ -117,9 +113,7 @@ fn paging_keeps_previous_previews_ready(cx: &mut TestAppContext) {
         cx.update(|cx| {
             cache.update(cx, |cache, cx| {
                 for source in page {
-                    cache
-                        .request(source.clone(), Request::Thumbnail, cx)
-                        .thumbnail;
+                    let _ = cache.request(source.clone(), Request::Thumbnail, cx);
                 }
             })
         });

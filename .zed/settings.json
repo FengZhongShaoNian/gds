@@ -4,6 +4,9 @@
       "initialization_options": {
         "cargo": {
           "features": ["files", "agents", "portal", "nixes"]
+        },
+        "check": {
+          "command": "clippy"
         }
       }
     }

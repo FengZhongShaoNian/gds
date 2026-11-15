@@ -470,7 +470,7 @@ fn apply_png_info(facts: &mut ImageFacts, info: &png::Info<'_>, trns: Option<boo
 fn bits_per_channel(color: ExtendedColorType) -> Option<u8> {
     let channels = color.channel_count() as u16;
     let bits = color.bits_per_pixel();
-    (channels > 0 && bits % channels == 0).then_some((bits / channels) as u8)
+    (channels > 0 && bits.is_multiple_of(channels)).then_some((bits / channels) as u8)
 }
 
 fn has_alpha(color: ExtendedColorType) -> bool {
@@ -617,7 +617,7 @@ fn ogg_first_packet(bytes: &[u8]) -> Option<&[u8]> {
     let table = bytes.get(27..table_end)?;
     let body_len: usize = table.iter().map(|&segment| usize::from(segment)).sum();
     let end = table_end.checked_add(body_len)?;
-    Some(bytes.get(table_end..end.min(bytes.len()))?)
+    bytes.get(table_end..end.min(bytes.len()))
 }
 
 fn mp3_facts(bytes: &[u8], size: Option<u64>) -> Option<AudioFacts> {

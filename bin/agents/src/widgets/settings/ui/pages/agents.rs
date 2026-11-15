@@ -580,16 +580,15 @@ impl Agents {
                 // before launching a connection/authentication probe.
                 self.pending_reveal = Some(id.to_owned());
                 self.refresh_registry(false, cx);
-            } else if self.catalog_service.is_some() {
-                if let Some(spec) = self
+            } else if self.catalog_service.is_some()
+                && let Some(spec) = self
                     .registry
                     .catalog
                     .as_ref()
                     .and_then(|catalog| catalog.entries.iter().find(|entry| entry.id == id))
                     .and_then(|entry| entry.spec.clone())
-                {
-                    self.start_check(spec, true, cx);
-                }
+            {
+                self.start_check(spec, true, cx);
             }
             cx.notify();
             return Some(index);

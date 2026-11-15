@@ -819,22 +819,20 @@ impl OpenTab {
                 self.scroll_to_entry(index);
             }
         }
-        if !self.is_loading() {
-            if let Some(paths) = self.pending_reveal.take() {
-                let selected: Vec<_> = paths.into_iter().filter(|path| is_visible(path)).collect();
-                if let Some(path) = selected.first() {
-                    self.cursor = Some(path.clone());
-                    self.anchor = Some(path.clone());
-                    if let Some(index) =
-                        self.table_rows.iter().position(|entry| entry.path == *path)
-                    {
-                        self.cursor_index = Some(index);
-                        self.anchor_index = Some(index);
-                        self.scroll_to_entry(index);
-                    }
+        if !self.is_loading()
+            && let Some(paths) = self.pending_reveal.take()
+        {
+            let selected: Vec<_> = paths.into_iter().filter(|path| is_visible(path)).collect();
+            if let Some(path) = selected.first() {
+                self.cursor = Some(path.clone());
+                self.anchor = Some(path.clone());
+                if let Some(index) = self.table_rows.iter().position(|entry| entry.path == *path) {
+                    self.cursor_index = Some(index);
+                    self.anchor_index = Some(index);
+                    self.scroll_to_entry(index);
                 }
-                self.navigation.view_mut().selected.replace(selected);
             }
+            self.navigation.view_mut().selected.replace(selected);
         }
         if self.navigation.view().selected.is_range() {
             if !self.table_rows.is_empty()
@@ -1770,17 +1768,14 @@ impl Browser {
                 .await
                 .map_err(|error| error.to_string())
                 .and_then(|result| result.map_err(|error| error.to_string()))
-            {
-                if let Err(closed) = this.update(cx, |_, cx| {
+                && let Err(closed) = this.update(cx, |_, cx| {
                     notifications::Report::new(notifications::Level::Error, error.to_string())
                         .replacing::<TerminalNotice>()
                         .show(cx);
                     cx.notify();
-                }) {
-                    tracing::warn!(
-                        "Terminal launch failed after the view closed: {error}; {closed}"
-                    );
-                }
+                })
+            {
+                tracing::warn!("Terminal launch failed after the view closed: {error}; {closed}");
             }
         })
         .detach();
@@ -1950,12 +1945,10 @@ impl Browser {
         if self.pages.is_empty()
             && !self.editing_input_focused(window, cx)
             && !window.has_active_dialog(cx)
+            && let Some(view) = self.remote_view()
+            && view.update(cx, |view, cx| view.command(command, window, cx))
         {
-            if let Some(view) = self.remote_view() {
-                if view.update(cx, |view, cx| view.command(command, window, cx)) {
-                    return;
-                }
-            }
+            return;
         }
         match command {
             Command::FocusLocations
@@ -2085,10 +2078,10 @@ impl Browser {
                 }
             }
             Command::Paste => {
-                if self.file_selection_focused(window, cx) {
-                    if let Some(path) = self.current_path() {
-                        self.paste_files(path, window, cx);
-                    }
+                if self.file_selection_focused(window, cx)
+                    && let Some(path) = self.current_path()
+                {
+                    self.paste_files(path, window, cx);
                 }
             }
             Command::CopyPaths => {

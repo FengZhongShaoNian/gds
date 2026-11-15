@@ -194,10 +194,10 @@ impl Browser {
                     cx.notify();
                     return;
                 }
-                if let Some(request) = this.remote.requests.remove(&event.tab) {
-                    if let Some(slot) = this.tab_slot_mut(event.tab) {
-                        slot.navigation.cancel_request(&request);
-                    }
+                if let Some(request) = this.remote.requests.remove(&event.tab)
+                    && let Some(slot) = this.tab_slot_mut(event.tab)
+                {
+                    slot.navigation.cancel_request(&request);
                 }
                 cx.notify();
             },
@@ -213,17 +213,16 @@ impl Browser {
                     cx.notify();
                     return;
                 }
-                if let Some(request) = this.remote.requests.remove(&event.tab) {
-                    if this
+                if let Some(request) = this.remote.requests.remove(&event.tab)
+                    && this
                         .tab_slot(event.tab)
                         .is_some_and(|slot| slot.navigation.is_current_request(&request))
-                    {
-                        this.start_request(
-                            event.tab,
-                            request.resolve_remote(event.address.clone()),
-                            cx,
-                        );
-                    }
+                {
+                    this.start_request(
+                        event.tab,
+                        request.resolve_remote(event.address.clone()),
+                        cx,
+                    );
                 }
             },
         ));

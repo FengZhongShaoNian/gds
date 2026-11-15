@@ -389,8 +389,8 @@ fn rgba_from_frame(frame: png::OutputInfo, mut pixels: Vec<u8>) -> Result<RgbaIm
         png::ColorType::Rgba => RgbaImage::from_raw(width, height, pixels),
         png::ColorType::Rgb => {
             let mut rgba = Vec::with_capacity(pixel_count);
-            for chunk in pixels.chunks_exact(3) {
-                rgba.extend_from_slice(&[chunk[0], chunk[1], chunk[2], u8::MAX]);
+            for &[r, g, b] in pixels.as_chunks::<3>().0 {
+                rgba.extend_from_slice(&[r, g, b, u8::MAX]);
             }
             RgbaImage::from_raw(width, height, rgba)
         }
@@ -403,8 +403,8 @@ fn rgba_from_frame(frame: png::OutputInfo, mut pixels: Vec<u8>) -> Result<RgbaIm
         }
         png::ColorType::GrayscaleAlpha => {
             let mut rgba = Vec::with_capacity(pixel_count);
-            for chunk in pixels.chunks_exact(2) {
-                rgba.extend_from_slice(&[chunk[0], chunk[0], chunk[0], chunk[1]]);
+            for &[gray, alpha] in pixels.as_chunks::<2>().0 {
+                rgba.extend_from_slice(&[gray, gray, gray, alpha]);
             }
             RgbaImage::from_raw(width, height, rgba)
         }

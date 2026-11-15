@@ -57,110 +57,97 @@ impl<T: Model> Editor<T> {
         let controls = fields
             .iter()
             .enumerate()
-            .map(|(index, field)| {
-                let control = match field.kind {
-                    Kind::Toggle => Control::Toggle,
-                    Kind::Number(number) => {
-                        let value =
-                            field.effective(&value).as_f64().unwrap_or(number.min) * number.scale;
-                        let control = NumberControl::new(value as f32, number.range(), cx);
-                        subscriptions.push(cx.observe_in(
-                            &control.state,
-                            window,
-                            move |this, state, window, cx| {
-                                let value = state.read(cx).value();
-                                let Control::Number(control) = &this.controls[index] else {
-                                    return;
+            .map(|(index, field)| match field.kind {
+                Kind::Toggle => Control::Toggle,
+                Kind::Number(number) => {
+                    let value =
+                        field.effective(&value).as_f64().unwrap_or(number.min) * number.scale;
+                    let control = NumberControl::new(value as f32, number.range(), cx);
+                    subscriptions.push(cx.observe_in(
+                        &control.state,
+                        window,
+                        move |this, state, window, cx| {
+                            let value = state.read(cx).value();
+                            let Control::Number(control) = &this.controls[index] else {
+                                return;
+                            };
+                            if !control.notification_is_programmatic(value) {
+                                this.number_changed(index, value, window, cx);
+                            }
+                        },
+                    ));
+                    Control::Number(control)
+                }
+                Kind::Text => {
+                    let value = (field.get)(&value);
+                    let state = cx
+                        .new(|cx| InputState::new(window, cx).default_value(editable_text(&value)));
+                    subscriptions.push(cx.subscribe_in(
+                        &state,
+                        window,
+                        move |this, input, event: &InputEvent, window, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                let text = input.read(cx).value().to_string();
+                                let value = if this.fields[index].nullable && text.is_empty() {
+                                    Value::Null
+                                } else {
+                                    Value::String(text)
                                 };
-                                if !control.notification_is_programmatic(value) {
-                                    this.number_changed(index, value, window, cx);
-                                }
-                            },
-                        ));
-                        Control::Number(control)
-                    }
-                    Kind::Text => {
-                        let value = (field.get)(&value);
-                        let state = cx.new(|cx| {
-                            InputState::new(window, cx).default_value(editable_text(&value))
-                        });
-                        subscriptions.push(cx.subscribe_in(
-                            &state,
-                            window,
-                            move |this, input, event: &InputEvent, window, cx| {
-                                if matches!(event, InputEvent::Change) {
-                                    let text = input.read(cx).value().to_string();
-                                    let value = if this.fields[index].nullable && text.is_empty() {
-                                        Value::Null
-                                    } else {
-                                        Value::String(text)
-                                    };
-                                    this.change(index, value, window, cx);
-                                }
-                            },
-                        ));
-                        Control::Text(state)
-                    }
-                    Kind::StringList => {
-                        let value = (field.get)(&value);
-                        let state = cx.new(|cx| {
-                            TextareaState::new(window, cx)
-                                .auto_grow(2, 5)
-                                .default_value(editable_text(&value))
-                        });
-                        subscriptions.push(cx.subscribe_in(
-                            &state,
-                            window,
-                            move |this, input, event: &InputEvent, window, cx| {
-                                if matches!(event, InputEvent::Change) {
-                                    let value = Value::Array(
-                                        input
-                                            .read(cx)
-                                            .value()
-                                            .split('\n')
-                                            .filter(|line| !line.is_empty())
-                                            .map(|line| Value::String(line.to_owned()))
-                                            .collect(),
-                                    );
-                                    this.change(index, value, window, cx);
-                                }
-                            },
-                        ));
-                        Control::StringList(state)
-                    }
-                    Kind::Font | Kind::Language | Kind::Choice(_) => {
-                        let choices = field.choices(&value, cx);
-                        let current = (field.get)(&value);
-                        let selected = choices
-                            .iter()
-                            .position(|choice| choice.value == current)
-                            .map(IndexPath::new);
-                        let state = cx.new(|cx| {
-                            SelectState::new(
-                                SearchableVec::new(choices.clone()),
-                                selected,
-                                window,
-                                cx,
-                            )
+                                this.change(index, value, window, cx);
+                            }
+                        },
+                    ));
+                    Control::Text(state)
+                }
+                Kind::StringList => {
+                    let value = (field.get)(&value);
+                    let state = cx.new(|cx| {
+                        TextareaState::new(window, cx)
+                            .auto_grow(2, 5)
+                            .default_value(editable_text(&value))
+                    });
+                    subscriptions.push(cx.subscribe_in(
+                        &state,
+                        window,
+                        move |this, input, event: &InputEvent, window, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                let value = Value::Array(
+                                    input
+                                        .read(cx)
+                                        .value()
+                                        .split('\n')
+                                        .filter(|line| !line.is_empty())
+                                        .map(|line| Value::String(line.to_owned()))
+                                        .collect(),
+                                );
+                                this.change(index, value, window, cx);
+                            }
+                        },
+                    ));
+                    Control::StringList(state)
+                }
+                Kind::Font | Kind::Language | Kind::Choice(_) => {
+                    let choices = field.choices(&value, cx);
+                    let current = (field.get)(&value);
+                    let selected = choices
+                        .iter()
+                        .position(|choice| choice.value == current)
+                        .map(IndexPath::new);
+                    let state = cx.new(|cx| {
+                        SelectState::new(SearchableVec::new(choices.clone()), selected, window, cx)
                             .searchable(true)
-                        });
-                        subscriptions.push(cx.subscribe_in(
-                            &state,
-                            window,
-                            move |this,
-                                  _,
-                                  event: &SelectEvent<SearchableVec<Choice>>,
-                                  window,
-                                  cx| {
-                                if let SelectEvent::Confirm(Some(value)) = event {
-                                    this.change(index, value.clone(), window, cx);
-                                }
-                            },
-                        ));
-                        Control::Choice { state, choices }
-                    }
-                };
-                control
+                    });
+                    subscriptions.push(cx.subscribe_in(
+                        &state,
+                        window,
+                        move |this, _, event: &SelectEvent<SearchableVec<Choice>>, window, cx| {
+                            if let SelectEvent::Confirm(Some(value)) = event {
+                                this.change(index, value.clone(), window, cx);
+                            }
+                        },
+                    ));
+                    Control::Choice { state, choices }
+                }
             })
             .collect();
         Self {

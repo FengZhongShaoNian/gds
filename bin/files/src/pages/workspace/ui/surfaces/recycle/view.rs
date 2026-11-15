@@ -29,7 +29,7 @@ use super::{
 };
 use crate::pages::workspace::ui::Browser;
 use crate::pages::workspace::ui::file_actions::{
-    Confirmation as SharedConfirmation, NAME_PREVIEW_LIMIT,
+    Confirmation as SharedConfirmation, ConfirmationTarget, NAME_PREVIEW_LIMIT,
 };
 
 const CONTENT_PADDING: f32 = 24.;
@@ -473,9 +473,11 @@ impl Confirmation {
         let count = entries.len();
         let confirmation = SharedConfirmation::new(
             browser,
-            names,
-            count,
-            intent.icon(),
+            ConfirmationTarget {
+                names,
+                count,
+                icon: intent.icon(),
+            },
             move |count, cx| i18n::count(intent.title_id(), count, cx),
             move |count, cx| intent.message(count, cx),
             move |_, cx| i18n::text(intent.ok_id(), cx),

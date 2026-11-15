@@ -1,6 +1,7 @@
 use super::{byte_range, utf8_offset};
 
 #[test]
+#[allow(clippy::reversed_empty_ranges)]
 fn utf16_preedit_ranges_never_split_utf8_or_surrogate_pairs() {
     let text = "中😀e\u{301}";
     assert_eq!(&text[byte_range(text, 0..1)], "中");

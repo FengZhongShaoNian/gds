@@ -102,10 +102,9 @@ fn inherited_descriptors() -> io::Result<Vec<RawFd>> {
             .file_name()
             .to_str()
             .and_then(|name| name.parse::<RawFd>().ok())
+            && fd > 2
         {
-            if fd > 2 {
-                descriptors.push(fd);
-            }
+            descriptors.push(fd);
         }
     }
     Ok(descriptors)

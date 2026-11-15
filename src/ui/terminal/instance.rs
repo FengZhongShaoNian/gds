@@ -59,16 +59,16 @@ impl Terminal {
         cx.spawn_in(window, async move |terminal, cx| {
             let session = ready.await;
             let _ = terminal.update_in(cx, |this, window, cx| {
-                if !this.service.is_closing() {
-                    if let Some(session) = session {
-                        let view =
-                            cx.new(|cx| View::new(session, this.preferences.clone(), window, cx));
-                        this.updates = Some(cx.observe(&view, |this, _, cx| this.changed(cx)));
-                        if this.focus.is_focused(window) {
-                            view.read(cx).focus_handle().focus(window, cx);
-                        }
-                        this.view = Some(view);
+                if !this.service.is_closing()
+                    && let Some(session) = session
+                {
+                    let view =
+                        cx.new(|cx| View::new(session, this.preferences.clone(), window, cx));
+                    this.updates = Some(cx.observe(&view, |this, _, cx| this.changed(cx)));
+                    if this.focus.is_focused(window) {
+                        view.read(cx).focus_handle().focus(window, cx);
                     }
+                    this.view = Some(view);
                 }
                 this.changed(cx);
             });

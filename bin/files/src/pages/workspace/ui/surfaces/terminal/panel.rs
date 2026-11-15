@@ -113,7 +113,7 @@ impl Panel {
             &terminal,
             window,
             move |panel, terminal, _: &terminal::Event, window, cx| {
-                panel.on_terminal_event(id, &terminal, window, cx);
+                panel.on_terminal_event(id, terminal, window, cx);
             },
         );
         self.entries.push(Entry {

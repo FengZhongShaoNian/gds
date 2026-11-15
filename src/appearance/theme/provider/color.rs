@@ -18,7 +18,9 @@ pub(super) fn hex_color(value: &str, field: &str, qt_argb: bool) -> Result<Hsla,
     let number = u32::from_str_radix(hex, 16)
         .map_err(|_| Error::invalid(field, format!("invalid hexadecimal color {value:?}")))?;
     let color = match hex.len() {
-        3 => ((number >> 8) * 17) << 16 | (((number >> 4) & 15) * 17) << 8 | (number & 15) * 17,
+        3 => {
+            (((number >> 8) * 17) << 16) | ((((number >> 4) & 15) * 17) << 8) | ((number & 15) * 17)
+        }
         6 => number,
         8 if qt_argb => number & 0x00ff_ffff,
         _ => {

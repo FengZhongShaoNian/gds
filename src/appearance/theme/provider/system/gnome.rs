@@ -285,22 +285,20 @@ fn resolve(
     palette.primary_foreground = primary_fg;
     palette.selection = primary;
     palette.selection_foreground = primary_fg;
-    palette.muted_foreground = overridden
-        .contains("insensitive_fg_color")
-        .then(|| palette.content.blend(colors["insensitive_fg_color"]))
-        .unwrap_or_else(|| {
-            palette
-                .content
-                .blend(palette.foreground.opacity(MUTED_OPACITY))
-        });
-    palette.border = overridden
-        .contains("borders")
-        .then(|| palette.content.blend(colors["borders"]))
-        .unwrap_or_else(|| {
-            palette
-                .content
-                .blend(palette.foreground.opacity(BORDER_OPACITY))
-        });
+    palette.muted_foreground = if overridden.contains("insensitive_fg_color") {
+        palette.content.blend(colors["insensitive_fg_color"])
+    } else {
+        palette
+            .content
+            .blend(palette.foreground.opacity(MUTED_OPACITY))
+    };
+    palette.border = if overridden.contains("borders") {
+        palette.content.blend(colors["borders"])
+    } else {
+        palette
+            .content
+            .blend(palette.foreground.opacity(BORDER_OPACITY))
+    };
     palette.outline = palette.border;
     match (
         overridden.contains("tooltip_bg_color"),

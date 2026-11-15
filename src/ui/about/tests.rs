@@ -91,7 +91,7 @@ fn escape_returns_from_license_and_the_close_shortcut_dismisses_the_dialog(
     cx.update_window(window.into(), |_, window, cx| {
         let windows = cx.windows().len();
         window.render_frame(cx);
-        let background: gpui_kit::Background = cx.theme().tokens.background.clone().into();
+        let background: gpui_kit::Background = cx.theme().tokens.background.into();
         assert_eq!(cx.theme().background.a, 1.0);
         assert!(
             window
@@ -129,7 +129,7 @@ fn escape_returns_from_license_and_the_close_shortcut_dismisses_the_dialog(
                 .expect("switch GDS appearance");
             window.render_frame(cx);
             let surface = window.find("surface").bounds();
-            let background: gpui_kit::Background = cx.theme().tokens.background.clone().into();
+            let background: gpui_kit::Background = cx.theme().tokens.background.into();
             let scale = window.scale_factor();
             assert_eq!(cx.theme().background.a, 1.0);
             assert!(

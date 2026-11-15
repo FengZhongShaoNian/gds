@@ -10,6 +10,8 @@ pub struct Supervisor {
 impl Supervisor {
     /// # Errors
     /// Reports failure to create the application I/O runtime.
+    // Supervisor owns the dedicated Tokio runtime for GUI applications.
+    #[allow(clippy::disallowed_methods)]
     pub fn new(inspect: bool) -> std::io::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)

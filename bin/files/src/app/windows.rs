@@ -158,13 +158,13 @@ impl Windows {
         } else {
             self.windows
                 .retain(|(_, browser)| browser.upgrade().is_some());
-            self.windows.push((window.into(), browser.downgrade()));
+            self.windows.push((window, browser.downgrade()));
             cx.subscribe(&browser, |this, _, request: &NewWindowRequested, cx| {
                 this.request(request.0.clone(), None, cx);
             })
             .detach();
         }
-        Ok((window.into(), browser))
+        Ok((window, browser))
     }
 
     fn request(&mut self, start: PathBuf, command: Option<DesktopCommand>, cx: &mut Context<Self>) {
@@ -219,11 +219,11 @@ impl Windows {
                     browser.upgrade().map(|browser| (*window, browser))
                 })
             });
-        if !matches!(&command.request, Request::NewWindow { .. }) {
-            if let Some((window, browser)) = target {
-                Self::apply(window, &browser, command, cx);
-                return;
-            }
+        if !matches!(&command.request, Request::NewWindow { .. })
+            && let Some((window, browser)) = target
+        {
+            Self::apply(window, &browser, command, cx);
+            return;
         }
         let start = match &command.request {
             Request::NewWindow { directory } => Some(directory.as_path()),

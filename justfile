@@ -97,6 +97,14 @@ uninstall-dev app="all":
 check:
     {{ develop }} --command cargo check --workspace --features files,agents,portal,nixes,gpui-kit/test-support --all-targets
 
+# 检查代码格式与全部 Clippy 规范门禁。
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    {{ develop }} --command cargo fmt --all --check
+    {{ develop }} --command cargo clippy --workspace --features gui-tests,files-e2e,portal,nixes --lib --bins -- -D clippy::disallowed_methods -D warnings
+    {{ develop }} --command cargo clippy --workspace --features gui-tests,files-e2e,portal,nixes --all-targets -- -D warnings
+
 # 运行测试，可传测试名称等 Cargo 参数。
 test *args:
     {{ develop }} --command cargo test --workspace --features files,agents,portal,nixes,gpui-kit/test-support "$@"

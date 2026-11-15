@@ -283,7 +283,7 @@ impl Browser {
                 if let Some(slot) = self.tab_slot_mut(origin_tab) {
                     slot.pending_selection = Some(destination.clone());
                 }
-                self.clear_completed_selection(&[source.clone()]);
+                self.clear_completed_selection(std::slice::from_ref(&source));
                 self.refresh_after_file_operation(&[source, destination], cx);
                 notifications::Report::new(notifications::Level::Success, summary)
             }

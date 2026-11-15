@@ -130,12 +130,13 @@ impl Workspace {
         let Some(group) = self.terminal_group() else {
             return;
         };
-        if !self.terminals.workspaces.contains_key(&group) {
+        let cwd = group.cwd.clone();
+        self.terminals.workspaces.entry(group).or_insert_with(|| {
             let preferences = crate::shared::config::terminal::current(cx);
             let panel = cx.new(|cx| {
                 let mut panel = Panel::new(cx);
                 panel.set_preferences(preferences, cx);
-                panel.set_cwd(Some(group.cwd.clone()), cx);
+                panel.set_cwd(Some(cwd), cx);
                 panel
             });
             let changes = cx.observe(&panel, |_, _, cx| cx.notify());
@@ -145,16 +146,13 @@ impl Workspace {
                 split
             });
             let split_changes = cx.observe(&split, |_, _, cx| cx.notify());
-            self.terminals.workspaces.insert(
-                group,
-                WorkspaceTerminal {
-                    panel,
-                    split,
-                    _changes: changes,
-                    _split_changes: split_changes,
-                },
-            );
-        }
+            WorkspaceTerminal {
+                panel,
+                split,
+                _changes: changes,
+                _split_changes: split_changes,
+            }
+        });
         if let Some(panel) = self.terminal_panel()
             && panel.read(cx).needs_initial_reveal()
         {

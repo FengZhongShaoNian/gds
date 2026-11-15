@@ -193,12 +193,9 @@ fn cached(uri: &SharedString, cx: &mut App) -> Option<Artwork> {
     let task_key = key.clone();
     let task = cx.spawn(async move |cx| {
         let (loader, initial) = initial.await;
-        let initial = match initial {
-            Ok(initial) => initial,
-            Err(_) => {
-                cx.update(|cx| finish(&task_key, None, Some(RETRY_AFTER), cx));
-                return;
-            }
+        let Ok(initial) = initial else {
+            cx.update(|cx| finish(&task_key, None, Some(RETRY_AFTER), cx));
+            return;
         };
         if let Some(ready) = &initial {
             if ready.refresh_after != Some(Duration::ZERO) {

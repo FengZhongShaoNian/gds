@@ -271,7 +271,7 @@ impl Element for Grid {
         cx: &mut App,
     ) -> Painted {
         let palette = Palette::new(cx);
-        let scale = f32::from(window.scale_factor());
+        let scale = window.scale_factor();
         self.view.update(cx, |view, cx| {
             if !view.fonts.as_ref().is_some_and(|fonts| {
                 fonts.matches(
@@ -296,15 +296,14 @@ impl Element for Grid {
                     view.geometry.rows,
                     view.geometry.cell,
                 ) != (geometry.columns, geometry.rows, geometry.cell)
-            {
-                if let Err(error) = view.session.resize_with_pixels(
+                && let Err(error) = view.session.resize_with_pixels(
                     geometry.columns as u16,
                     geometry.rows as u16,
                     (f32::from(fonts.cell.width) * scale).round() as u16,
                     (f32::from(fonts.cell.height) * scale).round() as u16,
-                ) {
-                    view.error = Some(error.to_string());
-                }
+                )
+            {
+                view.error = Some(error.to_string());
             }
             view.geometry = geometry;
             if let Some(snapshot) = view.session.try_with_term(|term| {

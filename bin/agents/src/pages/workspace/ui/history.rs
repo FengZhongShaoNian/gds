@@ -89,13 +89,12 @@ impl Workspace {
                             .ok()
                     });
                     let _ = parent.update(cx, |_, window, cx| {
-                        if let Some(host) = host {
-                            if let Err(error) = host
+                        if let Some(host) = host
+                            && let Err(error) = host
                                 .update(cx, |host, cx| host.show_workspace_for(server, window, cx))
-                            {
-                                tracing::warn!(%error, "cannot return to the history workspace");
-                                return;
-                            }
+                        {
+                            tracing::warn!(%error, "cannot return to the history workspace");
+                            return;
                         }
                         let _ = owner.update(cx, |this, cx| {
                             this.adopt_agent_session(snapshot, window, cx);

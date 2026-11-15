@@ -156,11 +156,15 @@ struct Request {
 
 pub(in crate::pages::workspace) const NAME_PREVIEW_LIMIT: usize = 5;
 
+pub(in crate::pages::workspace) struct ConfirmationTarget {
+    pub names: Vec<SharedString>,
+    pub count: usize,
+    pub icon: IconName,
+}
+
 pub(in crate::pages::workspace) struct Confirmation {
     browser: WeakEntity<Browser>,
-    names: Vec<SharedString>,
-    count: usize,
-    icon: IconName,
+    target: ConfirmationTarget,
     title: Box<dyn Fn(usize, &App) -> SharedString>,
     description: Box<dyn Fn(usize, &App) -> SharedString>,
     primary_label: Box<dyn Fn(usize, &App) -> SharedString>,
@@ -171,9 +175,7 @@ pub(in crate::pages::workspace) struct Confirmation {
 impl Confirmation {
     pub(in crate::pages::workspace) fn new(
         browser: WeakEntity<Browser>,
-        names: Vec<SharedString>,
-        count: usize,
-        icon: IconName,
+        target: ConfirmationTarget,
         title: impl Fn(usize, &App) -> SharedString + 'static,
         description: impl Fn(usize, &App) -> SharedString + 'static,
         primary_label: impl Fn(usize, &App) -> SharedString + 'static,
@@ -182,9 +184,7 @@ impl Confirmation {
     ) -> Rc<Self> {
         Rc::new(Self {
             browser,
-            names,
-            count,
-            icon,
+            target,
             title: Box::new(title),
             description: Box::new(description),
             primary_label: Box::new(primary_label),
@@ -212,9 +212,11 @@ impl Confirmation {
         let origin_tab = request.origin_tab;
         Self::new(
             browser,
-            names,
-            count,
-            IconName::Trash,
+            ConfirmationTarget {
+                names,
+                count,
+                icon: IconName::Trash,
+            },
             |count, cx| i18n::count("delete-confirm-title", count, cx),
             |_, cx| i18n::text("delete-confirm-message", cx),
             |count, cx| i18n::count("delete-selected", count, cx),
@@ -250,11 +252,12 @@ impl Confirmation {
         move |dialog, _, cx| {
             let on_confirm = Self::confirm_handler(this.clone());
             let on_close = Self::close_handler(this.clone());
-            let names = this.names.iter().cloned().map(Self::name_row);
-            let remaining = this.count.saturating_sub(NAME_PREVIEW_LIMIT);
+            let names = this.target.names.iter().cloned().map(Self::name_row);
+            let count = this.target.count;
+            let remaining = count.saturating_sub(NAME_PREVIEW_LIMIT);
             let footer = el! { .DialogActions::default {
-                primary_label: $((this.primary_label)(this.count, cx));
-                primary_icon: $(this.icon);
+                primary_label: $((this.primary_label)(count, cx));
+                primary_icon: $(this.target.icon);
                 cancel_label: $(i18n::text("operation-cancel", cx));
                 danger;
             } };
@@ -262,9 +265,9 @@ impl Confirmation {
                 dialog {
                     confirm; width: CONFIRMATION_WIDTH.px;
                     bg: $(cx.theme().popover); text_color: $(cx.theme().popover_foreground);
-                    title: $((this.title)(this.count, cx));
-                    description: $((this.description)(this.count, cx));
-                    icon: $(this.icon).Icon::new;
+                    title: $((this.title)(count, cx));
+                    description: $((this.description)(count, cx));
+                    icon: $(this.target.icon).Icon::new;
                     footer: footer;
                     on_ok: on_confirm;
                     on_close: on_close;

@@ -48,30 +48,30 @@ async fn parent_symlink_replacement(file_exists: bool) {
     let directory = tempfile::tempdir().expect("managed directory sources");
     let first = directory.path().join("first");
     let second = directory.path().join("second");
-    fs::create_dir(&first).unwrap();
-    fs::create_dir(&second).unwrap();
+    fs::create_dir(&first).expect("create first target dir");
+    fs::create_dir(&second).expect("create second target dir");
     if file_exists {
         for target in [&first, &second] {
-            fs::write(target.join("palette.json"), "initial").unwrap();
+            fs::write(target.join("palette.json"), "initial").expect("seed initial palette");
         }
     }
     let managed = directory.path().join("managed");
-    std::os::unix::fs::symlink(&first, &managed).unwrap();
+    std::os::unix::fs::symlink(&first, &managed).expect("link managed dir to first");
     let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
     let mut sources = Sources::new(sender);
     sources
         .set_paths(vec![managed.join("palette.json")])
-        .unwrap();
+        .expect("watch managed palette");
 
     let replacement = directory.path().join("replacement");
-    std::os::unix::fs::symlink(&second, &replacement).unwrap();
-    fs::rename(&replacement, &managed).unwrap();
+    std::os::unix::fs::symlink(&second, &replacement).expect("link replacement dir to second");
+    fs::rename(&replacement, &managed).expect("replace managed symlink");
     changed(&mut receiver).await;
     sources
         .refresh()
         .expect("follow replacement parent symlink");
     drain_until_quiet(&mut receiver).await;
-    fs::write(second.join("palette.json"), "updated").unwrap();
+    fs::write(second.join("palette.json"), "updated").expect("write updated palette");
     changed(&mut receiver).await;
 }
 

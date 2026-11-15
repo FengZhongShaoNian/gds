@@ -679,7 +679,7 @@ impl LinkTarget {
                 let kind = EntryKind::from(metadata.file_type());
                 let (content, content_probed) = match kind {
                     EntryKind::File => {
-                        let name = target_name.as_deref().unwrap_or_else(|| path.as_os_str());
+                        let name = target_name.as_deref().unwrap_or(path.as_os_str());
                         if sniff_header {
                             (ContentType::detect(name, path), true)
                         } else {

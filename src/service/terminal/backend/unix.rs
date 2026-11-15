@@ -117,10 +117,10 @@ impl Backend {
             shared.state.fail(error);
         }
         // Preserve final output before publishing the final status/closing updates.
-        if let Err(error) = self.read_output(&shared, &mut parser, FINAL_DRAIN_BUDGET) {
-            if error.kind() != io::ErrorKind::WouldBlock {
-                shared.state.fail(error);
-            }
+        if let Err(error) = self.read_output(&shared, &mut parser, FINAL_DRAIN_BUDGET)
+            && error.kind() != io::ErrorKind::WouldBlock
+        {
+            shared.state.fail(error);
         }
         parser.stop_sync(&mut *shared.term.lock());
         {
@@ -203,12 +203,12 @@ impl Backend {
                 Self::answer_color_queries(shared);
                 shared.state.notify();
             }
-            if let Some(child) = self.child.as_mut() {
-                if let Some(status) = child.try_wait()? {
-                    self.reaped = true;
-                    self.child.take();
-                    return Ok(Some(status));
-                }
+            if let Some(child) = self.child.as_mut()
+                && let Some(status) = child.try_wait()?
+            {
+                self.reaped = true;
+                self.child.take();
+                return Ok(Some(status));
             }
             let wants_write = pending.is_some() || {
                 let control = lock(&shared.state.control);
@@ -421,10 +421,10 @@ impl Backend {
                 let mut fields = fields.split_whitespace();
                 let group = fields.nth(2).and_then(|value| value.parse::<i32>().ok());
                 let session = fields.next().and_then(|value| value.parse::<i32>().ok());
-                if session == Some(pid) {
-                    if let Some(group) = group.filter(|group| *group > 0) {
-                        groups.insert(group);
-                    }
+                if session == Some(pid)
+                    && let Some(group) = group.filter(|group| *group > 0)
+                {
+                    groups.insert(group);
                 }
             }
         }

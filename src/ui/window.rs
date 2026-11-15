@@ -179,7 +179,7 @@ impl RenderOnce for WindowControls {
                 )
             };
             controls = controls.child(
-                control("window-maximize", icon, hint.into(), WindowControlArea::Max).on_click(
+                control("window-maximize", icon, hint, WindowControlArea::Max).on_click(
                     move |event, window, cx| {
                         cx.stop_propagation();
                         if let Some(handler) = &self.maximize {

@@ -83,22 +83,21 @@ impl Contents {
         let mut contents = Self::default();
         if let Some(data) = bytes("text/uri-list") {
             contents.paths = Self::file_paths(std::str::from_utf8(data)?);
-        } else if let Some(data) = bytes("x-special/gnome-copied-files") {
-            if let Some((_, uris)) = std::str::from_utf8(data)?.split_once('\n') {
-                contents.paths = Self::file_paths(uris);
-            }
+        } else if let Some(data) = bytes("x-special/gnome-copied-files")
+            && let Some((_, uris)) = std::str::from_utf8(data)?.split_once('\n')
+        {
+            contents.paths = Self::file_paths(uris);
         }
         if let Some(data) = TEXT_TYPES.into_iter().find_map(bytes) {
             contents.text = Some(std::str::from_utf8(data)?.replace("\r\n", "\n"));
         }
-        if contents.paths.is_empty() {
-            if let Some((format, data)) = ImageFormat::iter()
+        if contents.paths.is_empty()
+            && let Some((format, data)) = ImageFormat::iter()
                 .find_map(|format| bytes(format.mime_type()).map(|data| (format, data)))
-            {
-                contents
-                    .images
-                    .push(Image::from_bytes(format, data.to_vec()));
-            }
+        {
+            contents
+                .images
+                .push(Image::from_bytes(format, data.to_vec()));
         }
         Ok(contents)
     }

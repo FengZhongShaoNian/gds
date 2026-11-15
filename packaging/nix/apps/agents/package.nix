@@ -1,6 +1,6 @@
-{ callPackage, cmake, alsa-lib, procps, buildTag ? "unknown" }:
+{ callPackage, rustPlatform, cmake, alsa-lib, procps, buildTag ? "unknown" }:
 callPackage ../../package.nix {
-  inherit buildTag;
+  inherit buildTag rustPlatform;
   application = "agents";
   description = "Native GPUI workspace for Bas agents and conversations";
   extraNativeBuildInputs = [ cmake ];

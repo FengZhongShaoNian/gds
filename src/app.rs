@@ -34,7 +34,7 @@ impl<'cx> Context for &'cx App {
         Self: 'a;
 
     fn reborrow(&mut self) -> &'cx App {
-        *self
+        self
     }
 }
 

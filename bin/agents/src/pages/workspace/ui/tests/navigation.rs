@@ -214,13 +214,12 @@ fn sidebar_draft_title_double_click_renames_offline_and_preserves_discard(cx: &m
     .expect("edit local draft offline");
     cx.update_window(fixture.window.into(), |_, window, cx| {
         assert_eq!(fixture.view.read(cx).draft_title(), "Local draft");
-        for target in ["draft-thread-agent-0"] {
-            window.double_click(target, cx);
-            assert!(
-                fixture.view.read(cx).renaming.edit.is_none(),
-                "target {target}"
-            );
-        }
+        let target = "draft-thread-agent-0";
+        window.double_click(target, cx);
+        assert!(
+            fixture.view.read(cx).renaming.edit.is_none(),
+            "target {target}"
+        );
         let row = window.find("draft-thread-title-0").bounds();
         let text = window.find("draft-thread-title-text-0").bounds();
         window.click_with_options(

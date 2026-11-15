@@ -65,9 +65,9 @@ pub(in crate::pages::workspace) fn duration(duration: Duration) -> String {
 
 /// Sample rate in kHz when it divides cleanly, otherwise Hz.
 pub(in crate::pages::workspace) fn sample_rate(hertz: u32) -> String {
-    if hertz % 1000 == 0 {
+    if hertz.is_multiple_of(1000) {
         format!("{} kHz", hertz / 1000)
-    } else if hertz % 100 == 0 {
+    } else if hertz.is_multiple_of(100) {
         format!("{:.1} kHz", f64::from(hertz) / 1000.)
     } else {
         format!("{:.2} kHz", f64::from(hertz) / 1000.)

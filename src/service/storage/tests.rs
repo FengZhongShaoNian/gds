@@ -386,12 +386,11 @@ async fn rejects_dangling_and_non_directory_ancestor_symlinks() {
     let missing = root.path().join("missing");
     let dangling = root.path().join("dangling");
     symlink(&missing, &dangling).expect("create dangling ancestor symlink");
-    let dangling_err = match options(INITIAL)
+    let Err(dangling_err) = options(INITIAL)
         .open(&scope, dangling.join("app/state.sqlite"))
         .await
-    {
-        Ok(_) => panic!("dangling ancestor symlink must fail"),
-        Err(error) => error,
+    else {
+        panic!("dangling ancestor symlink must fail");
     };
     assert!(matches!(
         dangling_err,
@@ -408,9 +407,8 @@ async fn rejects_dangling_and_non_directory_ancestor_symlinks() {
         file_link.join("app/state.sqlite"),
         file_link.join("sub/app/state.sqlite"),
     ] {
-        let err = match options(INITIAL).open(&scope, candidate).await {
-            Ok(_) => panic!("non-directory ancestor symlink must fail"),
-            Err(error) => error,
+        let Err(err) = options(INITIAL).open(&scope, candidate).await else {
+            panic!("non-directory ancestor symlink must fail");
         };
         assert!(matches!(
             err,
@@ -437,12 +435,11 @@ async fn rejects_symlinked_leaf_directory_database_sidecars_and_lock() {
 
     let linked_dir = root.path().join("linked_dir");
     symlink(&real_dir, &linked_dir).expect("symlink leaf dir");
-    let dir_err = match options(INITIAL)
+    let Err(dir_err) = options(INITIAL)
         .open(&scope, linked_dir.join("state.sqlite"))
         .await
-    {
-        Ok(_) => panic!("symlinked leaf parent directory must fail"),
-        Err(error) => error,
+    else {
+        panic!("symlinked leaf parent directory must fail");
     };
     assert!(matches!(
         dir_err,
@@ -456,9 +453,8 @@ async fn rejects_symlinked_leaf_directory_database_sidecars_and_lock() {
         .expect("chmod target db");
     let linked_db = real_dir.join("leaf.sqlite");
     symlink(&target_db, &linked_db).expect("symlink db file");
-    let db_err = match options(INITIAL).open(&scope, &linked_db).await {
-        Ok(_) => panic!("symlinked db file must fail"),
-        Err(error) => error,
+    let Err(db_err) = options(INITIAL).open(&scope, &linked_db).await else {
+        panic!("symlinked db file must fail");
     };
     assert!(matches!(
         db_err,
@@ -469,9 +465,8 @@ async fn rejects_symlinked_leaf_directory_database_sidecars_and_lock() {
     let missing_db = root.path().join("missing.sqlite");
     let dangling_db = real_dir.join("dangling.sqlite");
     symlink(&missing_db, &dangling_db).expect("create dangling db symlink");
-    let dangling_db_err = match options(INITIAL).open(&scope, &dangling_db).await {
-        Ok(_) => panic!("dangling db symlink must fail"),
-        Err(error) => error,
+    let Err(dangling_db_err) = options(INITIAL).open(&scope, &dangling_db).await else {
+        panic!("dangling db symlink must fail");
     };
     assert!(matches!(
         dangling_db_err,
@@ -490,9 +485,8 @@ async fn rejects_symlinked_leaf_directory_database_sidecars_and_lock() {
             .expect("chmod sidecar target");
         symlink(&sidecar_target, &sidecar_path).expect("symlink sidecar");
 
-        let sidecar_err = match options(INITIAL).open(&scope, &db_path).await {
-            Ok(_) => panic!("symlinked {suffix} sidecar must fail"),
-            Err(error) => error,
+        let Err(sidecar_err) = options(INITIAL).open(&scope, &db_path).await else {
+            panic!("symlinked {suffix} sidecar must fail");
         };
         assert!(matches!(
             sidecar_err,
@@ -507,9 +501,8 @@ async fn rejects_symlinked_leaf_directory_database_sidecars_and_lock() {
         .expect("chmod lock target");
     let locked_db = real_dir.join("locked.sqlite");
     symlink(&lock_target, real_dir.join("locked.sqlite.lock")).expect("symlink valid lock");
-    let valid_lock_err = match options(INITIAL).open(&scope, &locked_db).await {
-        Ok(_) => panic!("symlinked lock file must fail"),
-        Err(error) => error,
+    let Err(valid_lock_err) = options(INITIAL).open(&scope, &locked_db).await else {
+        panic!("symlinked lock file must fail");
     };
     assert!(matches!(
         valid_lock_err,
@@ -524,9 +517,8 @@ async fn rejects_symlinked_leaf_directory_database_sidecars_and_lock() {
     let dangling_locked_db = real_dir.join("dangling_locked.sqlite");
     symlink(&missing_lock, real_dir.join("dangling_locked.sqlite.lock"))
         .expect("symlink dangling lock");
-    let dangling_lock_err = match options(INITIAL).open(&scope, &dangling_locked_db).await {
-        Ok(_) => panic!("dangling lock symlink must fail"),
-        Err(error) => error,
+    let Err(dangling_lock_err) = options(INITIAL).open(&scope, &dangling_locked_db).await else {
+        panic!("dangling lock symlink must fail");
     };
     assert!(matches!(
         dangling_lock_err,
@@ -566,9 +558,8 @@ async fn lock_and_open_cancel_promptly_when_scope_is_cancelled() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     let started = Instant::now();
     lock_scope.shutdown().await;
-    let lock_err = match lock_task.await.expect("join lock task") {
-        Ok(_) => panic!("cancelled paths::lock must fail"),
-        Err(error) => error,
+    let Err(lock_err) = lock_task.await.expect("join lock task") else {
+        panic!("cancelled paths::lock must fail");
     };
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(matches!(
@@ -585,9 +576,8 @@ async fn lock_and_open_cancel_promptly_when_scope_is_cancelled() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     let started = Instant::now();
     open_scope.shutdown().await;
-    let open_err = match open_task.await.expect("join open task") {
-        Ok(_) => panic!("cancelled Options::open must fail"),
-        Err(error) => error,
+    let Err(open_err) = open_task.await.expect("join open task") else {
+        panic!("cancelled Options::open must fail");
     };
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(matches!(

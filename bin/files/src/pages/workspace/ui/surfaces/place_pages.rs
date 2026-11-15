@@ -154,10 +154,9 @@ impl Browser {
         self.locations.places.toggle_favorite(&location);
         if self.collection() == Some(Collection::Favorites)
             && !self.locations.places.is_favorite(&location)
+            && let Some(slot) = self.current_tab_mut()
         {
-            if let Some(slot) = self.current_tab_mut() {
-                slot.navigation.view_mut().set_place(None);
-            }
+            slot.navigation.view_mut().set_place(None);
         }
         self.save_places(cx);
         cx.notify();
@@ -241,15 +240,14 @@ impl Browser {
                         browser.locations.places.refresh_favorites(places);
                         let favorites = &browser.locations.places.favorites;
                         for slot in &mut browser.tabs.items {
-                            if slot.navigation.location() == &Location::Favorites {
-                                if slot
+                            if slot.navigation.location() == &Location::Favorites
+                                && slot
                                     .navigation
                                     .view()
                                     .place()
                                     .is_some_and(|location| !favorites.contains(location))
-                                {
-                                    slot.navigation.view_mut().set_place(None);
-                                }
+                            {
+                                slot.navigation.view_mut().set_place(None);
                             }
                         }
                     }

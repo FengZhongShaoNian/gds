@@ -219,7 +219,10 @@ impl Editor {
                     Ok(()) => {
                         if let Some(browser) = this.browser.upgrade() {
                             browser.update(cx, |browser, cx| {
-                                browser.refresh_after_file_operation(&[this.path.clone()], cx);
+                                browser.refresh_after_file_operation(
+                                    std::slice::from_ref(&this.path),
+                                    cx,
+                                );
                                 let ids: Vec<_> = browser
                                     .tabs
                                     .items

@@ -90,7 +90,10 @@ impl Editor {
                     Ok(report) => {
                         if let Some(browser) = this.browser.upgrade() {
                             browser.update(cx, |browser, cx| {
-                                browser.refresh_after_file_operation(&[this.path.clone()], cx);
+                                browser.refresh_after_file_operation(
+                                    std::slice::from_ref(&this.path),
+                                    cx,
+                                );
                             });
                         }
                         if report.failures.is_empty() {

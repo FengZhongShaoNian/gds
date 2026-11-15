@@ -108,20 +108,17 @@ impl Form {
 
     fn choose_protocol(&mut self, protocol: Protocol, window: &mut Window, cx: &mut Context<Self>) {
         self.protocol = Some(protocol);
-        let port;
-        let path;
-        let user;
-        if protocol == Protocol::Sftp {
+        let (port, path, user) = if protocol == Protocol::Sftp {
             self.authentication = Authentication::Agent;
-            port = DEFAULT_SFTP_PORT.to_string();
-            path = "/";
-            user = std::env::var("USER").unwrap_or_default();
+            (
+                DEFAULT_SFTP_PORT.to_string(),
+                "/",
+                std::env::var("USER").unwrap_or_default(),
+            )
         } else {
             self.authentication = Authentication::Password;
-            port = DEFAULT_SMB_PORT.to_string();
-            path = "";
-            user = String::new();
-        }
+            (DEFAULT_SMB_PORT.to_string(), "", String::new())
+        };
         self.port
             .update(cx, |input, cx| input.set_value(port, window, cx));
         self.path

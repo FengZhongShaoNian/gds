@@ -771,6 +771,8 @@ impl<T: Clone> IntoIterator for Selection<T> {
     type Item = T;
     type IntoIter = std::vec::IntoIter<T>;
 
+    // `Self::IntoIter` is fixed to `std::vec::IntoIter<T>`, so `Repr::Range` must materialize a `Vec`.
+    #[allow(clippy::unnecessary_to_owned)]
     fn into_iter(self) -> Self::IntoIter {
         match self.repr {
             Repr::Empty => Vec::new().into_iter(),

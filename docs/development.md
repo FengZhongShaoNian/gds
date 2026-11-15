@@ -40,6 +40,7 @@ just dev nixes                    # Launch GDS Nixes
 just build [files|agents|portal]  # Incremental debug build
 just release [files|agents|portal]# Optimized release build
 just check                        # Typecheck workspace and test targets
+just lint                         # Check formatting and workspace Clippy lint gates
 just fmt-check                    # Check Rust formatting (just fmt to format)
 just test                         # Run workspace unit & integration tests
 just test-files                   # Run isolated Weston Wayland E2E suite for Files

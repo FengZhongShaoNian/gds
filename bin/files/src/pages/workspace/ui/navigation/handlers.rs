@@ -169,20 +169,19 @@ impl Browser {
         if !self.editing_input_focused(window, cx)
             && !window.has_active_dialog(cx)
             && !self.terminal_focused(window, cx)
+            && let Some(view) = self.remote_view()
         {
-            if let Some(view) = self.remote_view() {
-                let (delta, edge) = match motion {
-                    selection::Motion::Previous => (-1, false),
-                    selection::Motion::Next => (1, false),
-                    selection::Motion::First => (-1, true),
-                    selection::Motion::Last => (1, true),
-                };
-                view.update(cx, |view, cx| {
-                    view.move_cursor(delta, edge, window.modifiers().shift, cx)
-                });
-                cx.stop_propagation();
-                return;
-            }
+            let (delta, edge) = match motion {
+                selection::Motion::Previous => (-1, false),
+                selection::Motion::Next => (1, false),
+                selection::Motion::First => (-1, true),
+                selection::Motion::Last => (1, true),
+            };
+            view.update(cx, |view, cx| {
+                view.move_cursor(delta, edge, window.modifiers().shift, cx)
+            });
+            cx.stop_propagation();
+            return;
         }
         if !self.list_keys_available(window, cx) {
             cx.propagate();

@@ -1,5 +1,6 @@
 { pkgs }:
 let
+  inherit (pkgs.callPackage ./rust.nix { }) toolchain;
   libraries = with pkgs; [
     wayland libxkbcommon fontconfig freetype libGL vulkan-loader libxcb alsa-lib
   ];
@@ -14,9 +15,9 @@ let
   '';
 in
 pkgs.mkShell {
-  packages = with pkgs; [
-    bashInteractive cargo rustc rustfmt clippy just nil just-lsp pkg-config clang lld cmake python3 ncurses dbus git
-  ] ++ runtimePrograms;
+  packages = [ toolchain ] ++ (with pkgs; [
+    bashInteractive just nil just-lsp pkg-config clang lld cmake python3 ncurses dbus git
+  ]) ++ runtimePrograms;
   buildInputs = libraries;
   # FHS shells (e.g. steam-run) inject -L/usr/lib here, selecting a foreign glibc.
   # Unlike NIX_LDFLAGS, this variable is not rebuilt by the stdenv setup hooks.

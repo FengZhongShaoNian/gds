@@ -127,12 +127,9 @@ impl Page {
         if self.disabled() || self.write.is_some() || matches!(self.feedback, Feedback::Error(_)) {
             return;
         }
-        let request = match self.save_request(cx) {
-            Ok(Some(request)) => request,
-            _ => {
-                cx.notify();
-                return;
-            }
+        let Ok(Some(request)) = self.save_request(cx) else {
+            cx.notify();
+            return;
         };
         let Some(service) = self.service.clone() else {
             return;

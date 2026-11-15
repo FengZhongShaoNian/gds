@@ -333,7 +333,7 @@ fn changing_terminal_typography_updates_existing_grid_metrics(cx: &mut TestAppCo
         assert!(view.fonts.as_ref().expect("resolved font").matches(
             &preferences.font_family,
             preferences.font_size,
-            f32::from(window.scale_factor()),
+            window.scale_factor(),
         ));
         assert_eq!(view.preferences, preferences);
     })

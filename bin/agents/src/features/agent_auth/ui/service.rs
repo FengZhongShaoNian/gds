@@ -197,14 +197,10 @@ pub(super) fn terminal(
     let task = IoTask::cancel_on_drop(tasks.spawn_cancellable_named(
         "Wait for terminal authentication",
         async move {
-            async {
-                let invocation = super::terminal::Invocation::from_plan(plan)
-                    .map_err(|error| error.to_string())?;
-                let login =
-                    super::terminal::launch(invocation).map_err(|error| error.to_string())?;
-                login.complete_code().await
-            }
-            .await
+            let invocation =
+                super::terminal::Invocation::from_plan(plan).map_err(|error| error.to_string())?;
+            let login = super::terminal::launch(invocation).map_err(|error| error.to_string())?;
+            login.complete_code().await
         },
     ));
     async move {

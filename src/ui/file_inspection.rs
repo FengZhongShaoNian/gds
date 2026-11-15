@@ -42,6 +42,8 @@ pub enum State<T> {
     Failed(SharedString),
 }
 
+// Manual impl avoids requiring `T: Default` for `State::NotRequested`.
+#[allow(clippy::derivable_impls)]
 impl<T> Default for State<T> {
     fn default() -> Self {
         Self::NotRequested

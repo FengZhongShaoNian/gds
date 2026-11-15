@@ -581,7 +581,7 @@ pub fn suffix_anchor(
     let Some((binding, held)) = state.read(cx).clone() else {
         return div().size_0().into_any_element();
     };
-    let label = ShortcutBadge::path_label(&[binding.clone()], held).unwrap_or_default();
+    let label = ShortcutBadge::path_label(std::slice::from_ref(&binding), held).unwrap_or_default();
     let typography = cx.gds().appearance().typography();
     let text_size = typography.scaled(LABEL_TEXT_SIZE);
     let run = window.text_style().to_run(label.len());

@@ -11,6 +11,8 @@ impl ChildGuard {
     pub fn new(child: Child) -> Self {
         Self(child)
     }
+    /// # Errors
+    /// Reports wait I/O failures, cancellation (`ErrorKind::Interrupted`), or timeout (`ErrorKind::TimedOut`).
     pub fn wait(
         &mut self,
         cancel: &CancellationToken,
@@ -81,6 +83,9 @@ async fn terminate_child(child: &mut tokio::process::Child) -> io::Result<()> {
 /// Capture a child and reap it on cancellation or timeout. On Unix, its process
 /// group is terminated together. Call inside a tracked task; do not abort that
 /// task while it is terminating the child.
+///
+/// # Errors
+/// Reports process spawn or pipe I/O failures, cancellation (`ErrorKind::Interrupted`), or timeout (`ErrorKind::TimedOut`).
 pub async fn output(
     command: &mut tokio::process::Command,
     cancel: &CancellationToken,
@@ -97,8 +102,8 @@ pub async fn output(
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()?;
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let stdout = child.stdout.take().expect("stdout was configured as piped");
+    let stderr = child.stderr.take().expect("stderr was configured as piped");
     let read_out = read_bounded(stdout, MAX_OUTPUT_BYTES);
     let read_err = read_bounded(stderr, MAX_OUTPUT_BYTES);
     tokio::pin!(read_out, read_err);

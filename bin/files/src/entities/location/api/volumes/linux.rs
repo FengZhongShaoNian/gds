@@ -361,7 +361,7 @@ async fn operate_on(
         if !volume.mountable {
             return Err(Error::Unsupported);
         }
-        let proxy = Proxy::new(&connection, DESTINATION, volume.object.as_str(), FILESYSTEM)
+        let proxy = Proxy::new(connection, DESTINATION, volume.object.as_str(), FILESYSTEM)
             .await
             .map_err(unavailable)?;
         let path: String = proxy
@@ -393,7 +393,7 @@ async fn operate_on(
         {
             return Err(removal_error(&unmounted, Error::Disconnected.to_string()));
         }
-        let proxy = Proxy::new(&connection, DESTINATION, member.object.as_str(), FILESYSTEM)
+        let proxy = Proxy::new(connection, DESTINATION, member.object.as_str(), FILESYSTEM)
             .await
             .map_err(unavailable)?;
         let result: Result<(), _> = proxy
@@ -423,7 +423,7 @@ async fn operate_on(
             return Err(removal_error(&unmounted, Error::Disconnected.to_string()));
         }
         let drive = drive.ok_or(Error::Unsupported)?;
-        let proxy = Proxy::new(&connection, DESTINATION, drive.id.as_str(), DRIVE)
+        let proxy = Proxy::new(connection, DESTINATION, drive.id.as_str(), DRIVE)
             .await
             .map_err(unavailable)?;
         let result: Result<(), _> = proxy.call(method, &(HashMap::<&str, Value>::new(),)).await;

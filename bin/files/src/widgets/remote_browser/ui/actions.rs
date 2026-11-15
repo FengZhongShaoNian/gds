@@ -187,7 +187,7 @@ impl View {
             files: true,
             directories: true,
             multiple: true,
-            prompt: Some(t!(@cx, "remote-upload").into()),
+            prompt: Some(t!(@cx, "remote-upload")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(result) = paths.await else {
@@ -223,7 +223,7 @@ impl View {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some(t!(@cx, "remote-download").into()),
+            prompt: Some(t!(@cx, "remote-download")),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(result) = paths.await else {
@@ -424,10 +424,10 @@ impl View {
         cx.spawn(async move |_, cx| match work.await {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {
-                let _ = cx.update(|cx| notifications::error(error.to_string(), cx));
+                cx.update(|cx| notifications::error(error.to_string(), cx));
             }
             Err(error) => {
-                let _ = cx.update(|cx| notifications::error(error.to_string(), cx));
+                cx.update(|cx| notifications::error(error.to_string(), cx));
             }
         })
         .detach();
@@ -445,7 +445,7 @@ impl View {
         );
         cx.spawn(async move |_, cx| {
             if let Err(error) = work.await {
-                let _ = cx.update(|cx| notifications::error(error.to_string(), cx));
+                cx.update(|cx| notifications::error(error.to_string(), cx));
             }
         })
         .detach();

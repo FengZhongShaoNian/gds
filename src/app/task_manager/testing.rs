@@ -18,6 +18,8 @@ impl Drop for Executor {
 
 impl Tasks<&mut App> {
     /// Install an isolated executor for a GPUI test application.
+    // Installs the isolated multi-thread runtime used by `gui-tests`.
+    #[allow(clippy::disallowed_methods)]
     pub fn init_test(&mut self, inspect: bool) {
         if self.cx.has_global::<Application>() {
             return;

@@ -6,6 +6,8 @@ use crate::{app::AppExt as _, i18n};
 
 pub trait Model: Clone + Default + PartialEq + 'static {
     fn fields() -> Vec<Field<Self>>;
+    /// # Errors
+    /// Returns a validation message when the current configuration values are invalid.
     fn validate(&self) -> Result<(), String> {
         Ok(())
     }

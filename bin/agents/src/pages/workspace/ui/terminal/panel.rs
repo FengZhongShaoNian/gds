@@ -383,6 +383,8 @@ impl Panel {
             };
             (vec![close], None)
         };
+        let on_middle_close =
+            cx.listener(move |panel, _, window, cx| panel.request_close(id, window, cx));
         div()
             .id(("agents-terminal-row", id))
             .test_support()
@@ -398,6 +400,7 @@ impl Panel {
                     .presentation(presentation)
                     .tooltip_enabled(false)
                     .trailing(trailing)
+                    .on_middle_click(on_middle_close)
                     .on_click(cx.listener(move |panel, _, window, cx| {
                         panel.active = Some(id);
                         panel.tabs_focus.focus(window, cx);

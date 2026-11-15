@@ -330,6 +330,7 @@ impl Browser {
             size: $(px(tokens::SIDEBAR_ICON_SIZE));
         } };
         let on_click = cx.listener(Self::click_tab(id));
+        let on_aux_click = cx.listener(Self::aux_click_tab(id));
         let on_hover = cx.listener(Self::hover_tab(id));
         let menu = Self::tab_menu(cx.entity().downgrade(), id, slot.pinned);
         // Pinned tabs keep their unpin control in the ordinary close slot.
@@ -418,6 +419,7 @@ impl Browser {
                 text_color: $(cx.theme().sidebar_foreground.interpolate(&cx.theme().sidebar_accent_foreground, selection));
                 @if (!selected && selection == 0.) hover: { bg: $(cx.gds().appearance().theme().colors().sidebar_hover()) }; @end;
                 on_click: on_click;
+                @if (!slot.pinned) on_aux_click: on_aux_click; @end;
                 on_hover: on_hover;
                 @if (!revealing_close) tooltip_show_delay: tokens::TOOLTIP_DELAY; tooltip: tooltip; @end;
             } [

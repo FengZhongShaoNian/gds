@@ -60,6 +60,7 @@ pub struct NavItem {
     /// Independent controls in the row's trailing slots.
     #[attr]
     trailing: Vec<AnyElement>,
+    on_middle_click: Option<Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>>,
 }
 
 impl NavItem {
@@ -82,6 +83,7 @@ impl NavItem {
             tooltip_enabled: true,
             details: None,
             trailing: Vec::new(),
+            on_middle_click: None,
         }
     }
 
@@ -113,6 +115,14 @@ impl NavItem {
         self.button = self.button.on_click(handler);
         self
     }
+
+    pub fn on_middle_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_middle_click = Some(Box::new(handler));
+        self
+    }
 }
 
 impl RenderOnce for NavItem {
@@ -131,6 +141,7 @@ impl RenderOnce for NavItem {
             tooltip_enabled,
             details,
             trailing,
+            on_middle_click,
         } = self;
         let compact = presentation.map_or(compact, |value| value.progress() == 0.0);
         let show_actions = presentation.is_none_or(|value| value.actions_visible());
@@ -197,11 +208,23 @@ impl RenderOnce for NavItem {
             None => Hint::command(tooltip_text, None),
         }
         .builder();
+        let on_aux_click = (!disabled)
+            .then_some(on_middle_click)
+            .flatten()
+            .map(|handler| {
+                move |event: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    if event.is_middle_click() {
+                        cx.stop_propagation();
+                        handler(event, window, cx);
+                    }
+                }
+            });
         el! {
             .div {
                 # id; relative; w_full; flex_shrink_0;
                 @if (!has_details) h: SIDEBAR_ITEM_HEIGHT.px; @end;
                 @if (tooltip_enabled) tooltip_show_delay: TOOLTIP_DELAY; tooltip: tooltip; @end;
+                @if (let Some(on_aux_click) = on_aux_click) on_aux_click: on_aux_click; @end;
             } [
                 button,
                 @if (show_actions && !trailing.is_empty())

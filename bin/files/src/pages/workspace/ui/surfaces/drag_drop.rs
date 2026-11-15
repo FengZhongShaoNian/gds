@@ -7,6 +7,7 @@
 use super::file_label::FileLabel;
 use std::{collections::HashSet, path::Path, path::PathBuf, sync::Arc, sync::OnceLock};
 
+use gds::ui::drag::{DragCard, DragCardContent, DragCardFooter, DragCardHeader};
 use gds_uim::el;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::{prelude::*, *};
@@ -20,17 +21,8 @@ mod spring;
 
 use spring::{TabHover, TabHoverSpring};
 
-const PREVIEW_PADDING_X: f32 = 10.;
-const PREVIEW_PADDING_Y: f32 = 6.;
-const PREVIEW_RADIUS: f32 = 6.;
-const PREVIEW_MAX_WIDTH: f32 = 280.;
-const PREVIEW_ICON_SIZE: f32 = 16.;
-const PREVIEW_ICON_GAP: f32 = 8.;
+const PREVIEW_ICON_SIZE: f32 = gds::appearance::tokens::ICON_SIZE;
 const PREVIEW_VISIBLE_ITEMS: usize = 3;
-const PREVIEW_STACK_GAP: f32 = 4.;
-const PREVIEW_STACK_INSET: f32 = 6.;
-/// Multiple-file labels leave the pointer free to indicate the drop target.
-const PREVIEW_POINTER_GAP: f32 = 12.;
 
 struct DragSource(WeakEntity<DragPreview>);
 impl Global for DragSource {}
@@ -64,6 +56,7 @@ struct DragItem {
     name: SharedString,
     is_dir: bool,
     icon: FileIcon,
+    directory_icon: bool,
 }
 
 impl DragItem {
@@ -73,6 +66,7 @@ impl DragItem {
             name: entry.display_name.clone().into(),
             is_dir: entry.kind == EntryKind::Directory,
             icon: FileIcon::for_entry(entry),
+            directory_icon: FileIcon::is_directory(entry),
         }
     }
 }
@@ -374,9 +368,6 @@ impl DragPreview {
     }
 
     fn render_multiple(drag: &FileDrag, cursor_offset: Point<Pixels>, cx: &App) -> AnyElement {
-        let content_offset =
-            cursor_offset + point(px(PREVIEW_POINTER_GAP), px(PREVIEW_POINTER_GAP));
-        let color = cx.theme().popover_foreground;
         let single;
         let items: &[DragItem] = match &drag.payload {
             DragPayload::Single(entry) => {
@@ -385,42 +376,38 @@ impl DragPreview {
             }
             DragPayload::Selection(inner) => inner.entries(),
         };
-        let labels = items.iter().take(PREVIEW_VISIBLE_ITEMS).enumerate().map(|(index, item)| {
+        let labels = items.iter().take(PREVIEW_VISIBLE_ITEMS).map(|item| {
+            let icon_color = FileIcon::category_color(item.directory_icon, cx);
             el! {
-                .div {
-                    ml: $(index as f32 * PREVIEW_STACK_INSET).px;
-                    px: PREVIEW_PADDING_X.px; py: PREVIEW_PADDING_Y.px; rounded: PREVIEW_RADIUS.px;
-                    flex; items_center; gap: PREVIEW_ICON_GAP.px;
-                    max_w: PREVIEW_MAX_WIDTH.px; overflow_hidden;
-                    bg: $(cx.theme().popover); border_1; border_color: $(cx.theme().border);
-                    shadow_sm;
-                } [
-                    .FileLabel::default { icon: $(item.icon); name: $(item.name.clone()); },
-                ]
+                .FileLabel::default {
+                    icon: $(item.icon);
+                    icon_color: icon_color;
+                    name: $(item.name.clone());
+                }
             }
         });
         let remaining = drag.count().saturating_sub(PREVIEW_VISIBLE_ITEMS);
         el! {
-            .div { pl: $content_offset.x; pt: $content_offset.y; } [
-                .div { flex; flex_col; items_start; gap: PREVIEW_STACK_GAP.px; text_color: color; text_sm; } [
-                    .div {
-                        flex; items_center; gap: PREVIEW_ICON_GAP.px;
-                        px: PREVIEW_PADDING_X.px; py: PREVIEW_PADDING_Y.px; rounded: PREVIEW_RADIUS.px;
-                        bg: $(cx.theme().primary); text_color: $(cx.theme().primary_foreground);
-                    } [
-                        .FileArtwork::default { icon: $(FileIcon::multiple()); size: PREVIEW_ICON_SIZE.px; color: $(cx.theme().primary_foreground); },
-                        $(i18n::count("item-count", drag.count(), cx)),
-                    ],
-                    ..labels,
-                    @if (remaining > 0)
-                        .div {
-                            px: PREVIEW_PADDING_X.px; py: PREVIEW_PADDING_Y.px; rounded: PREVIEW_RADIUS.px;
-                            bg: $(cx.theme().popover); text_color: $(cx.theme().muted_foreground);
-                        } [$(i18n::count("operation-more-items", remaining, cx))],
-                    @end,
+            .DragCard::default { offset: cursor_offset } [
+                .DragCardHeader::default [
+                    .FileArtwork::default {
+                        icon: $(FileIcon::multiple());
+                        size: PREVIEW_ICON_SIZE.px;
+                        color: $(cx.theme().primary);
+                    },
+                    .div { min_w_0; truncate; } [$(i18n::count("item-count", drag.count(), cx))],
                 ],
+                .DragCardContent::default [
+                    ..labels,
+                ],
+                @if (remaining > 0)
+                    .DragCardFooter::default [
+                        $(i18n::count("operation-more-items", remaining, cx)),
+                    ],
+                @end,
             ]
-        }.into_any_element()
+        }
+        .into_any_element()
     }
 }
 

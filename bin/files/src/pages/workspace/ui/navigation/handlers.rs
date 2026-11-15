@@ -264,6 +264,20 @@ impl Browser {
         move |this, _, window, cx| this.switch_tab(id, window, cx)
     }
 
+    pub(in crate::pages::workspace) fn aux_click_tab(
+        id: u64,
+    ) -> impl Fn(&mut Self, &ClickEvent, &mut Window, &mut Context<Self>) {
+        move |this, event, window, cx| {
+            if !event.is_middle_click() {
+                return;
+            }
+            cx.stop_propagation();
+            if this.tab_slot(id).is_some_and(|tab| !tab.pinned) {
+                this.close_tab_approved(id, window, cx);
+            }
+        }
+    }
+
     pub(in crate::pages::workspace) fn click_tab_action(
         id: u64,
         unpin: bool,

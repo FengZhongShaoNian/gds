@@ -530,6 +530,8 @@ impl Panel {
             trailing.push(close);
         }
         let on_select = cx.listener(move |panel, _, window, cx| panel.select(id, window, cx));
+        let on_middle_close =
+            cx.listener(move |panel, _, window, cx| panel.request_close(id, window, cx));
         let tooltip = move |window: &mut Window, cx: &mut App| hint.view(window, cx);
         el! {
             .div {
@@ -540,6 +542,7 @@ impl Panel {
                 ($("files-terminal-tab", id), IconName::Terminal, $(Self::title(entry, cx))).NavItem::new {
                     presentation: $(self.sidebar); selected: selected; tooltip_enabled: false;
                     trailing: trailing; on_click: on_select;
+                    @if (!disabled) on_middle_click: on_middle_close; @end;
                 },
                 ..corner,
             ]

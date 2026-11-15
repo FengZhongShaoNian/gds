@@ -1809,3 +1809,94 @@ async fn progressive_streaming_loads_preserve_selection_and_respect_preferences(
 
     close_test_browser(cx, window).await;
 }
+
+#[gpui_kit::test]
+async fn middle_clicking_tabs_closes_regular_tabs_while_preserving_pinned_and_right_click(
+    cx: &mut TestAppContext,
+) {
+    let _workspace = init_test_workspace(cx);
+    let temp = tempfile::tempdir().expect("create temporary tab directories");
+    let pinned_dir = temp.path().join("pinned");
+    let home = temp.path().join("home");
+    let other_dir = temp.path().join("other");
+    for dir in [&pinned_dir, &home, &other_dir] {
+        std::fs::create_dir_all(dir).expect("create test directory");
+    }
+
+    let places = Places::for_tests(vec![Location::from(&pinned_dir)], Vec::new());
+    let (window, browser) = open_test_browser_at(cx, home.clone(), home.clone(), Ok(places));
+    wait_for_tabs_loaded(cx, window, &browser);
+
+    cx.update_window(window.into(), |_, window, cx| {
+        browser.update(cx, |browser, cx| {
+            browser.open_tab(other_dir.clone(), false, window, cx);
+        });
+    })
+    .expect("open third tab");
+    wait_for_tabs_loaded(cx, window, &browser);
+
+    let (pinned_id, home_id, other_id) = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let view = browser.read(cx);
+            assert_eq!(view.tabs.items.len(), 3);
+            assert!(view.tabs.items[0].pinned);
+            assert_eq!(view.tabs.items[0].path(), Some(pinned_dir.as_path()));
+            assert!(!view.tabs.items[1].pinned);
+            assert_eq!(view.tabs.items[1].path(), Some(home.as_path()));
+            assert!(!view.tabs.items[2].pinned);
+            assert_eq!(view.tabs.items[2].path(), Some(other_dir.as_path()));
+            assert_eq!(view.tabs.active_id, view.tabs.items[2].id);
+            (
+                view.tabs.items[0].id,
+                view.tabs.items[1].id,
+                view.tabs.items[2].id,
+            )
+        })
+        .expect("verify initial tab layout");
+
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click_with_options(
+            ("tab", home_id),
+            gpui_kit::test::ClickOptions::new().with_button(gpui_kit::MouseButton::Right),
+            cx,
+        );
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert_eq!(browser.read(cx).tabs.items.len(), 3);
+    })
+    .expect("right-click tab must not trigger aux-click close");
+
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click_with_options(
+            ("tab", pinned_id),
+            gpui_kit::test::ClickOptions::new().with_button(gpui_kit::MouseButton::Middle),
+            cx,
+        );
+        assert!(!gpui_kit::component::WindowExt::has_active_dialog(
+            window, cx
+        ));
+        let view = browser.read(cx);
+        assert_eq!(view.tabs.items.len(), 3);
+        assert!(view.tabs.items[0].pinned);
+        assert_eq!(view.tabs.active_id, other_id);
+    })
+    .expect("middle-click on pinned tab keeps it pinned and open");
+
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click_with_options(
+            ("tab", home_id),
+            gpui_kit::test::ClickOptions::new().with_button(gpui_kit::MouseButton::Middle),
+            cx,
+        );
+        let view = browser.read(cx);
+        assert_eq!(
+            view.tabs.items.iter().map(|tab| tab.id).collect::<Vec<_>>(),
+            vec![pinned_id, other_id]
+        );
+        assert_eq!(view.tabs.active_id, other_id);
+    })
+    .expect("middle-click on inactive unpinned tab closes only that tab");
+
+    close_test_browser(cx, window).await;
+}

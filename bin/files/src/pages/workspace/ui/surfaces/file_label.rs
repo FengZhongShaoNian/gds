@@ -11,6 +11,8 @@ const GAP: f32 = 8.;
 pub(in crate::pages::workspace) struct FileLabel {
     #[attr]
     icon: FileIcon,
+    #[attr(option)]
+    icon_color: Option<Hsla>,
     #[attr(into)]
     name: SharedString,
 }
@@ -19,6 +21,7 @@ impl Default for FileLabel {
     fn default() -> Self {
         Self {
             icon: FileIcon::plain(IconName::File),
+            icon_color: None,
             name: SharedString::default(),
         }
     }
@@ -28,7 +31,7 @@ impl RenderOnce for FileLabel {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
         el! {
             .div { flex; items_center; gap: GAP.px; min_w_0; line_height: $(relative(1.5)); } [
-                .FileArtwork::default { icon: $(self.icon); size: ICON_SIZE.px; },
+                .FileArtwork::default { icon: $(self.icon); size: ICON_SIZE.px; color_opt: $(self.icon_color); },
                 .div { min_w_0; truncate; } [$(self.name)],
             ]
         }

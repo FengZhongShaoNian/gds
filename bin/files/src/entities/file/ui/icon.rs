@@ -67,9 +67,9 @@ impl FileIcon {
         }
     }
 
-    /// Color follows the entry's category, independently of its chosen glyph.
-    pub(crate) fn color(entry: &Entry, cx: &App) -> Hsla {
-        let directory = entry.kind == EntryKind::Directory
+    /// Whether `entry` displays with directory styling (directories and resolved directory links).
+    pub(crate) fn is_directory(entry: &Entry) -> bool {
+        entry.kind == EntryKind::Directory
             || (entry.kind == EntryKind::SymbolicLink
                 && entry.details.target.as_ref().is_some_and(|target| {
                     matches!(
@@ -79,12 +79,21 @@ impl FileIcon {
                             ..
                         }
                     )
-                }));
+                }))
+    }
+
+    /// Icon tint corresponding to whether the entry resolves to a directory.
+    pub(crate) fn category_color(directory: bool, cx: &App) -> Hsla {
         if directory {
             cx.theme().primary
         } else {
             cx.theme().muted_foreground
         }
+    }
+
+    /// Color follows the entry's category, independently of its chosen glyph.
+    pub(crate) fn color(entry: &Entry, cx: &App) -> Hsla {
+        Self::category_color(Self::is_directory(entry), cx)
     }
 
     /// Icon for a drag that carries several entries.
@@ -197,7 +206,7 @@ pub(crate) struct FileArtwork {
     icon: FileIcon,
     #[attr]
     size: Pixels,
-    #[attr(option)]
+    #[attr(option, option_setter = "color_opt")]
     color: Option<Hsla>,
 }
 

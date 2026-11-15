@@ -56,6 +56,24 @@ el! {
 
 字段值、默认值比较、校验、重置回调与保存继续由应用或类型化编辑器负责。布局组件接受已经构造好的控件。
 
+## DragCard
+
+公共入口为 `gds::ui::drag::*`：
+
+```rust,ignore
+el! {
+    .DragCard::default { offset: cursor_offset } [
+        .DragCardHeader::default [icon, title],
+        .DragCardContent::default [..items],
+        @if (remaining > 0)
+            .DragCardFooter::default [more_label],
+        @end,
+    ]
+}
+```
+
+`DragCard` 负责浮层材质、边框、宽度范围与鼠标右下方偏移（`offset` 为空时直接渲染卡片本身），`DragCardHeader` 提供分隔摘要栏，`DragCardContent` 纵向排布预览条目，`DragCardFooter` 以次级前景色呈现省略计数，没有剩余条目时可省略。
+
 ## Agents ContentRow
 
 这些部分只位于 `bin/agents/src/shared/ui/content_row.rs` 及其子模块，由 Agents 的 `ui` 模块导出：

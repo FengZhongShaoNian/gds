@@ -1633,6 +1633,9 @@ impl Browser {
         };
         let was_active = self.tabs.active_id == id;
         self.tabs.items.remove(index);
+        if self.tabs.hovered == Some(id) {
+            self.tabs.hovered = None;
+        }
         if self.tabs.items.is_empty() {
             self.open_tab(self.locations.home.clone(), false, window, cx);
         } else if was_active {

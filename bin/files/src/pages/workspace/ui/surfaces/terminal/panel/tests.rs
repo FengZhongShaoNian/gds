@@ -395,3 +395,53 @@ async fn background_and_unfocused_auto_close_preserve_active_tab_and_external_fo
     shutdown.await;
     scope.shutdown().await;
 }
+
+#[gpui_kit::test]
+async fn middle_clicking_inactive_terminal_tab_closes_it_without_selecting_it(
+    cx: &mut TestAppContext,
+) {
+    let (window, panel) = open_test_panel(cx);
+    let directory = tempfile::tempdir().expect("create temporary working directory");
+    let shell = posix_shell();
+    let (id0, id1) = cx
+        .update_window(window.into(), |_, window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.set_preferences(
+                    terminal::Preferences {
+                        shell: Some(shell),
+                        shell_args: vec!["-c".into(), "sleep 60".into()],
+                        ..Default::default()
+                    },
+                    cx,
+                );
+                panel.open(directory.path().to_owned(), window, cx);
+                let id0 = panel.entries[0].id;
+                panel.open(directory.path().to_owned(), window, cx);
+                let id1 = panel.entries[1].id;
+                panel.select(id1, window, cx);
+                (id0, id1)
+            })
+        })
+        .expect("open two terminal tabs and select second");
+
+    let shutdown = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.click_with_options(
+                ("files-terminal-row", id0),
+                gpui_kit::test::ClickOptions::new().with_button(gpui_kit::MouseButton::Middle),
+                cx,
+            );
+            let view = panel.read(cx);
+            assert_eq!(view.entries.len(), 1);
+            assert_eq!(view.entries[0].id, id1);
+            assert_eq!(view.active, Some(id1));
+            panel.update(cx, |panel, cx| panel.shutdown(cx))
+        })
+        .expect("middle-click closes inactive terminal tab without selecting it");
+
+    let scope = cx.update(|cx| cx.gds().tasks().scope());
+    cx.update_window(window.into(), |_, window, _| window.remove_window())
+        .expect("remove test window");
+    shutdown.await;
+    scope.shutdown().await;
+}

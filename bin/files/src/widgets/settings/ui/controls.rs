@@ -31,7 +31,6 @@ pub(super) enum Field {
     Mode,
     ContentOpacity,
     SidebarOpacity,
-    ShowHidden,
     AutoFocusSearch,
     SidebarVolumes,
     Animations,
@@ -53,7 +52,6 @@ impl Field {
             Self::Mode => "theme-mode",
             Self::ContentOpacity => "theme-opacity",
             Self::SidebarOpacity => "sidebar-opacity",
-            Self::ShowHidden => "show-hidden",
             Self::AutoFocusSearch => "auto-focus-search",
             Self::SidebarVolumes => "sidebar-show-volumes",
             Self::TerminalEnabled => "files-terminal-enabled",
@@ -72,7 +70,6 @@ impl Field {
         match self {
             Self::RoundedCorners => "settings-rounded-corners",
             Self::Animations => "settings-animations",
-            Self::ShowHidden => "settings-show-hidden",
             Self::AutoFocusSearch => "settings-auto-focus-search",
             Self::SidebarVolumes => "settings-sidebar-volumes",
             Self::TerminalEnabled => "settings-terminal-enabled",
@@ -85,7 +82,6 @@ impl Field {
         match self {
             Self::RoundedCorners => Some(preferences.appearance.rounded_corners),
             Self::Animations => Some(preferences.animations_enabled.unwrap_or(true)),
-            Self::ShowHidden => Some(preferences.files.show_hidden),
             Self::AutoFocusSearch => Some(preferences.files.auto_focus_search),
             Self::SidebarVolumes => Some(preferences.files.sidebar.show_volumes),
             Self::TerminalEnabled => Some(preferences.terminal_enabled()),
@@ -100,7 +96,6 @@ impl Field {
                 Self::replace(&mut preferences.appearance.rounded_corners, value)
             }
             Self::Animations => Self::replace(&mut preferences.animations_enabled, Some(value)),
-            Self::ShowHidden => Self::replace(&mut preferences.files.show_hidden, value),
             Self::AutoFocusSearch => Self::replace(&mut preferences.files.auto_focus_search, value),
             Self::SidebarVolumes => {
                 Self::replace(&mut preferences.files.sidebar.show_volumes, value)
@@ -133,7 +128,6 @@ impl Field {
                 preferences.appearance.sidebar_opacity * 100.0,
                 defaults.appearance.sidebar_opacity * 100.0,
             ),
-            Self::ShowHidden => preferences.files.show_hidden != defaults.files.show_hidden,
             Self::AutoFocusSearch => {
                 preferences.files.auto_focus_search != defaults.files.auto_focus_search
             }
@@ -165,7 +159,6 @@ impl Field {
             Self::SidebarOpacity => {
                 preferences.appearance.sidebar_opacity = defaults.appearance.sidebar_opacity
             }
-            Self::ShowHidden => preferences.files.show_hidden = defaults.files.show_hidden,
             Self::AutoFocusSearch => {
                 preferences.files.auto_focus_search = defaults.files.auto_focus_search
             }

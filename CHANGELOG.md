@@ -2,6 +2,14 @@
 
 All notable changes to officially released GDS packages (**GDS Files** and **GDS Portal**) are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.4] - 2026-11-15
+
+### Fixed
+
+- **Noctalia v5 Out-of-the-Box Theme Synchronization**:
+  - Automatically stage `$XDG_CACHE_HOME/gds/theme/noctalia-template.json`, provision the managed `${NOCTALIA_CONFIG_HOME:-$XDG_CONFIG_HOME}/noctalia/gds.toml` drop-in (preserving user edits and symlinks), and trigger `"config-reload"` / `"templates-apply"` over Noctalia's live IPC socket so System theme following is available and synchronized on first launch without manual registration.
+  - Excluded `noctalia-dmenu-*.sock` helper sockets during fallback Noctalia IPC socket discovery when `WAYLAND_DISPLAY` is unset.
+
 ## [0.0.3] - 2026-11-15
 
 ### Added
@@ -63,6 +71,7 @@ All notable changes to officially released GDS packages (**GDS Files** and **GDS
   - Shared visual language supporting System (DMS, KDE Plasma, GNOME) and 6 built-in light/dark palettes, configurable surface opacity, rounded corners, interface motion controls, and English / Simplified Chinese localization.
   - Native packaging for Nix / NixOS, Fedora RPM, Debian / Ubuntu DEB, and Arch Linux.
 
+[0.0.4]: https://github.com/GanDesktop/gds/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/GanDesktop/gds/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/GanDesktop/gds/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/GanDesktop/gds/releases/tag/v0.0.1

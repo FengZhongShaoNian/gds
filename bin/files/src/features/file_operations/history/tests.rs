@@ -195,8 +195,10 @@ fn new_folder_undo_rejects_non_empty_or_replaced_directories() {
     assert_eq!(occupied_undo.remaining.len(), 1);
     assert_eq!(fs::read(&child).expect("child survives"), b"draft");
 
+    let replacement = root.path().join("Project-replacement");
+    fs::create_dir(&replacement).expect("allocate replacement folder with distinct inode");
     fs::remove_dir_all(&created.path).expect("remove original folder");
-    fs::create_dir(&created.path).expect("recreate empty folder with new inode");
+    fs::rename(&replacement, &created.path).expect("replace folder with new inode");
     let replaced_undo =
         Entry::new(Kind::NewFolder, vec![step]).execute_cancellable(&CancellationToken::new());
     assert_eq!(replaced_undo.errors.len(), 1);

@@ -1,9 +1,7 @@
-use super as noctalia;
+use super::{self as noctalia, TEMPLATE};
 use crate::appearance::theme::{Error, Mode, ModePreference};
 use gpui_kit::{Hsla, rgb};
 use std::path::Path;
-
-const TEMPLATE: &str = include_str!("assets/gds.json");
 
 fn color(value: u32) -> Hsla {
     rgb(value).into()
@@ -199,4 +197,71 @@ fn unsupported_schema_version_is_rejected() {
         ),
         Err(Error::Invalid { field, .. }) if field == "schema_version"
     ));
+}
+
+#[cfg(unix)]
+fn accept_ipc_command(listener: &std::os::unix::net::UnixListener) -> String {
+    use std::io::{Read, Write};
+    let (mut stream, _) = listener.accept().expect("accept Noctalia IPC connection");
+    let mut command = String::new();
+    stream
+        .read_to_string(&mut command)
+        .expect("read Noctalia IPC command");
+    stream
+        .write_all(b"ok\n")
+        .expect("acknowledge Noctalia IPC command");
+    command
+}
+
+#[cfg(unix)]
+#[test]
+fn cold_start_provisions_template_and_renders_via_ipc_while_respecting_user_config() {
+    let sandbox = tempfile::tempdir().expect("isolated Noctalia sandbox");
+    let cache_dir = sandbox.path().join("cache");
+    let config_dir = sandbox.path().join("config/noctalia");
+    let socket = sandbox.path().join("noctalia-wayland-0.sock");
+    let listener =
+        std::os::unix::net::UnixListener::bind(&socket).expect("bind fake Noctalia socket");
+    let output = noctalia::output_path(&cache_dir);
+    let rendered = rendered_template("dark");
+    let output_for_server = output.clone();
+
+    let server = std::thread::spawn(move || {
+        let reload = accept_ipc_command(&listener);
+        let apply = accept_ipc_command(&listener);
+        std::fs::create_dir_all(output_for_server.parent().expect("output parent"))
+            .expect("create output parent");
+        std::fs::write(&output_for_server, rendered).expect("write rendered Noctalia export");
+        (reload, apply)
+    });
+
+    let env = noctalia::Environment {
+        cache_dir: &cache_dir,
+        config_dir: config_dir.clone(),
+        socket: &socket,
+    };
+    let loaded = noctalia::load_with(&env, ModePreference::System)
+        .expect("bootstrap Noctalia template and load rendered palette");
+    let (reload, apply) = server.join().expect("IPC server thread");
+
+    assert_eq!(reload, "config-reload");
+    assert_eq!(apply, "templates-apply");
+    assert_eq!(loaded.mode, Mode::Dark);
+    assert_eq!(loaded.source_path.as_deref(), Some(output.as_path()));
+    assert_eq!(
+        std::fs::read_to_string(cache_dir.join("gds/theme/noctalia-template.json"))
+            .expect("staged template"),
+        TEMPLATE
+    );
+
+    let custom_config = "[theme.templates.user.gds]\ninput_path = \"/custom/gds.json\"\n";
+    let config_path = config_dir.join("gds.toml");
+    std::fs::write(&config_path, custom_config).expect("write custom user gds.toml");
+    let steady = noctalia::load_with(&env, ModePreference::Light)
+        .expect("steady-state load reuses existing export without IPC");
+    assert_eq!(steady.mode, Mode::Light);
+    assert_eq!(
+        std::fs::read_to_string(&config_path).expect("read preserved user gds.toml"),
+        custom_config
+    );
 }

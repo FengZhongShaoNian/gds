@@ -192,8 +192,7 @@ impl Global for CurrentApplied {}
 ///
 /// Install the initial appearance after `gpui_kit::init`, before the first window.
 /// This synchronous path also serves manual refreshes; [`HotReload`] owns live
-/// refreshes and reuses the same loading and
-/// installation path. It does not modify desktop files.
+/// refreshes and reuses the same loading and installation path.
 /// Controls and text remain opaque. Root and data-table surfaces are cleared;
 /// application-owned panels draw their material once using the helpers below.
 ///

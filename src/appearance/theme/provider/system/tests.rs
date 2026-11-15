@@ -47,6 +47,18 @@ fn standalone_sessions_require_live_ipc_sockets_and_match_display_scope() {
         Some(Desktop::Dms)
     );
 
+    let _live_dmenu = UnixListener::bind(dir.join("noctalia-dmenu-wayland-0.sock"))
+        .expect("bind Noctalia dmenu helper socket");
+    assert_eq!(
+        Desktop::detect(&Session {
+            desktop: "niri",
+            runtime_dir: dir,
+            wayland_display: None,
+            dms_socket: None,
+        }),
+        Some(Desktop::Dms)
+    );
+
     let _live_noctalia =
         UnixListener::bind(dir.join("noctalia-wayland-1.sock")).expect("bind Noctalia socket");
     assert_eq!(

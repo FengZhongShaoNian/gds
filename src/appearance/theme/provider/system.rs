@@ -78,7 +78,7 @@ impl Desktop {
         match self {
             Self::Kde => dirs.config_dir().join("kdeglobals"),
             Self::Dms => dirs.cache_dir().join("DankMaterialShell/dms-colors.json"),
-            Self::Noctalia => dirs.cache_dir().join("gds/theme/noctalia.json"),
+            Self::Noctalia => noctalia::output_path(dirs.cache_dir()),
             Self::Gnome => dirs.config_dir().join("dconf/user"),
         }
     }
@@ -95,23 +95,35 @@ fn noctalia_socket(runtime_dir: &Path, display: &str) -> PathBuf {
 }
 
 #[cfg(unix)]
+fn is_noctalia_shell_socket(name: &str) -> bool {
+    name.strip_prefix("noctalia-")
+        .and_then(|rest| rest.strip_suffix(".sock"))
+        .is_some_and(|display| {
+            !display.is_empty() && display != "dmenu" && !display.starts_with("dmenu-")
+        })
+}
+
+#[cfg(unix)]
 fn socket_alive(path: &Path) -> bool {
     std::os::unix::net::UnixStream::connect(path).is_ok()
 }
 
 #[cfg(unix)]
-fn noctalia_alive(runtime_dir: &Path, wayland_display: Option<&str>) -> bool {
+fn find_noctalia_socket(runtime_dir: &Path, wayland_display: Option<&str>) -> Option<PathBuf> {
     if let Some(display) = wayland_display.filter(|value| !value.is_empty()) {
-        return socket_alive(&noctalia_socket(runtime_dir, display));
+        let socket = noctalia_socket(runtime_dir, display);
+        return socket_alive(&socket).then_some(socket);
     }
-    if socket_alive(&noctalia_socket(runtime_dir, DEFAULT_WAYLAND_DISPLAY)) {
-        return true;
+    let default = noctalia_socket(runtime_dir, DEFAULT_WAYLAND_DISPLAY);
+    if socket_alive(&default) {
+        return Some(default);
     }
-    has_live_socket(runtime_dir, |name| {
-        name.strip_prefix("noctalia-")
-            .and_then(|rest| rest.strip_suffix(".sock"))
-            .is_some_and(|display| !display.is_empty())
-    })
+    find_live_socket(runtime_dir, is_noctalia_shell_socket)
+}
+
+#[cfg(unix)]
+fn noctalia_alive(runtime_dir: &Path, wayland_display: Option<&str>) -> bool {
+    find_noctalia_socket(runtime_dir, wayland_display).is_some()
 }
 
 #[cfg(unix)]
@@ -119,7 +131,7 @@ fn dms_alive(runtime_dir: &Path, dms_socket: Option<&Path>) -> bool {
     if let Some(socket) = dms_socket.filter(|path| !path.as_os_str().is_empty()) {
         return socket_alive(socket);
     }
-    has_live_socket(runtime_dir, |name| {
+    find_live_socket(runtime_dir, |name| {
         let Some(stem) = name.strip_suffix(".sock") else {
             return false;
         };
@@ -127,20 +139,24 @@ fn dms_alive(runtime_dir: &Path, dms_socket: Option<&Path>) -> bool {
             || stem.starts_with("dms-")
             || stem.starts_with("danklinux-")
     })
+    .is_some()
 }
 
 #[cfg(unix)]
-fn has_live_socket(runtime_dir: &Path, matches_name: impl Fn(&str) -> bool) -> bool {
-    let Ok(entries) = std::fs::read_dir(runtime_dir) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        if file_name.to_str().is_some_and(&matches_name) && socket_alive(&entry.path()) {
-            return true;
-        }
-    }
-    false
+fn find_live_socket(runtime_dir: &Path, matches_name: impl Fn(&str) -> bool) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(runtime_dir).ok()?;
+    let mut candidates: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let file_name = entry.file_name();
+            file_name
+                .to_str()
+                .is_some_and(&matches_name)
+                .then(|| entry.path())
+        })
+        .collect();
+    candidates.sort();
+    candidates.into_iter().find(|path| socket_alive(path))
 }
 
 pub(crate) fn is_gnome() -> bool {
@@ -195,14 +211,29 @@ pub(super) fn load(
 ) -> Result<Loaded, Error> {
     let dirs = BaseDirs::new().ok_or(Error::NoUserDirectories)?;
     let desktop = Desktop::current(&dirs).ok_or(Error::UnsupportedDesktop)?;
-    if desktop == Desktop::Gnome {
-        return gnome::load(preference, platform, &dirs);
-    }
-    let path = desktop.path(&dirs);
-    let contents = read(&path)?;
     match desktop {
-        Desktop::Kde => kde::parse(&contents, &path, preference),
+        Desktop::Gnome => gnome::load(preference, platform, &dirs),
+        Desktop::Noctalia => {
+            #[cfg(unix)]
+            {
+                let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+                let socket = find_noctalia_socket(&runtime_dir(&dirs), wayland_display.as_deref())
+                    .ok_or(Error::UnsupportedDesktop)?;
+                noctalia::load(&dirs, &socket, preference)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(Error::UnsupportedDesktop)
+            }
+        }
+        Desktop::Kde => {
+            let path = desktop.path(&dirs);
+            let contents = read(&path)?;
+            kde::parse(&contents, &path, preference)
+        }
         Desktop::Dms => {
+            let path = desktop.path(&dirs);
+            let contents = read(&path)?;
             let parsed = dms::parse(&contents, &path, preference)?;
             Ok(Loaded {
                 palette: parsed.palette,
@@ -210,17 +241,6 @@ pub(super) fn load(
                 source_path: Some(path),
             })
         }
-        Desktop::Noctalia => {
-            let parsed = noctalia::parse(&contents, &path, preference)?;
-            Ok(Loaded {
-                palette: parsed.palette,
-                mode: parsed.mode,
-                source_path: Some(path),
-            })
-        }
-        Desktop::Gnome => unreachable!(
-            "GNOME uses Portal and GTK configuration rather than a single palette file"
-        ),
     }
 }
 

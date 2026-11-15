@@ -20,13 +20,7 @@ Appearance settings expose three user-selectable theme sources—**System**, **B
 
 Selected by default (`dms` in legacy configs deserializes as `system`). Resolves from the active desktop session (`XDG_CURRENT_DESKTOP`) or, in standalone Wayland compositor sessions, from live IPC sockets in `$XDG_RUNTIME_DIR` (never reading stale cached exports when no supported shell is running):
 
-- **Noctalia v5** (live `$XDG_RUNTIME_DIR/noctalia-${WAYLAND_DISPLAY:-wayland-0}.sock`, or `noctalia-*.sock` when `WAYLAND_DISPLAY` is unset): Reads `$XDG_CACHE_HOME/gds/theme/noctalia.json` rendered from the bundled template `share/<binary>/noctalia/gds.json` ([gds.json](../../src/appearance/theme/provider/system/noctalia/assets/gds.json)), exporting `schema_version = 1`, active `mode`, `colors.{dark,light}` Material 3 roles, and an optional 22-color `terminal.{dark,light}` palette (`provider/system/noctalia.rs`). Register the template in `~/.config/noctalia/gds.toml` (for Nix / Home Manager, point `input_path` to `"${config.programs.gds-files.package}/share/gds-files/noctalia/gds.json"`):
-
-  ```toml
-  [theme.templates.user.gds]
-  input_path = "/usr/share/gds-files/noctalia/gds.json"
-  output_path = "~/.cache/gds/theme/noctalia.json"
-  ```
+- **Noctalia v5** (live `$XDG_RUNTIME_DIR/noctalia-${WAYLAND_DISPLAY:-wayland-0}.sock`, or `noctalia-*.sock` excluding `dmenu` helpers when `WAYLAND_DISPLAY` is unset): Automatically stages the embedded GDS template ([gds.json](../../src/appearance/theme/provider/system/noctalia/assets/gds.json)) into `$XDG_CACHE_HOME/gds/theme/noctalia-template.json`, registers `${NOCTALIA_CONFIG_HOME:-$XDG_CONFIG_HOME}/noctalia/gds.toml` when absent (never overwriting symlinks or user-edited configs), triggers an immediate render over Noctalia's IPC socket, and reads `$XDG_CACHE_HOME/gds/theme/noctalia.json` (`schema_version = 1`, active `mode`, `colors.{dark,light}` Material 3 roles, and optional 22-color `terminal.{dark,light}` palette in `provider/system/noctalia.rs`). Only Noctalia setups with `include.autoload = false` need to include `gds.toml` explicitly.
 
 - **DankMaterialShell (DMS)** (live `DMS_SOCKET` or `$XDG_RUNTIME_DIR/{dms,danklinux}*.sock` when Noctalia is not active): Reads `$XDG_CACHE_HOME/DankMaterialShell/dms-colors.json` (`colors.light` / `colors.dark`, active `mode`, plus optional `dank16.color0..color15` terminal ANSI colors). Missing or malformed required roles return an explicit error rather than silently pretending a fallback succeeded.
 - **KDE Plasma** (`XDG_CURRENT_DESKTOP` contains `KDE`): Reads `$XDG_CONFIG_HOME/kdeglobals` (`Colors:Window`, `Colors:View`, `Colors:Selection`, `Colors:Button`, `Colors:Tooltip`) via `provider/system/kde.rs`, preserving Plasma accent tinting. System mode derives light/dark from the active window background; explicit Light/Dark overrides GDS mode defaults without synthesizing a second KDE scheme.

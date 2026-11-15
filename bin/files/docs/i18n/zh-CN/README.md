@@ -128,7 +128,7 @@ curl -fsSL https://gds.gandesktop.dev/install.sh | bash
 
 | 桌面环境 | 跟随的系统外观 |
 | --- | --- |
-| Noctalia | 通过随包附带的 GDS 模板同步系统配色、终端色板与明暗模式 |
+| Noctalia | 系统配色、终端色板与明暗模式，包括壁纸生成的配色 |
 | DankMaterialShell | 系统配色与明暗模式，包括壁纸生成的配色 |
 | KDE Plasma | 系统配色方案 |
 | GNOME | 系统明暗偏好与 GTK 外观 |

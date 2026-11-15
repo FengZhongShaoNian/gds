@@ -254,7 +254,7 @@ jobs:
                   portal_bin=/usr/libexec/xdg-desktop-portal-gds
                   ;;
                 arch)
-                  pacman -Sy --noconfirm curl ca-certificates desktop-file-utils
+                  pacman -Syu --noconfirm curl ca-certificates desktop-file-utils
                   portal_bin=/usr/lib/xdg-desktop-portal-gds
                   ;;
               esac
@@ -264,7 +264,9 @@ jobs:
               desktop-file-validate /usr/share/applications/io.github.GanDesktop.GdsFiles.desktop
               bash /install.sh --yes --with-portal
               bash /install.sh --yes --uninstall
+              hash -r
               ! command -v gds-files >/dev/null 2>&1
+              ! test -e "$portal_bin"
             '
 
   publish:

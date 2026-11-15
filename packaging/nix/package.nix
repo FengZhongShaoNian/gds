@@ -14,7 +14,7 @@ let
     lib.mapAttrs' (key: value: lib.nameValuePair "${key}[${locale}]" value) entries
   ) (builtins.removeAttrs labels [ "default" ]);
   libraries = with pkgs; [
-    wayland libxkbcommon fontconfig freetype libGL vulkan-loader libxcb
+    wayland libxkbcommon fontconfig freetype libGL vulkan-loader libxcb sqlite
   ] ++ extraBuildInputs;
 in
 rustPlatform.buildRustPackage {
@@ -57,8 +57,11 @@ rustPlatform.buildRustPackage {
   })) ];
 
   inherit checkFlags;
-  preCheck = lib.optionalString (application == "files") ''
-    export XDG_DATA_DIRS="${pkgs.shared-mime-info}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+  preCheck = ''
+    export LD_LIBRARY_PATH="${lib.makeLibraryPath libraries}''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    ${lib.optionalString (application == "files") ''
+      export XDG_DATA_DIRS="${pkgs.shared-mime-info}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+    ''}
   '';
   postInstall = ''
     install -Dm644 LICENSE "$out/share/licenses/${binary}/LICENSE"

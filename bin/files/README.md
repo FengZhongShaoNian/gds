@@ -131,7 +131,7 @@ Prebuilt `x86_64` packages cover Arch Linux, Debian 13, Ubuntu 24.04 & 26.04 LTS
 curl -fsSL https://gds.gandesktop.dev/install.sh | bash
 ```
 
-Interactive terminals let you review install/upgrade state and toggle optional GDS Portal installation; pass `-y` (`bash -s -- -y` or `-y --with-portal`) for non-interactive runs, or `--dry-run` to preview the resolved target without modifying the system. You can also download packages directly from [GitHub Releases](https://github.com/GanDesktop/gds/releases) and follow the [Portal configuration guide](../../docs/apps/files/fedora.md#optional-gds-portal).
+Interactive terminals let you review install/upgrade state and toggle optional GDS Portal installation; pass `-y` (`bash -s -- -y` or `-y --with-portal`) for non-interactive runs, or `--dry-run` to preview the resolved target without modifying the system. Re-running the same command upgrades an existing installation in place. To remove GDS later, pass `bash -s -- --uninstall` (preserves user settings, state, and cache in `~/.config/gds`, `~/.local/state/gds`, and `~/.cache/gds`), `--uninstall --portal-only` to remove only GDS Portal, or `--uninstall --purge` to also delete GDS user data directories. You can also download packages directly from [GitHub Releases](https://github.com/GanDesktop/gds/releases) and follow the [Portal configuration guide](../../docs/apps/files/fedora.md#optional-gds-portal).
 
 After installation, open **GDS Files** from the application menu or run `gds-files`.
 

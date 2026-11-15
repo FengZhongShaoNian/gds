@@ -182,7 +182,8 @@ elif name == 'pacman':
         entry = installed.get(pkg)
         if not entry:
             sys.exit(1)
-        print(f'{pkg} {entry["version"]}')
+        actual = entry.get('name', pkg)
+        print(f'{actual} {entry["version"]}')
     elif args and args[0] == '-U':
         for arg in args:
             if arg.startswith('/'):
@@ -243,9 +244,12 @@ class InstallerTests(unittest.TestCase):
             stub.chmod(0o755)
 
         self.script = INSTALLER.read_text(encoding='utf-8')
+        self.home = self.root / 'home'
+        self.home.mkdir()
         self.env = {
             **os.environ,
             'PATH': f'{bindir}:{os.environ["PATH"]}',
+            'HOME': str(self.home),
             'TEST_REPO': str(self.repo),
             'TEST_LOG': str(self.log),
             'GDS_OS_RELEASE': str(self.os_release),
@@ -257,6 +261,10 @@ class InstallerTests(unittest.TestCase):
         self.env.pop('GDS_TTY', None)
         self.env.pop('GDS_NONINTERACTIVE', None)
         self.env.pop('GDS_ALLOW_FILE_URL', None)
+        self.env.pop('XDG_CONFIG_HOME', None)
+        self.env.pop('XDG_STATE_HOME', None)
+        self.env.pop('XDG_CACHE_HOME', None)
+        self.env.pop('SUDO_USER', None)
 
     def write_os_release(self, **fields):
         lines = []
@@ -555,6 +563,186 @@ class InstallerTests(unittest.TestCase):
                 'github:GanDesktop/gds/v1.2.3#xdg-desktop-portal-gds',
             ],
         )
+
+    def test_arch_bin_migration_and_legacy_nix_suite(self):
+        # AUR -bin packages (both direct -bin name and provides=('gds-files') lookup) are upgraded and uninstalled.
+        self.write_os_release(ID='arch')
+        arch_bin = json.dumps({
+            'gds-files-bin': {'version': '0.0.2-1'},
+            'xdg-desktop-portal-gds': {'name': 'xdg-desktop-portal-gds-bin', 'version': '0.0.2-1'},
+        })
+        result = self.run_installer(['-y'], extra_env={'TEST_INSTALLED_JSON': arch_bin})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pac_cmds = [cmd for cmd in self.commands('pacman') if cmd[1] != '-Q']
+        self.assertEqual(
+            pac_cmds[0],
+            ['pacman', '-Rdd', '--noconfirm', 'gds-files-bin', 'xdg-desktop-portal-gds-bin'],
+        )
+        self.assertEqual(pac_cmds[1][:3], ['pacman', '-U', '--noconfirm'])
+
+        result = self.run_installer(['--uninstall', '-y'], extra_env={'TEST_INSTALLED_JSON': arch_bin})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pac_cmds = [cmd for cmd in self.commands('pacman') if cmd[1] != '-Q']
+        self.assertEqual(pac_cmds, [['pacman', '-R', '--noconfirm', 'gds-files-bin', 'xdg-desktop-portal-gds-bin']])
+
+        # Legacy unversioned Nix `gds` suite store path upgrades cleanly without duplicate remove args.
+        self.write_os_release(ID='nixos', VERSION_ID='26.05')
+        legacy_nix = json.dumps({
+            'elements': {
+                'gds': {
+                    'active': True,
+                    'storePaths': ['/nix/store/v559bxzk270ly3xwq5fj525mzbkcjy7k-gds'],
+                }
+            }
+        })
+        result = self.run_installer(['-y'], extra_env={'TEST_NIX_PROFILE_JSON': legacy_nix})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        nix_cmds = [cmd[3:] for cmd in self.commands('nix') if cmd[3:5] != ['profile', 'list']]
+        self.assertEqual(
+            nix_cmds[0],
+            ['profile', 'remove', '/nix/store/v559bxzk270ly3xwq5fj525mzbkcjy7k-gds'],
+        )
+        self.assertEqual(
+            nix_cmds[1],
+            [
+                'profile',
+                'add',
+                'github:GanDesktop/gds/v1.2.3#gds-files',
+                'github:GanDesktop/gds/v1.2.3#xdg-desktop-portal-gds',
+            ],
+        )
+
+        # --without-portal still removes conflicting legacy `gds` before adding `gds-files`.
+        result = self.run_installer(['-y', '--without-portal'], extra_env={'TEST_NIX_PROFILE_JSON': legacy_nix})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        nix_cmds = [cmd[3:] for cmd in self.commands('nix') if cmd[3:5] != ['profile', 'list']]
+        self.assertEqual(nix_cmds[0], ['profile', 'remove', '/nix/store/v559bxzk270ly3xwq5fj525mzbkcjy7k-gds'])
+        self.assertEqual(nix_cmds[1], ['profile', 'add', 'github:GanDesktop/gds/v1.2.3#gds-files'])
+
+        # --portal-only cannot partially upgrade or uninstall legacy combined `gds`.
+        for args in (['-y', '--portal-only'], ['--uninstall', '-y', '--portal-only']):
+            result = self.run_installer(args, extra_env={'TEST_NIX_PROFILE_JSON': legacy_nix})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Legacy combined Nix package', result.stderr)
+
+        # --uninstall removes legacy combined `gds` cleanly.
+        result = self.run_installer(['--uninstall', '-y'], extra_env={'TEST_NIX_PROFILE_JSON': legacy_nix})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        nix_cmds = [cmd[3:] for cmd in self.commands('nix') if cmd[3:5] != ['profile', 'list']]
+        self.assertEqual(nix_cmds, [['profile', 'remove', '/nix/store/v559bxzk270ly3xwq5fj525mzbkcjy7k-gds']])
+
+        # Split `gds-files-0.0.2` must NOT be misidentified as legacy `gds`.
+        split_only = json.dumps({
+            'elements': {
+                'gds-files': {
+                    'active': True,
+                    'storePaths': ['/nix/store/00000000000000000000000000000000-gds-files-0.0.2'],
+                }
+            }
+        })
+        result = self.run_installer(
+            ['--uninstall', '--portal-only', '-y'],
+            extra_env={'TEST_NIX_PROFILE_JSON': split_only},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('not currently installed', result.stdout)
+        nix_cmds = [cmd[3:] for cmd in self.commands('nix') if cmd[3:5] != ['profile', 'list']]
+        self.assertEqual(nix_cmds, [])
+
+    def test_selective_components_and_uninstall_purge(self):
+        self.write_os_release(ID='debian', VERSION_ID='13')
+
+        # Option validation guards.
+        for bad_args, snippet in [
+            (['--purge'], '--uninstall'),
+            (['--portal-only', '--without-portal'], '--portal-only'),
+        ]:
+            result = self.run_installer(bad_args)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(snippet, result.stderr)
+
+        # --portal-only installs only xdg-desktop-portal-gds.
+        result = self.run_installer(['-y', '--portal-only'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [Path(a).name for a in self.commands('apt-get')[-1] if a.startswith('/')],
+            [PACKAGES[3]],
+        )
+
+        installed_both = json.dumps({
+            'gds-files': {'status': 'ii ', 'version': '1.2.3-1~debian13'},
+            'xdg-desktop-portal-gds': {'status': 'ii ', 'version': '1.2.3-1~debian13'},
+        })
+
+        # Selective uninstall via CLI flags.
+        result = self.run_installer(['--uninstall', '--portal-only', '-y'], extra_env={'TEST_INSTALLED_JSON': installed_both})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands('apt-get'), [['apt-get', 'remove', '-y', 'xdg-desktop-portal-gds']])
+
+        result = self.run_installer(['--uninstall', '--without-portal', '-y'], extra_env={'TEST_INSTALLED_JSON': installed_both})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands('apt-get'), [['apt-get', 'remove', '-y', 'gds-files']])
+
+        # Cannot --purge while keeping gds-files installed.
+        result = self.run_installer(
+            ['--uninstall', '--portal-only', '--purge', '-y'],
+            extra_env={'TEST_INSTALLED_JSON': installed_both},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('keeping gds-files', result.stderr)
+
+        # Interactive uninstall toggles off gds-files [1] and confirms removal of Portal only.
+        tty_file = self.root / 'tty_uninstall'
+        tty_file.write_text('1\ny\n', encoding='utf-8')
+        result = self.run_installer(
+            ['--uninstall'],
+            extra_env={'TEST_INSTALLED_JSON': installed_both, 'GDS_TTY': str(tty_file)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands('apt-get'), [['apt-get', 'remove', '-y', 'xdg-desktop-portal-gds']])
+
+        # --purge dry-run previews user directories without deleting them; real --purge deletes only gds dirs.
+        custom_cfg = self.root / 'custom-cfg'
+        gds_cfg = custom_cfg / 'gds'
+        gds_state = self.home / '.local/state/gds'
+        gds_cache = self.home / '.cache/gds'
+        thumbs = self.home / '.cache/thumbnails'
+        for d in (gds_cfg, gds_state, gds_cache, thumbs):
+            d.mkdir(parents=True)
+        (gds_cfg / 'settings.toml').write_text('k = 1\n', encoding='utf-8')
+        (gds_state / 'state.sqlite').write_text('db', encoding='utf-8')
+        (gds_cache / 'cache.json').write_text('{}', encoding='utf-8')
+        (thumbs / 'keep.png').write_bytes(b'png')
+
+        purge_env = {
+            'TEST_INSTALLED_JSON': installed_both,
+            'XDG_CONFIG_HOME': str(custom_cfg),
+        }
+        result = self.run_installer(['--uninstall', '--purge', '--dry-run'], extra_env=purge_env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(gds_cfg), result.stdout)
+        self.assertTrue(gds_cfg.exists())
+        self.assertEqual(self.commands('apt-get'), [])
+
+        result = self.run_installer(['--uninstall', '--purge', '-y'], extra_env=purge_env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands('apt-get'), [['apt-get', 'remove', '-y', 'gds-files', 'xdg-desktop-portal-gds']])
+        self.assertFalse(gds_cfg.exists())
+        self.assertFalse(gds_state.exists())
+        self.assertFalse(gds_cache.exists())
+        self.assertTrue((thumbs / 'keep.png').exists())
+
+        # Leftover data cleanup works even when packages were already removed earlier.
+        gds_cfg.mkdir(parents=True)
+        (gds_cfg / 'leftover').write_text('1', encoding='utf-8')
+        result = self.run_installer(
+            ['--uninstall', '--purge', '-y'],
+            extra_env={'TEST_INSTALLED_JSON': '{}', 'XDG_CONFIG_HOME': str(custom_cfg)},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('user data purged', result.stdout)
+        self.assertEqual(self.commands('apt-get'), [])
+        self.assertFalse(gds_cfg.exists())
 
 
 if __name__ == '__main__':

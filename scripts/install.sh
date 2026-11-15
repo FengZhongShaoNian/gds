@@ -35,12 +35,14 @@ Options:
   -y, --yes, --non-interactive  Skip interactive prompts and apply defaults
       --with-portal             Include optional xdg-desktop-portal-gds backend
       --without-portal          Exclude xdg-desktop-portal-gds even if installed
+      --portal-only             Target only xdg-desktop-portal-gds (install or uninstall)
       --reinstall               Reinstall even when already at the target version
       --distro <ID:VER>         Override native target (e.g. ubuntu:24.04, arch:rolling)
       --version <TAG>           Install a specific release tag (e.g. v0.0.2)
       --nix                     Use the existing Nix installation via flake profile
       --dry-run                 Probe system, inspect installed versions, and print plan only
       --uninstall               Remove installed GDS packages (keeps user config and state)
+      --purge                   With --uninstall, also remove ~/.config/gds, ~/.local/state/gds, and ~/.cache/gds
   -h, --help                    Show this help
 
 Native packages (x86_64):
@@ -304,12 +306,14 @@ parse_args() {
         opt_non_interactive=true
     fi
     opt_portal='auto'
+    opt_portal_only=false
     opt_reinstall=false
     opt_distro=''
     opt_version=''
     opt_nix=false
     opt_dry_run=false
     opt_uninstall=false
+    opt_purge=false
 
     while (($#)); do
         case "$1" in
@@ -321,8 +325,16 @@ parse_args() {
                 opt_portal='include'
                 shift ;;
             --without-portal)
+                if $opt_portal_only; then
+                    fail '--without-portal cannot be combined with --portal-only.'
+                fi
                 [[ $opt_portal != include ]] || fail '--without-portal cannot be combined with --with-portal.'
                 opt_portal='exclude'
+                shift ;;
+            --portal-only)
+                [[ $opt_portal != exclude ]] || fail '--portal-only cannot be combined with --without-portal.'
+                opt_portal_only=true
+                opt_portal='include'
                 shift ;;
             --reinstall)
                 opt_reinstall=true
@@ -354,6 +366,9 @@ parse_args() {
             --uninstall)
                 opt_uninstall=true
                 shift ;;
+            --purge)
+                opt_purge=true
+                shift ;;
             -h|--help)
                 usage
                 exit 0 ;;
@@ -362,6 +377,9 @@ parse_args() {
         esac
     done
 
+    if $opt_purge && ! $opt_uninstall; then
+        fail '--purge can only be used with --uninstall.'
+    fi
     if $opt_nix && [[ -n $opt_distro ]]; then
         fail '--nix cannot be combined with --distro.'
     fi
@@ -580,14 +598,13 @@ query_installed_pkg() {
             fi
             return 1 ;;
         pacman)
-            local out ver
-            if out=$(pacman -Q "$pkg" 2>/dev/null); then
+            local out actual_pkg ver
+            if out=$(pacman -Q "$pkg" 2>/dev/null) || \
+               out=$(pacman -Q "${pkg}-git" 2>/dev/null) || \
+               out=$(pacman -Q "${pkg}-bin" 2>/dev/null); then
+                actual_pkg=${out%% *}
                 ver=${out#* }
-                printf '%s\t%s' "$pkg" "$ver"
-                return 0
-            elif out=$(pacman -Q "${pkg}-git" 2>/dev/null); then
-                ver=${out#* }
-                printf '%s-git\t%s' "$pkg" "$ver"
+                printf '%s\t%s' "$actual_pkg" "$ver"
                 return 0
             fi
             return 1 ;;
@@ -604,13 +621,29 @@ query_installed_pkg() {
     esac
 }
 
+query_legacy_nix_suite() {
+    [[ $backend == nix ]] || return 1
+    local json match store_path ver='legacy'
+    json=$(nix --extra-experimental-features 'nix-command flakes' profile list --json 2>/dev/null || printf '')
+    match=$(printf '%s' "$json" | grep -oE '/nix/store/[0-9a-z]+-gds(-[0-9][^"[:space:],}]*)?"' | head -n 1 || true)
+    store_path=${match%\"}
+    if [[ -n $store_path ]]; then
+        if [[ $store_path =~ -gds-([0-9].*)$ ]]; then
+            ver=${BASH_REMATCH[1]}
+        fi
+        printf '%s\t%s' "$store_path" "$ver"
+        return 0
+    fi
+    return 1
+}
+
 classify_component_state() {
     local prefix=$1 pkg=$2 tgt_ver=$3
     local cur_info cur_name='' cur_ver='' state='fresh'
 
     if cur_info=$(query_installed_pkg "$pkg"); then
         IFS=$'\t' read -r cur_name cur_ver <<< "$cur_info"
-        if [[ $cur_name == "${pkg}-git" && $backend == pacman ]]; then
+        if [[ ( $cur_name == "${pkg}-git" || $cur_name == "${pkg}-bin" ) && $backend == pacman ]]; then
             state='upgrade'
         else
             local cmp
@@ -657,62 +690,239 @@ confirm_tty() {
     esac
 }
 
-run_uninstall() {
-    local files_info portal_info files_cur='' portal_cur=''
-    local -a remove_pkgs=() display_pkgs=()
-    if files_info=$(query_installed_pkg 'gds-files'); then
-        IFS=$'\t' read -r files_cur _ <<< "$files_info"
+resolve_purge_dirs() {
+    purge_dirs=()
+    if ((EUID == 0)) && [[ -n ${SUDO_USER:-} ]]; then
+        fail "Do not run --purge under sudo (SUDO_USER=$SUDO_USER); run as your normal user so your own XDG directories are cleaned."
+    fi
+    [[ -n ${HOME:-} && $HOME == /* && $HOME != / ]] || fail "Refusing --purge: unsafe or unset HOME='${HOME:-}'."
+
+    local cfg_base=${XDG_CONFIG_HOME:-}
+    [[ $cfg_base == /* ]] || cfg_base="$HOME/.config"
+    local state_base=${XDG_STATE_HOME:-}
+    [[ $state_base == /* ]] || state_base="$HOME/.local/state"
+    local cache_base=${XDG_CACHE_HOME:-}
+    [[ $cache_base == /* ]] || cache_base="$HOME/.cache"
+
+    local base d
+    for base in "$cfg_base" "$state_base" "$cache_base"; do
+        base=$(strip_trailing_slashes "$base")
+        [[ $base != / ]] || fail "Refusing --purge: unsafe XDG base directory '/'."
+        d="$base/gds"
+        [[ $d == /*/gds ]] || fail "Refusing --purge: unsafe target path '$d'."
+        if [[ -e $d || -L $d ]]; then
+            purge_dirs+=("$d")
+        fi
+    done
+}
+
+build_uninstall_lists() {
+    remove_pkgs=()
+    display_pkgs=()
+    if $uninst_files; then
         remove_pkgs+=("$files_cur")
         display_pkgs+=("gds-files")
     fi
-    if portal_info=$(query_installed_pkg 'xdg-desktop-portal-gds'); then
-        IFS=$'\t' read -r portal_cur _ <<< "$portal_info"
+    if $uninst_portal; then
         remove_pkgs+=("$portal_cur")
         display_pkgs+=("xdg-desktop-portal-gds")
     fi
+    if $uninst_legacy; then
+        remove_pkgs+=("$legacy_cur")
+        display_pkgs+=("gds (legacy)")
+    fi
+}
 
-    if ((${#remove_pkgs[@]} == 0)); then
-        printf 'GDS is not currently installed.\n'
-        return 0
+print_uninstall_plan() {
+    local show_indices=$1
+    printf '\nGDS Uninstall Plan\n'
+    printf '  Backend  : %s\n' "$backend"
+    if [[ $show_indices == true ]]; then
+        local mark_files='[ ]' mark_portal='[ ]'
+        if $uninst_files; then mark_files='[x]'; fi
+        if $uninst_portal; then mark_portal='[x]'; fi
+        printf '\n'
+        printf '  [1] %s %-24s %s\n' "$mark_files" 'gds-files' "$files_ver"
+        printf '  [2] %s %-24s %s\n' "$mark_portal" 'xdg-desktop-portal-gds' "$portal_ver"
+        printf '\n'
+    fi
+    if ((${#display_pkgs[@]} > 0)); then
+        printf '  Remove   : %s\n' "${display_pkgs[*]}"
+    else
+        printf '  Remove   : (none — packages already uninstalled)\n'
+    fi
+    if $opt_purge; then
+        if ((${#purge_dirs[@]} > 0)); then
+            printf '  Purge    : %s\n' "${purge_dirs[*]}"
+        else
+            printf '  Purge    : (no GDS user data directories found)\n'
+        fi
+    else
+        printf '  Preserved: ~/.config/gds, ~/.local/state/gds, and ~/.cache/gds\n'
+    fi
+}
+
+run_uninstall() {
+    local files_info portal_info legacy_info
+    local files_cur='' files_ver='' portal_cur='' portal_ver='' legacy_cur=''
+    local has_files=false has_portal=false has_legacy=false
+    local uninst_files=false uninst_portal=false uninst_legacy=false
+    local -a remove_pkgs=() display_pkgs=() purge_dirs=()
+
+    if $opt_purge; then
+        resolve_purge_dirs
     fi
 
-    printf 'GDS Uninstall Plan\n'
-    printf '  Backend : %s\n' "$backend"
-    printf '  Remove  : %s\n' "${display_pkgs[*]}"
-    printf '  Preserved: ~/.config/gds and ~/.local/state/gds\n'
+    if files_info=$(query_installed_pkg 'gds-files'); then
+        IFS=$'\t' read -r files_cur files_ver <<< "$files_info"
+        has_files=true
+    fi
+    if portal_info=$(query_installed_pkg 'xdg-desktop-portal-gds'); then
+        IFS=$'\t' read -r portal_cur portal_ver <<< "$portal_info"
+        has_portal=true
+    fi
+    if $use_nix && legacy_info=$(query_legacy_nix_suite); then
+        IFS=$'\t' read -r legacy_cur _ <<< "$legacy_info"
+        has_legacy=true
+    fi
+
+    if $has_legacy && { $opt_portal_only || [[ $opt_portal == exclude ]]; }; then
+        fail "Legacy combined Nix package 'gds' cannot be partially uninstalled. Run --uninstall without --portal-only/--without-portal, or upgrade first to split packages."
+    fi
+
+    if $opt_portal_only; then
+        uninst_portal=$has_portal
+    else
+        uninst_files=$has_files
+        uninst_legacy=$has_legacy
+        if [[ $opt_portal != exclude ]]; then
+            uninst_portal=$has_portal
+        fi
+    fi
+
+    if $opt_purge && { { $has_files && ! $uninst_files; } || { $has_legacy && ! $uninst_legacy; }; }; then
+        fail '--purge cannot be used while keeping gds-files installed.'
+    fi
+
+    build_uninstall_lists
+
+    if ((${#remove_pkgs[@]} == 0)); then
+        if ! $opt_purge || ((${#purge_dirs[@]} == 0)); then
+            if $opt_portal_only; then
+                printf 'xdg-desktop-portal-gds is not currently installed.\n'
+            else
+                printf 'GDS is not currently installed.\n'
+            fi
+            return 0
+        fi
+    fi
 
     if $opt_dry_run; then
+        print_uninstall_plan false
         printf '\nDry run complete; no changes were made.\n'
         return 0
     fi
 
-    if ! $opt_non_interactive; then
-        open_tty_fd
-        if ! confirm_tty $'\nProceed with uninstall? [y/N]: '; then
-            close_tty_fd
-            printf 'Uninstall cancelled.\n'
-            return 0
-        fi
-        close_tty_fd
+    local can_toggle=false
+    if $has_files && $has_portal && ! $has_legacy && ! $opt_portal_only && [[ $opt_portal == auto ]]; then
+        can_toggle=true
     fi
 
-    if $use_nix; then
-        if ((EUID == 0)) && [[ -n ${SUDO_USER:-} ]]; then
-            fail "Do not run Nix uninstall under sudo (SUDO_USER=$SUDO_USER); run as your normal user."
-        fi
-        nix --extra-experimental-features 'nix-command flakes' profile remove "${remove_pkgs[@]}"
+    if $opt_non_interactive; then
+        print_uninstall_plan false
     else
-        local -a elevate=()
-        if ((EUID != 0)); then
-            elevate=(sudo)
+        open_tty_fd
+        local reply=''
+        while true; do
+            print_uninstall_plan "$can_toggle"
+            if $can_toggle; then
+                printf '\nToggle [1-2], or proceed with uninstall? [y/N]: '
+            else
+                printf '\nProceed with uninstall? [y/N]: '
+            fi
+            if ! IFS= read -r reply <&3; then
+                close_tty_fd
+                printf 'Uninstall cancelled.\n'
+                return 0
+            fi
+            case "$reply" in
+                1)
+                    if $can_toggle; then
+                        if $uninst_files && $opt_purge; then
+                            printf 'Cannot keep gds-files when --purge is enabled.\n'
+                        else
+                            if $uninst_files; then uninst_files=false; else uninst_files=true; fi
+                            build_uninstall_lists
+                        fi
+                    else
+                        close_tty_fd
+                        printf 'Uninstall cancelled.\n'
+                        return 0
+                    fi ;;
+                2)
+                    if $can_toggle; then
+                        if $uninst_portal; then uninst_portal=false; else uninst_portal=true; fi
+                        build_uninstall_lists
+                    else
+                        close_tty_fd
+                        printf 'Uninstall cancelled.\n'
+                        return 0
+                    fi ;;
+                [yY]|[yY][eE][sS])
+                    break ;;
+                ''|[nN]|[nN][oO]|[qQ])
+                    close_tty_fd
+                    printf 'Uninstall cancelled.\n'
+                    return 0 ;;
+                *)
+                    if $can_toggle; then
+                        printf 'Invalid choice: %s.\n' "$reply"
+                    else
+                        close_tty_fd
+                        printf 'Uninstall cancelled.\n'
+                        return 0
+                    fi ;;
+            esac
+        done
+        close_tty_fd
+        build_uninstall_lists
+        if ((${#remove_pkgs[@]} == 0)) && { ! $opt_purge || ((${#purge_dirs[@]} == 0)); }; then
+            printf 'No components selected. Uninstall cancelled.\n'
+            return 0
         fi
-        case "$backend" in
-            deb) "${elevate[@]}" apt-get remove -y "${remove_pkgs[@]}" ;;
-            rpm) "${elevate[@]}" dnf remove -y "${remove_pkgs[@]}" ;;
-            pacman) "${elevate[@]}" pacman -R --noconfirm "${remove_pkgs[@]}" ;;
-        esac
     fi
-    printf 'GDS removed. User settings and state were kept.\n'
+
+    if ((${#remove_pkgs[@]} > 0)); then
+        if $use_nix; then
+            if ((EUID == 0)) && [[ -n ${SUDO_USER:-} ]]; then
+                fail "Do not run Nix uninstall under sudo (SUDO_USER=$SUDO_USER); run as your normal user."
+            fi
+            nix --extra-experimental-features 'nix-command flakes' profile remove "${remove_pkgs[@]}"
+        else
+            local -a elevate=()
+            if ((EUID != 0)); then
+                elevate=(sudo)
+            fi
+            case "$backend" in
+                deb) "${elevate[@]}" apt-get remove -y "${remove_pkgs[@]}" ;;
+                rpm) "${elevate[@]}" dnf remove -y "${remove_pkgs[@]}" ;;
+                pacman) "${elevate[@]}" pacman -R --noconfirm "${remove_pkgs[@]}" ;;
+            esac
+        fi
+    fi
+
+    if $opt_purge; then
+        if ((${#purge_dirs[@]} > 0)); then
+            rm -rf -- "${purge_dirs[@]}"
+        fi
+        if ((${#remove_pkgs[@]} > 0)); then
+            printf 'GDS removed and user data purged.\n'
+        else
+            printf 'GDS user data purged.\n'
+        fi
+    else
+        printf 'GDS removed. User settings and state were kept.\n'
+    fi
 }
 
 resolve_release() {
@@ -842,12 +1052,40 @@ resolve_release() {
 inspect_installed() {
     files_cur_pkg=''; files_cur_ver=''; files_state='fresh'
     portal_cur_pkg=''; portal_cur_ver=''; portal_state='fresh'
+    legacy_nix_pkg=''; legacy_nix_ver=''
     classify_component_state files 'gds-files' "$files_tgt_ver"
     if $portal_available; then
         classify_component_state portal 'xdg-desktop-portal-gds' "$portal_tgt_ver"
     fi
 
+    if $use_nix; then
+        local legacy_info
+        if legacy_info=$(query_legacy_nix_suite); then
+            IFS=$'\t' read -r legacy_nix_pkg legacy_nix_ver <<< "$legacy_info"
+            if $opt_portal_only && [[ -z $files_cur_pkg ]]; then
+                fail "Legacy combined Nix package 'gds' cannot be upgraded with --portal-only alone because removing 'gds' would also remove gds-files. Re-run without --portal-only to migrate to split packages."
+            fi
+            local legacy_label='legacy gds'
+            if [[ $legacy_nix_ver != legacy ]]; then
+                legacy_label="gds $legacy_nix_ver"
+            fi
+            if [[ $files_state == fresh ]]; then
+                files_cur_pkg=$legacy_nix_pkg
+                files_cur_ver=$legacy_label
+                files_state='upgrade'
+            fi
+            if $portal_available && [[ $portal_state == fresh ]]; then
+                portal_cur_pkg=$legacy_nix_pkg
+                portal_cur_ver=$legacy_label
+                portal_state='upgrade'
+            fi
+        fi
+    fi
+
     select_files=true
+    if $opt_portal_only; then
+        select_files=false
+    fi
     select_portal=false
     portal_auto_included=false
     if $portal_available; then
@@ -1044,14 +1282,34 @@ install_selected() {
             fail "Do not run Nix installation under sudo (SUDO_USER=$SUDO_USER); run as your normal user so it installs into your own profile."
         fi
         local flake_ref="$flake_uri/$release_tag"
-        local -a nix_remove=() nix_add=()
+        local -a nix_remove_raw=() nix_remove=() nix_add=()
         if $select_files; then
-            if [[ -n $files_cur_pkg ]]; then nix_remove+=("$files_cur_pkg"); fi
+            if [[ -n $files_cur_pkg ]]; then nix_remove_raw+=("$files_cur_pkg"); fi
             nix_add+=("$flake_ref#gds-files")
         fi
         if $select_portal; then
-            if [[ -n $portal_cur_pkg ]]; then nix_remove+=("$portal_cur_pkg"); fi
+            if [[ -n $portal_cur_pkg ]]; then nix_remove_raw+=("$portal_cur_pkg"); fi
             nix_add+=("$flake_ref#xdg-desktop-portal-gds")
+        fi
+        if [[ -n ${legacy_nix_pkg:-} ]] && { $select_files || $select_portal; }; then
+            nix_remove_raw+=("$legacy_nix_pkg")
+        fi
+        if ((${#nix_remove_raw[@]} > 0)); then
+            local item existing dup
+            for item in "${nix_remove_raw[@]}"; do
+                dup=false
+                if ((${#nix_remove[@]} > 0)); then
+                    for existing in "${nix_remove[@]}"; do
+                        if [[ $existing == "$item" ]]; then
+                            dup=true
+                            break
+                        fi
+                    done
+                fi
+                if ! $dup; then
+                    nix_remove+=("$item")
+                fi
+            done
         fi
         if ((${#nix_remove[@]} > 0)); then
             nix --extra-experimental-features 'nix-command flakes' profile remove "${nix_remove[@]}"
@@ -1060,21 +1318,21 @@ install_selected() {
         return 0
     fi
 
-    local -a selected_files=() selected_hashes=() selected_states=() git_conflicts=()
+    local -a selected_files=() selected_hashes=() selected_states=() pac_conflicts=()
     if $select_files; then
         selected_files+=("$files_filename")
         selected_hashes+=("$files_sha")
         selected_states+=("$files_state")
-        if [[ $files_cur_pkg == *-git && $files_filename != *-git-* ]]; then
-            git_conflicts+=("$files_cur_pkg")
+        if [[ ( $files_cur_pkg == *-git || $files_cur_pkg == *-bin ) && $files_filename != *-git-* && $files_filename != *-bin-* ]]; then
+            pac_conflicts+=("$files_cur_pkg")
         fi
     fi
     if $select_portal; then
         selected_files+=("$portal_filename")
         selected_hashes+=("$portal_sha")
         selected_states+=("$portal_state")
-        if [[ $portal_cur_pkg == *-git && $portal_filename != *-git-* ]]; then
-            git_conflicts+=("$portal_cur_pkg")
+        if [[ ( $portal_cur_pkg == *-git || $portal_cur_pkg == *-bin ) && $portal_filename != *-git-* && $portal_filename != *-bin-* ]]; then
+            pac_conflicts+=("$portal_cur_pkg")
         fi
     fi
 
@@ -1100,8 +1358,8 @@ install_selected() {
 
     case "$backend" in
         pacman)
-            if ((${#git_conflicts[@]} > 0)); then
-                "${elevate[@]}" pacman -Rdd --noconfirm "${git_conflicts[@]}"
+            if ((${#pac_conflicts[@]} > 0)); then
+                "${elevate[@]}" pacman -Rdd --noconfirm "${pac_conflicts[@]}"
             fi
             local pac_sync_dir=${GDS_PACMAN_SYNC_DIR:-/var/lib/pacman/sync}
             if ! compgen -G "$pac_sync_dir/*.db" >/dev/null; then

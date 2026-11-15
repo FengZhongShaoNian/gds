@@ -118,7 +118,7 @@ sudo nixos-rebuild switch --flake .
 curl -fsSL https://gds.gandesktop.dev/install.sh | bash
 ```
 
-在交互终端中运行会自动检测本机已安装版本（区分全新安装、升级或重装），并支持交互式勾选是否同时安装 GDS Portal；非交互环境请追加 `-y`（例如 `bash -s -- -y --with-portal`），预览计划可使用 `--dry-run`。也可从 [GitHub Releases](https://github.com/GanDesktop/gds/releases) 下载对应安装包，按 [Portal 配置说明](../../../../../docs/apps/files/fedora.md#optional-gds-portal) 手动启用。
+在交互终端中运行会自动检测本机已安装版本（区分全新安装、升级或重装），并支持交互式勾选是否同时安装 GDS Portal；非交互环境请追加 `-y`（例如 `bash -s -- -y --with-portal`），预览计划可使用 `--dry-run`，重复运行同一命令即可原地升级。如需卸载，可传入 `bash -s -- --uninstall`（保留 `~/.config/gds`、`~/.local/state/gds` 与 `~/.cache/gds` 中的用户数据）、`--uninstall --portal-only`（仅卸载 GDS Portal），或 `--uninstall --purge` 一并清理 GDS 用户配置、状态与缓存。也可从 [GitHub Releases](https://github.com/GanDesktop/gds/releases) 下载对应安装包，按 [Portal 配置说明](../../../../../docs/apps/files/fedora.md#optional-gds-portal) 手动启用。
 
 安装后，从应用菜单打开 **GDS Files**，或运行 `gds-files`。
 

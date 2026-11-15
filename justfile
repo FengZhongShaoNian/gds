@@ -39,9 +39,46 @@ arch profile="dev":
 deb distro="debian" release="" profile="dev":
     @just _python scripts/build-linux-package.py "$1" --release "$2" --profile "$3"
 
-# 安装 Files（或指定 portal）到当前用户的 Nix profile。
+# 安装 Files（或指定 portal / all）到当前用户的 Nix profile。
 install app="files":
-    nix profile add {{ if app == "files" { ".#gds-files" } else if app == "portal" { ".#xdg-desktop-portal-gds" } else { error("未知组件：" + app + "；可选 files、portal") } }}
+    nix profile add {{ if app == "files" { ".#gds-files" } else if app == "portal" { ".#xdg-desktop-portal-gds" } else if app == "all" { ".#gds-files .#xdg-desktop-portal-gds" } else { error("未知组件：" + app + "；可选 files、portal、all") } }}
+
+# 从当前用户的 Nix profile 移除已安装的 GDS 组件（files / portal / all）。
+uninstall app="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$1" in
+        files|portal|all) ;;
+        *) printf '未知组件：%s；可选 files、portal、all\n' "$1" >&2; exit 1 ;;
+    esac
+    json=$(nix profile list --json 2>/dev/null || printf '')
+    paths=()
+    add_matches() {
+        local m
+        while IFS= read -r m; do
+            m=${m%\"}
+            [[ -n $m ]] && paths+=("$m")
+        done < <(printf '%s' "$json" | grep -oE "$1" || true)
+    }
+    if [[ $1 == files || $1 == all ]]; then
+        add_matches '/nix/store/[0-9a-z]+-gds-files(-[0-9][^"[:space:],}]*)?"'
+    fi
+    if [[ $1 == portal || $1 == all ]]; then
+        add_matches '/nix/store/[0-9a-z]+-xdg-desktop-portal-gds(-[0-9][^"[:space:],}]*)?"'
+    fi
+    if [[ $1 == all ]]; then
+        add_matches '/nix/store/[0-9a-z]+-gds(-[0-9][^"[:space:],}]*)?"'
+    fi
+    if ((${#paths[@]} == 0)); then
+        if [[ $1 != all ]] && printf '%s' "$json" | grep -qE '/nix/store/[0-9a-z]+-gds(-[0-9][^"[:space:],}]*)?"'; then
+            printf '检测到旧版合并包 gds，请运行 just uninstall（或 just uninstall all）一并移除。\n' >&2
+            exit 1
+        fi
+        printf '当前 Nix profile 中未找到对应的 GDS 组件（%s）。\n' "$1"
+        exit 0
+    fi
+    mapfile -t uniq_paths < <(printf '%s\n' "${paths[@]}" | awk '!seen[$0]++')
+    nix profile remove "${uniq_paths[@]}"
 
 # 使用 target/debug 缓存构建，并安装本机开发版入口。
 install-dev app="all":

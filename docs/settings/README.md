@@ -1,101 +1,45 @@
-# GDS 设置中心 · 原生实现规则
+# Settings Center
 
-本文定义设置中心的导航、页面组织、即时应用与当前应用作用域。共享组件服务于 Files 和 Agents，页面与配置由各应用持有。开发入口见 [开发与运行](../development.md)。
+Files and Agents share the Settings Center visual layout, form rows (`SettingRow`), numeric sliders (`NumberControl`), and derived editors (`#[derive(gds::ConfigEditor)]`), while keeping **strictly separate per-application configuration files and preference models**.
 
-## 1. 入口与页面布局
+## 1. Navigation & Window Hosting
 
-主页面左上菜单中的设置项或 `Ctrl+,` 打开 / 聚焦**完整设置中心**，底部不再设置独立入口。外观和快捷键都只是其中一页，不能把全局入口改成某个专用页面。默认绑定及按钮提示统一遵循 [快捷键与键帽](../vistual-language/shortcuts.md)。
+- **Entry & return**: Open via the top-left Application Menu or `Ctrl+,` (no bottom-bar gear or single-topic drawer). Settings replaces the workspace view inside the current window (`ui::page::stack`), placing an `ArrowLeft` back button in the top-left slot. Pressing `ArrowLeft` or `Esc` returns to the live workspace with tabs, selection, scroll offsets, unsent drafts, and running PTY terminals intact.
+- **Keyboard cycling**: `Ctrl+Tab` and `Ctrl+Shift+Tab` cycle settings categories in sidebar order (with `Tab` / `Shift+Tab` hints shown on adjacent `NavItem`s while `Ctrl` is held) without touching underlying file tabs.
+- **Read-only shortcuts live in Help (`F1`)**: Settings contains only editable preferences. Keyboard bindings are presented in the dedicated Help overlay (`F1` or Application Menu → Help) using the shared `ShortcutBadge`.
 
-设置中心沿用 [公共窗口框架](../vistual-language/README.md)，替换工作区呈现；左上菜单位置改为 ArrowLeft 返回文件浏览，不在右上放 X 返回。Files 的最近、收藏等集合属于普通页签内的位置导航。主体采用左侧分类导航、右侧页面内容，各页共用标题和表单布局。
+## 2. Application Pages & Scope
 
-分类条目复用公共 NavItem：38 px 点击区、18 px 图标、10 px 侧栏内边距；展开时左对齐，折叠时图标居中且尺寸不变。设置根容器透明，左栏只绘制侧栏背景、右页单独绘制内容背景；左列从顶栏到侧栏及底部留白保持同一材质，不叠加内容底色。应用和保存错误通过共享通知反馈，没有保存按钮或额外全宽底栏。
+### GDS Files (`$XDG_CONFIG_HOME/gds/app/files/settings.toml`)
 
-进入设置只切换呈现，不销毁原工作区。返回后恢复原文件标签、路径、选择、滚动位置，以及终端的会话集合、活动会话、dock 显隐和大小；正在运行的会话不因打开设置而结束。
+| Category | Preferences |
+| --- | --- |
+| **General** | Interface language (searchable Fluent catalog) and timestamp format (`Relative` vs `Absolute`) |
+| **Appearance** | Theme source (`System` / `Built-in` / `Custom`), light/dark mode, built-in/custom palette selector, UI font family (`TextSystem::all_font_names`, marking missing saved fonts as *Not installed* without overwriting them), base font size (`12–24 px`), main & sidebar background opacities, rounded window corners, and interface animations |
+| **Files** | Sidebar volume list visibility and type-to-filter / browsing preferences *(hidden-file visibility is toggled per-view via `Ctrl+H` or the view menu rather than Settings)* |
+| **Terminal** | Enable/disable embedded terminal dock, shell executable, per-line arguments / login toggle, monospace font, font size, and scrollback limit (disabling hides UI entry points while keeping existing sessions alive) |
+| **Extensions** | Baloo/KIO file tags toggle and optional `balooctl` / `kioclient` binary overrides |
+| **Performance** | Progressive directory loading, metadata probing, preview cache, and transfer tuning parameters (read-only behind an explicit risk confirmation gate) |
 
-设置中心不是一个可关闭的文件标签。使用 `Esc` 或返回入口退出；局部编辑 / 临时浮层先处理自身取消，不让页签快捷键在设置背后新建或关闭文件标签。具体分发顺序见 [快捷键焦点契约](../vistual-language/shortcuts.md#4-焦点与-scope-契约)。
+### GDS Agents (`$XDG_CONFIG_HOME/gds/app/agents/settings.json`)
 
-在设置界面内，`Ctrl+Tab` / `Ctrl+Shift+Tab` 按左侧导航顺序循环切换页面，首末相连；只改变当前可见页，不修改文件标签或任何偏好值，离开的页面上未确认的下拉菜单随焦点转移关闭。焦点在模态弹窗内时按键不切换页面。按住 `Ctrl` 时，侧栏中相对当前页的“下一项 / 上一项”在行尾分别显示 `Tab` / `Shift+Tab`，省略已按住的 Ctrl；不伪造逐页直达快捷键。
+Provides local **Appearance** (matching suite theme, font, opacity, rounded corners, and interface animations), **Session / Input**, and **Terminal** pages alongside **BAS Connections**, **Agent Installation**, and **Service Management** (which explicitly displays the target BAS server address and uses revision-checked RPCs so remote daemon mutations are never confused with local UI preferences).
 
-## 2. 导航与作用域
+## 3. Controls & Immediate-Apply Semantics
 
-| 页面 | 内容范围 | 设置作用域 |
-| --- | --- | --- |
-| 常规 | 语言、时间显示格式与通用交互偏好 | 仅当前应用（Files） |
-| 外观 | 主题来源与明暗、字体、字号、内置配色、背景不透明度和界面动画 | 仅当前应用；来源映射与能力边界见 [共享主题](../vistual-language/theme.md) |
-| 终端 | shell、启动参数 / login 偏好、字体、字号和滚屏 | 仅当前应用；具体运行会话仍归所属工作上下文 |
-| 快捷键 | 当前应用动作的绑定 | 仅当前应用，不能无提示改动别的应用 |
-| 文件浏览 | 侧栏卷列表与自动聚焦检索等浏览偏好 | 仅 Files，不改变其他应用 |
-| 性能参数 | 目录渐进加载、后台元数据探测、预览缓存与文件传输等调优参数（默认只读并展示风险说明，点击确认后开放编辑） | 仅 Files，不改变其他应用 |
+- **Standardized controls**: Enumerations always use dropdowns (never ad-hoc button strips); numbers and percentages use value-displaying sliders stepped at component precision (preventing float noise like `0.6999999` from triggering spurious writes).
+- **Per-field reset**: Every editable row compares its value against `Preferences::default()`. Divergent fields reveal a compact reset icon button in `SettingReset` without shifting layout; resetting restores only that single field.
+- **Immediate apply, background save**: Real value changes emit `Event::Apply` immediately and enqueue an atomic disk write—there is no Save button or bottom confirmation bar. Programmatic sync (`set_preferences` / `set_value`) never re-emits change events.
+- **Distinct failure feedback**: Validation or runtime-apply failure rolls back to the previous valid preference and notifies the user. Disk-write failure (including read-only or declaratively managed symlink configs) keeps the applied in-memory state active and reports *"Applied, but could not be saved"* via the top-right notification overlay.
 
-应用偏好页直接显示页面标题，不额外标注“当前应用”或重复说明设置的作用范围。公共层承载窗口框架、导航、设置行、滑块及主题／字体等基础偏好模型；页面目录和应用偏好模型由应用持有。配置文件也各自独立：每个应用只读写自己的配置，不提供“全局 / 本应用”切换，也不同步其他应用的设置。外观变更只影响当前应用，且不意味着修改 Qt / DMS 源文件或桌面本身。
-
-应用分组使用相同页面与表单组件，只展示当前应用支持的偏好。文件复制、删除、目录导航、真实终端会话操作不是设置页的职责。
-
-“快捷键”页读取当前应用的动作表和套件基础动作，展示动作名、**有效绑定**及 scope；绑定列与菜单右列 / 按钮 tooltip 使用同一个 ShortcutBadge，统一对齐、保持组合不拆行，未绑定时明确写“未绑定”。当前未提供完整重映射编辑器；默认表与显示细则集中在 [快捷键与键帽](../vistual-language/shortcuts.md)，此页不再维护第二份表。
-
-### 公共设置控件与默认值
-
-配置类型可通过 `#[derive(gds::ConfigEditor)]` 与 `#[setting(...)]` 派生公共原生表单，已用于 Files 的语言、时间格式和字体设置；类型映射、标注及应用/保存接线见 [配置编辑器宏](config-editor.md)。
-
-- 语言、时间显示、主题、明暗等枚举值使用下拉框，不因当前只有几个选项而排成一行按钮。语言下拉支持搜索，当前只注册已经提供翻译的语言；新增语言扩展选项目录即可。
-- 时间显示默认为“相对时间”，可切换为“完整日期时间”；修改 `time_format` 后立即生效并保存，恢复此字段不改变语言、主题、文件列配置或隐藏文件偏好。
-- 字体使用可搜索下拉框，选项来自平台文本系统已安装的字体（`gpui::TextSystem::all_font_names`），首项“跟随系统”恢复系统 / Kit 默认字体；已保存但当前未安装的字体会以“未安装”标记显示，运行时回退到系统字体，绝不改写已保存的选择。所选字体缺少中文字形时由 GPUI 的字体回退链逐字补齐，不整段替换字体。字号使用同一数值滑块，范围 12–24 px、默认 16 px。
-- 字体与字号都是当前应用的偏好：两者各自恢复默认，并立即应用、保存；切换主题来源、明暗或不透明度不会重置它们。字号改变会刷新窗口，但不改变文件数据、选择、标签或列配置。显式像素文字通过 `cx.gds().appearance().typography().scaled(...)` 跟随同一基准，`rem` 文字随 Kit 的主题基准自动变化。
-- 每个应用的外观设置都提供“主界面背景不透明度”和“侧边栏背景不透明度”，非平铺桌面默认分别为 100% 和 85%；Niri、Sway、Hyprland 等已识别平铺会话保留 85% 和 50%，通过公共百分比滑块独立调整、即时生效并保存到当前应用配置。每项有独立的恢复默认操作，只影响背景，文字和图标保持不透明。
-- 语言切换后，字体控件中的“跟随系统”“未安装”等文案与示例文字也随同一翻译资源更新；字体控件与其他下拉共用 `SettingRow` 的恢复默认按钮。
-- 百分比和数值设置共用带当前值显示的滑块，范围和步长由字段定义，不再使用加减按钮代替滑动操作。
-- 所有可编辑字段以 `Preferences::default()` 为默认基线。当前值偏离该字段默认值时，在右侧控件组左边显示小型恢复按钮；默认状态保留相同空位，避免控件跳动。恢复仅改变该字段，并立即应用、保存。
-- 数值的变更和默认比较采用组件步进精度，避免旧浮点运算结果（例如 `0.6999999`）被误判成新的修改。程序反向同步不发出修改事件。
-- **Files defaults to the system theme and follows the desktop light/dark preference.** 主题下拉中系统与内置平级；明暗下拉提供跟随系统 / 浅色 / 深色。系统主题在 KDE Plasma 中读取当前颜色方案，GNOME 跟随桌面明暗、强调色与用户 GTK 3/4 配置，其它会话沿用 DMS 导出；内置主题的系统模式使用平台明暗偏好。KDE 只有一套活动配色，手动明暗只覆盖 GDS 模式，不生成其它 KDE 配色。
-- 主题 / 明暗恢复默认只将对应字段还原为跟随系统，不改写其他字段。已有明确保存的内置主题、浅色或深色选择不会被升级过程覆盖。Qt 适配代码和已有配置保留，但 Qt 不出现在可选主题列表。
-- 内置来源下可选择竹林、怀旧、霓虹、马卡龙、高对比或 Aero，每套都有浅色和深色配色。配色选择单独保存、即时应用并可独立恢复为竹林；切换主题来源时保留此选择。
-
-### 窗口圆角
-
-两个应用的外观页都提供“窗口圆角”，默认关闭，旧配置缺少字段时仍为直角。
-开关立即应用并独立保存到各应用的 `appearance.rounded_corners`，单项恢复默认只关闭圆角。
-Linux 客户端边框、内容裁切与鼠标命中区域使用同一圆角；最大化、全屏和贴合平铺边缘的角保持直角。
-系统绘制的窗口边框由桌面环境控制。
-
-### 界面动画
-
-Files 的“外观”页与 Agents 的“外观 → 界面”分组提供“界面动画”（Interface animations），复用各自现有布尔控件；Agents 的设置搜索也能找到此项。默认开启，但系统减少动效优先。关闭后当前进程所有已有和新建窗口的装饰动画静止；开启恢复跟随系统，不强制播放动画。通知关闭与超时、文件／网络任务、焦点、终端和媒体功能不因此停用。
-
-更改立即生效并自动保存，单项恢复默认只清除此字段，不影响主题、材质、字体或会话偏好。Files 在自身 TOML 配置根层保存 `animations_enabled`；Agents 在自身 JSON 配置的 `appearance.animations_enabled` 保存。字段缺失兼容旧配置，等同开启；`false` 为显式关闭。两应用独立保存，不创建套件共享配置，也不改动系统设置。
-
-### 即时应用与错误反馈
-
-- 每次真实偏好变化立即发出一次 `Event::Apply` 并自动保存，不等待保存按钮或长时间防抖；同值选择、步进到边界后未变化的操作不重复请求。
-- 只有实际变化的外观 / 语言需要重新应用，修改文件偏好不触发无关主题源读取。
-- 应用失败恢复上一次有效偏好并显示错误；写盘失败保留已生效的运行态，明确提示“已生效但未保存”，不伪报成功。
-- 偏好保存在当前应用自己的配置文件中（Files 为 `$XDG_CONFIG_HOME/gds/app/files/settings.toml`），不存在套件级的全局配置。声明式符号链接或只读目标允许读取，但拒绝替换。
-- `set_preferences` 等程序回写只更新呈现，不再发出应用事件，避免循环；错误通过共享通知气泡报告。退出设置仅返回工作区，不是提交或撤销已经生效的修改。
-
-## 3. 页面集中组织
-
-每个应用的偏好页集中在自己的设置目录。套件公共部分只保留所有应用采用的呈现与基础规则：
+## 4. Code Organization
 
 ```text
-src/ui/forms/settings.rs                      数值范围、滑块与键盘步进，统一导出设置组件
-src/ui/forms/settings/row.rs + row/            设置行、标签、说明、控件组与重置留位
-src/ui/forms/settings/form/                    类型化配置编辑器、校验与字段状态
-macros/gds-settings-derive/                    配置类型与 UI 标注的派生宏
-src/appearance/typography.rs                字体与基准字号
-src/appearance/theme.rs + theme/            主题来源、语义配色和材质
-bin/files/src/widgets/settings/ui.rs           Files 设置中心与偏好模型
-bin/files/src/widgets/settings/ui/pages/       Files 的常规、外观、文件和终端页
-bin/files/src/widgets/settings/ui/controls.rs  Files 字段与公共控件之间的映射
-bin/files/src/entities/preferences/api.rs      Files 配置读取、旧配置导入和保存
-bin/agents/src/widgets/settings/ui.rs          Agents 设置中心与导航
-bin/agents/src/widgets/settings/ui/pages/      Agents 外观、会话、连接和服务管理表单
+src/ui/forms/settings.rs + settings/      # SettingRow, NumberControl, typed form state
+macros/gds-settings-derive/               # #[derive(gds::ConfigEditor)] macro crate
+bin/files/src/widgets/settings/           # Files Settings Center & pages/
+bin/files/src/entities/preferences/       # Files TOML persistence & PreferencesExt
+bin/agents/src/widgets/settings/          # Agents Settings Center, search & BAS management pages
 ```
 
-Files 的列布局、标签／卷侧栏偏好和配置路径属于 Files，不进入公共偏好结构；卷发现和操作也保留在 `bin/files/src/entities/location/api`。Agents 的客户端协议、配置、认证、安装器和会话状态仍属于 Agents。公共 `SettingRow` 和 `NumberControl` 不认识这些领域模型，也不负责写盘。
-
-共享的是基础设计语言与服务，不要求两种应用拥有同一份页面枚举、配置 schema 或保存实现。两者均以 ArrowLeft 返回仍存活的工作区，使用统一 NavItem 与设置行；只有没有工作区的设置专用启动才建立独立宿主。Files 继续使用原布局和配置文件。Agents 的本机偏好直接显示页面标题；服务管理页明确显示当前服务地址，不能把远端服务写操作伪装成本机界面设置。
-
-- 用户偏好页面不散落到主题模块、会话模块或公共协议层中。
-- 不为页面注册建立动态插件、通用表单语言或设置服务框架。
-- 窗口、文件标签、会话草稿和正在运行的任务不是设置页可以重建的数据。
-
-Files 的终端设置排在文件设置之后，提供默认开启的启用开关与逐行编辑的 Shell 参数。禁用后隐藏终端面板和操作入口；已有会话保留，重新启用后可再次展开。快捷键在独立帮助页（F1）查看。
+See [Derived Configuration Editors](config-editor.md) for generating typed settings forms with `#[derive(gds::ConfigEditor)]`.

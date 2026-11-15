@@ -1,471 +1,145 @@
-# 原生 App 开发与运行
+# Development & Architecture Guide
 
-GDS 包含 Files、Agents 等平级的原生桌面应用，共用 `src/lib.rs`，各应用代码位于 `bin/<应用>/src/`。首要支持 **Linux + Wayland**；应用使用 GPUI 原生绘制，不包含 WebView。
+GDS builds multiple peer native desktop applications (`gds-files`, `gds-agents`, `gds-nixes`) and a headless portal daemon (`xdg-desktop-portal-gds`) from a single Rust crate. All GUI apps render natively with GPUI (no WebView), targeting **Linux + Wayland** first.
 
-## 仓库结构
+## Repository Layout
 
 ```text
-Cargo.toml                 # 所有 binary target、feature 与依赖
-LICENSE                    # 项目自有代码共用的 Apache-2.0 许可证
-src/                       # 公共库
-macros/                    # Rust 过程宏
-flake.nix / flake.lock      # Nix flake 入口与依赖锁
-shell.nix                  # 本地 Nix 开发环境入口
+Cargo.toml                 # Shared library features, dependencies, and all [[bin]] targets
+LICENSE                    # Apache-2.0 license shared by all first-party code
+src/                       # Shared library (gds): app, appearance, service, ui, persistence, i18n
+macros/                    # Procedural macros (gds-settings-derive)
+assets/                    # Per-app icons (icon-solid.svg, icon-desktop.svg) and desktop.toml
+flake.nix / shell.nix      # Nix flake and local dev-shell entry points
 packaging/
-├── nix/                   # Nix 包、NixOS 模块与开发环境定义
-├── fedora/                # Fedora RPM 与构建容器
-├── arch/                  # Arch/AUR 配方与构建容器
-├── debian/                # Debian/Ubuntu DEB 与构建容器
-└── linux/                 # 原生 Linux 包共用的桌面集成资源安装逻辑
+├── nix/                   # Nix derivations, NixOS & Home Manager modules, NUR entry
+├── fedora/                # Fedora RPM spec and build container
+├── debian/                # Debian/Ubuntu debhelper rules and build container
+├── arch/                  # Arch PKGBUILD and build container
+├── linux/                 # Shared native Linux desktop asset staging
+└── cloudflare/            # Installer worker (gds.gandesktop.dev) and R2 bucket routing
 bin/
-├── files/
-│   ├── README.md
-│   └── src/               # Files 的 FSD 应用代码
-├── agents/
-│   ├── README.md
-│   └── src/               # Agents 的 FSD 应用代码
-└── portal/
-    ├── README.md
-    └── src/               # 无界面 Portal 后端
+├── files/                 # GDS Files (FSD application)
+├── agents/                # GDS Agents (FSD application)
+├── nixes/                 # GDS Nixes (FSD application)
+└── portal/                # GDS Portal (headless FileChooser D-Bus service)
 ```
 
-各应用目录的 README 提供职责、入口与运行命令；完整设计与开发文档留在 `docs/`。应用共用根 manifest 和许可证，不单独建立 Cargo package，也不重复放置 LICENSE。
+Generated binaries, distro packages, E2E artifacts, and build caches stay under `target/`.
 
-各安装方式的构建、打包与系统集成统一放在 `packaging/`。Nix 的根目录入口委托给 `packaging/nix/` 中的定义；生成的二进制、安装包和构建缓存保留在 `target/`，不放进打包定义目录。
+## Quick Start & Daily Commands
 
-## 任务与退出生命周期
-
-UI 与服务负责资源所有权，`gds::service::task_manager` 负责跨 GPUI、Tokio、线程和子进程的取消与完成追踪。新应用导入 `gds::app::AppExt`，通过 `cx.gds_mut().tasks()` 接入窗口关闭、显式退出和 Unix 信号；先关闭原生窗口，再等待服务清理，最后退出应用。
-
-应用在 GPUI 启动入口调用 `cx.gds_mut().initialize(supervisor.scope(), logs)`，统一幂等安装任务管理、外观基础、KeyTips、终端输入上下文和可选日志收集器，在服务和视图启动前固定追踪开关；若启动包含异步前置阶段（如 Files 先调用 `cx.gds_mut().tasks().init(scope)` 绑定信号与取消，再于主线程挂载界面），则在第二阶段调用 `cx.gds_mut().init_ui(logs)` 安装界面基础服务。公共库仅保留唯一扩展 trait `AppExt`（提供只读 `cx.gds()` 与可变 `cx.gds_mut()`），通过固有方法下挂 `tasks()`、`appearance()`、`i18n()` 与 `ui()` 访问器。Files 内各 FSD 切片通过各自公开入口导出的局部扩展 trait（`PreferencesExt`、`VolumesExt`、`ClipboardExt`）在 `Gds` 上挂载 `preferences()`、`volumes()` 与 `clipboard()` 访问器，顶层启动与窗口宿主编排直接归属 `app` 层自身结构体（`Bootstrap`、`PreparedIo`、`ui::Initializer`、`windows::Host`、`DesktopIntegration`），配置仅作为输入。trait 只声明访问入口；访问器借用上下文，不持有服务，也不在获取时初始化。独立任务服务可通过 `cx.gds_mut().tasks().init(scope)` 安装，`cx.gds().tasks().scope()` 只读取已安装的服务；日志窗口不再参与任务服务初始化。`ui::task_manager` 只通过只读 `Inspector` 展示快照，关闭日志时不创建 Inspector、任务视图或刷新计时器。
-
-新增后台工作时，先确定所属作用域、取消策略和完成条件，再选择执行器。涉及进程、设备或持久化的任务必须登记完成；仅用于 UI 更新的任务可以随其拥有者释放。具体 API、服务示例和测试约定见[任务所有权与应用退出](development/task-manager.md)。
-
-## 运行
-
-应用使用方式见 [Files](apps/files/README.md)、[Agents](apps/agents/README.md)；系统安装与桌面接入见 [NixOS 安装](nixos.md)。
-
-在图形会话里的终端执行；[justfile](../justfile) 会自动进入 Nix 开发环境：
+Run inside a graphical Wayland terminal. The [justfile](../justfile) automatically evaluates [shell.nix](../shell.nix) to enter the locked Nix environment:
 
 ```sh
-just dev files
-# 指定起始目录（包含空格时正常加引号）：
-just dev files "/path/to/folder"
-# 启动 Agents，或打开它的快捷输入窗口：
-just dev agents
-just dev agents --compact
-# 查看可用命令：
-just
+just dev files                    # Launch GDS Files in debug mode
+just dev files "/path/to/folder"  # Open a specific folder
+just dev agents                   # Launch GDS Agents (or add --compact)
+just dev nixes                    # Launch GDS Nixes
+
+just build [files|agents|portal]  # Incremental debug build
+just release [files|agents|portal]# Optimized release build
+just check                        # Typecheck workspace and test targets
+just fmt-check                    # Check Rust formatting (just fmt to format)
+just test                         # Run workspace unit & integration tests
+just test-files                   # Run isolated Weston Wayland E2E suite for Files
+just shell                        # Open an interactive Nix development shell
 ```
 
-`just build` 构建全部应用的开发版，`just build files` / `just build agents` / `just build portal` 单独构建指定应用。`just check` 检查所有目标，`just test` 运行测试，`just fmt` 格式化，`just fmt-check` 只检查格式。`just shell` 进入交互式开发环境。开发环境也包含 just；主机没有 just 时可用 `nix develop --impure --expr 'import ./shell.nix' --command just dev files`。
+Without `just` installed on the host, invoke `nix develop --impure --expr 'import ./shell.nix' --command just dev files` (avoid bare `nix develop`, which snapshots untracked `target/` artifacts; see [Runtime & Platform Compromises](decisions/runtime-and-platform.md)).
 
-应用参数会原样传递，例如 `just -- dev files --help` 或 `just -- dev agents --help`；这些命令继承当前图形会话环境，不固定显示服务器或用户路径。
+### Rapid Iteration (`install-dev`)
 
-### 开发版安装
+When iterating on desktop integration or UI, `just install-dev [files|agents]` builds `target/debug` incrementally and installs lightweight user-level launchers (`Files (Dev)`, `Agents (Dev)`) that execute the workspace binary directly with required runtime libraries and helpers (`xdg-terminal-exec`, `ffmpeg`, `terminfo`) while preserving your desktop session's `SHELL`, `WAYLAND_DISPLAY`, and D-Bus environment. Run `just uninstall-dev` to restore any prior release launchers.
 
-频繁调整界面时使用 `just install-dev`，也可指定 `just install-dev files` / `just install-dev agents`。它用普通 Cargo dev profile 增量构建，复用当前仓库的 `target/debug` 缓存，再安装用户级命令和标为 `(Dev)` 的桌面入口，不走 Nix 发布包的优化构建和包内测试流程。
+## Crate Features & Capability Isolation
 
-入口通过轻量运行包装直接执行工作区中的 debug 二进制，不复制大型产物，也不在每次启动时进入 `nix develop`。包装仅补充运行库、终端启动器、缩略图工具和 terminfo，保留桌面会话的 `SHELL`、提示符与其它环境；安装时记录在用户 state 目录中的 Nix profile 保持这些依赖可达。后续 `just build` 或 `just install-dev` 更新相同二进制，重开窗口即可使用新版本。工作区与 `target/debug` 需要保留，尚未运行的测试仍可通过 `just test` 或 GUI 测试命令单独执行。
+`gds` enables **zero features by default**. Modules and their third-party dependencies activate together behind matching capability features:
 
-`just uninstall-dev`（也可指定单个应用）恢复之前的命令和桌面入口；此前的 Nix 发布包仍然保留。发布交付继续使用 `just install`。
-
-所有图形应用共用 [About 组件](components/about.md)。应用身份在 Cargo 元数据中登记，版本沿用 package version，build tag 在构建时写入短 commit hash；新二进制只需要增加登记并挂载公共组件。
-
-桌面入口的名称、通用名称和说明由 `assets/<应用>/desktop.toml` 统一维护。`[default]` 为英文回退，`[zh_CN]` 为简体中文；`Name` 是应用名，`GenericName` 是通用用途名，`Comment` 是简短说明。Nix 与开发版安装器读取同一份数据，生成 `Name[zh_CN]` 等标准字段；开发版仅在各语言的名称后追加 `(Dev)`。桌面使用 POSIX locale（例如 `zh_CN`），应用内 Fluent 资源仍使用 `zh-CN`，二者独立。字段与匹配规则见 [Desktop Entry Specification](https://specifications.freedesktop.org/desktop-entry/latest/localized-keys.html)。
-
-GDS Portal 的包和 NixOS 模块独立放在 `packaging/nix/portal/`，图形应用定义仍位于 `packaging/nix/apps/`。通过 `services.gds-portal.enable` 单独启用 Portal；其软件包不绑定 Files 的路径。文件选择接口默认调用 PATH 中的 `gds-files`，也可以用 `--file-chooser` 指定实现同一原生协议的处理程序。
-
-开发入口直接求值 [shell.nix](../shell.nix)，按 [flake.lock](../flake.lock) 的 revision 与 NAR hash 获取依赖，并和 flake 共用 [开发环境定义](../packaging/nix/dev-shell.nix)。这避免对整个项目做 flake 源快照：未置于 Git 中的工作目录，其 `.gitignore` 不会替 `nix develop` 排除 `target/`，反复快照会占用大量 Nix store 空间。请使用 `just dev <应用>` / `just shell`，而不是在这种目录中直接运行裸 `nix develop`。
-
-从 `steam-run` 等 FHS 环境启动时，宿主可能通过 `NIX_CFLAGS_LINK=-L/usr/lib -L/usr/lib32` 注入系统库路径，使 Nix 的 ALSA 等库与另一版本的 glibc 混用，出现 `undefined reference to sqrtf@GLIBC_2.43` 等链接错误。开发环境会重置这个变量，让链接使用锁定的 Nix 工具链和库；遇到此问题应检查库搜索路径，而不是补装 ALSA 或反复清空 Cargo 缓存。
-
-保持图形会话提供的 `XDG_RUNTIME_DIR`、`WAYLAND_DISPLAY` 和 D-Bus 环境。不要为 GPUI 设置 `QT_QPA_PLATFORMTHEME`，也不要修改 Niri / DMS 配置来运行本应用。非 Nix 环境需要相应 Rust 工具链、Wayland/X11、xkbcommon、字体栈和 Vulkan/GL 运行库。
-
-```sh
-cargo fmt --all --check
-cargo check --workspace --features files,agents,portal,gpui-kit/test-support --all-targets
-cargo test --workspace --features files,agents,portal,gpui-kit/test-support
-cargo build --bins --features files,agents,portal
-```
-
-首次构建需要下载依赖并编译图形栈。可通过 `CARGO_BUILD_JOBS` 调整本机并行度；例如 `CARGO_BUILD_JOBS=6 cargo build --bin gds-files --features files`。
-
-## 公共库与 feature
-
-`gds` 默认不启用任何能力。公共模块和它使用的依赖由同名 feature 一起开启，应用入口通过 `required-features` 声明组合：
-
-| Feature | 能力 |
+| Feature | Scope |
 | --- | --- |
-| `desktop-protocol` | `service::desktop::protocol` 中的进程通信类型，只依赖 Serde |
-| `persistence` | 原子文件存储与路径管理 |
-| `watch` | 文件变化通知，独立于 GUI |
-| `desktop` | 桌面打开方式、FileManager1 与 Portal 客户端 |
-| `file-tags` | `desktop` 的可选标签能力：`user.xdg.tags` 读写与复制保留；`files` 显式启用 |
-| `storage` | Toasty / SQLite 存储 |
-| `logs` | 本进程日志服务 |
-| `task-manager` | `service::task_manager` 的任务作用域、取消与完成追踪，以及可选的诊断快照；不依赖 GPUI |
-| `app` | `AppExt`（`cx.gds()` / `cx.gds_mut()`）根访问器、任务服务绑定与退出协调；不依赖 `ui` |
-| `terminal` | PTY 与终端模型 |
-| `file-inspection` | 按需读取文件内容元信息、生成缩略图与标准磁盘缓存 |
-| `remote` | SFTP / SMB 文件服务 |
-| `appearance` | 主题、字体、视觉 tokens 与 GPUI 外观安装 |
-| `i18n` | Fluent 翻译与 GPUI 文本适配 |
-| `ui` | 公共组件及其需要的外观、翻译和服务 |
-| `files` / `agents` | 对应图形应用使用的完整组合 |
-| `portal` | 无界面 Portal 后端与共享桌面协议 |
-| `gui-tests` | 两个应用与 GPUI 测试支持 |
-| `files-e2e` | Files 原生窗口端到端场景，仅在隔离 runner 显式启用时运行 |
+| `desktop-protocol` | Pure Serde IPC types in `service::desktop::protocol` (shared with `portal`) |
+| `persistence` | Atomic config file writes, file locks, and symlink/conflict protection |
+| `watch` | Filesystem change monitoring, independent of GPUI |
+| `desktop` / `file-tags` | OpenURI / AppChooser portals, `FileManager1`, external terminal launch, and optional `user.xdg.tags` xattrs |
+| `storage` | Toasty / SQLite initialization, migrations, and connection supervision |
+| `logs` | Opt-in in-process `tracing` collector (`--enable-logs`) |
+| `task-manager` | `Supervisor`, hierarchical `Scope`s, cancellation, and completion barriers (no GPUI dependency) |
+| `app` | `AppExt` (`cx.gds()` / `cx.gds_mut()`) lifecycle binding on GPUI `App` (no `ui` dependency) |
+| `terminal` | Local PTY session worker and `alacritty_terminal` state |
+| `file-inspection` | On-demand image/audio/video/text metadata probing and freedesktop PNG thumbnail cache |
+| `remote` | Native Rust SFTP (`russh-sftp`) and SMB (`smb`) services |
+| `appearance` / `i18n` / `ui` | Theme/font/token engine, Fluent translations, and reusable GPUI components |
+| `files` / `agents` / `nixes` | Full feature bundles for each graphical binary |
+| `portal` | Headless `xdg-desktop-portal-gds` bundle (never pulls in GPUI, SQLite, terminal, or `remote`) |
+| `gui-tests` / `files-e2e` | Headless GPUI test helpers and isolated Weston E2E runner |
 
-`bin/portal/src` 与 Files、Agents 一样，是根 package 中声明的 binary target，没有单独的 manifest。`portal` feature 只启用共享协议及其自身的 I/O 依赖，独立构建不会带入 GPUI、SQLite、终端或远程文件后端：
+Verify standalone feature boundaries directly with Cargo when changing `Cargo.toml`:
 
 ```sh
 cargo check --lib --no-default-features
-cargo check --lib --no-default-features --features storage
 cargo check --bin xdg-desktop-portal-gds --no-default-features --features portal
-cargo test --bin xdg-desktop-portal-gds --no-default-features --features portal
 cargo tree --no-default-features --features portal --edges normal,build
 ```
 
-应用 I/O 和 Portal 统一使用 Tokio；GPUI 执行器负责界面任务。Portal 的 zbus 连接、子进程、信号和超时均在其 Tokio 运行时中执行。
+## Application Architecture (Feature-Sliced Design)
 
-## 文件内容检查
-
-`service::file_inspection` 通过 `Source::load(Request::Metadata | Request::Thumbnail | Request::Both)`
-按需检查现有图片、音视频和文本内容，也提供目录计数和符号链接目标。
-`Inspection` 的两个字段分别返回 `NotRequested`、`Available`、`Unavailable` 或 `Failed`；
-没有封面不等于读取失败，一项失败不抹掉另一项的结果。音频同时请求两项且磁盘缓存未命中时复用一次 Lofty 解析。
-
-`ui::file_inspection::Cache` 按路径、类型、大小和修改时间共享后台任务与内存结果；
-执行期间追加的字段请求会在当前任务结束后补齐。`ui::thumbnail::Thumbnail` 只负责呈现。
-缩略图继续使用 freedesktop 磁盘缓存，内容元信息只缓存在内存中。
-文件系统属性随目录扫描读取；PDF、字体等未来内容类型应在此服务中增加实现，而不是放进详情栏。
-
-## 第三方补丁
-
-第三方源码在 GanDesktop 的独立仓库维护，通过 Git 分支或 revision 引用，由 `Cargo.lock` 固定提交；不将源码复制进本项目。当前使用 GPUI Kit `0.9.0` 的 `gpui-fast` feature，补丁基于发布的 GPUI Fast `0.1.13` 包快照，保留包名和版本：
-
-- [gpui-kit / gds-0.9.0](https://github.com/GanDesktop/gpui-kit/tree/gds-0.9.0)：仅替换 `gpui-component`，基于 0.9.0 发布提交，增加可配置 Linux 窗口圆角并同步内容裁切与平台命中区域；默认直角，其余 Kit crate 保持发布版本。
-- [gpui-fast / gds-0.1.13](https://github.com/GanDesktop/gpui-fast/tree/gds-0.1.13)：外部父窗口与调用方激活 token 的公共接口；外部文件拖入恢复鼠标输入模式，修复键盘操作后放下事件无法命中目标的问题。
-- [gpui-fast-linux / 2270030](https://github.com/GanDesktop/gpui-fast-linux/tree/2270030d3e0cf75def11e44e5cc0f6c9991fae49)：对应 Wayland / X11 实现；保留外部父窗口关联直到模态窗口销毁完成，避免 KWin 遗留父窗口变暗效果。
-
-Fast 补丁从原 `gpui-pre` / `gpui-pre-linux` 的 `gds-0.3.11` 分支迁移。应用的 `gpui` 宏依赖也指向 `gpui-fast`；HTTP 客户端沿用 Fast 共用的 `gpui-pre-http-client` 协议类型。Kit 的 feature 为叠加启用，依赖图中仍可出现未被应用选用的 `gpui-pre`，这不表示运行时混用了两套 GPUI。
-
-两份 GPUI 补丁配套更新，各自的 `PATCHES.md` 记录来源与范围。更新补丁分支后，同步本项目 `Cargo.lock` 和 `packaging/nix/cargo-lock.nix` 中的源码 hash；本仓库不保留 vendor 源码。
-
-## Release 构建
-
-Fedora 原生 RPM 的构建与安装见 [Fedora 打包流程](apps/files/fedora.md)。`just rpm` 在宿主机的 Fedora 容器中增量构建 Files 与独立的 GDS Portal 包；Fedora 测试机只安装 RPM，无需编译或安装 Nix。
-
-Arch/AUR 使用 `just arch`，见 [Arch 打包流程](apps/files/arch.md)；Debian 使用 `just deb`，Ubuntu 使用 `just deb ubuntu noble`，见 [DEB 打包流程](apps/files/debian.md)。这两种流程同样分别打包 Files 和 Portal，使用目标发行版的容器构建。AUR 上架与远程 APT 仓库发布不包含在本地构建命令中。
-
-GitHub Release 发布由 [release.yml](../.github/workflows/release.yml) 按版本 tag 自动编排：先更新 `Cargo.toml` 与 `Cargo.lock` 中的项目版本，提交推送后推送版本 tag（例如 `v0.0.3`）。流水线采用 Draft-First 模式：`prepare` 先校验 tag 与 `Cargo.toml` 版本一致、运行安装脚本单测并创建（或复用）GitHub Draft Release；随后 `build` 在 Arch、Debian 13（trixie）、Ubuntu 24.04（noble）、Ubuntu 26.04（resolute）及 Fedora 43 / 44 容器中构建 `gds-files` 与 `xdg-desktop-portal-gds`（正式 DEB 修订号附带 `~<distro><version>` 后缀），并由 `nix` job 完成 NUR 限制求值与包构建。
-
-所有原生包构建完成后，`smoke-native` 在全新最小运行时容器（无 Rust 工具链）中执行 `install.sh --yes --with-portal`、`--help`、`desktop-file-validate` 及 `--uninstall` 门禁验证；全部与 `nix` 通过后，`publish` 才通过 [generate-release-manifest.py](../scripts/generate-release-manifest.py) 生成 `MANIFEST` 与 `SHA256SUMS`、上传制品至 GitHub Draft Release 与 Cloudflare R2 静态分发域名 `pkgs.gandesktop.dev`（稳定版切换 `channels/stable` 指针并同步部署 `gds.gandesktop.dev/install.sh`），最后原子公开 GitHub Release 并由 `nur` 推进 `nur` 与 `stable` 分支。预发布 tag（含 `-`）或手动勾选项跳过稳定指针、`nur` 与 `aur`。
-
-一键安装入口为 [scripts/install.sh](../scripts/install.sh)，通过 Cloudflare Workers 静态资源托管在 `https://gds.gandesktop.dev/install.sh`，包清单与安装包主源托管在 `https://pkgs.gandesktop.dev`（Cloudflare R2 `gds-pkgs`）。对 `scripts/`、`packaging/cloudflare/` 或相关工作流的 PR 与主分支合入由 [installer.yml](../.github/workflows/installer.yml) 自动运行 ShellCheck 与单测；合入 `main` 后自动同步部署 `gds.gandesktop.dev/install.sh`。
-
-手动部署配置位于 [packaging/cloudflare](../packaging/cloudflare/)，使用 `cf` CLI：
-
-```sh
-npm ci --prefix packaging/cloudflare
-npm run deploy --prefix packaging/cloudflare
-```
-
-需要事先通过 `cf auth login`（或在 CI 中通过 `CLOUDFLARE_API_TOKEN`）授权管理 `gandesktop.dev`。`install.sh` 默认采用交互式 `/dev/tty` 确认当前属于全新安装还是升级并可勾选 `xdg-desktop-portal-gds`，同时提供 `-y`（非交互跳过）、`--with-portal`、`--without-portal`、`--distro <ID:VER>`、`--version <TAG>`、`--nix`、`--dry-run` 与 `--uninstall`。
-
-安装脚本与 Manifest 测试：`python3 -m unittest discover -s scripts/tests -v`。测试通过环境变量（`GDS_OS_RELEASE`、`GDS_TTY` 等）与本地 mock 工具完成隔离验证，不会修改系统包或请求管理员权限。
-
-执行 `just release` 构建整个套件，或用 `just release files` / `just release agents` / `just release portal` 单独构建。等价的套件命令是 `cargo build --release --locked --bins --features files,agents,portal`，产物位于 `target/release/`，包含 `gds-files`、`gds-agents` 和 `xdg-desktop-portal-gds`。Nix 打包默认使用同一份 release 配置；安装命令见 [NixOS 安装](nixos.md)。
-
-[Cargo.toml](../Cargo.toml) uses Cargo’s standard release optimization settings: `opt-level = 3`, `lto = false`, and `codegen-units = 16`. This avoids whole-program fat LTO and allows code generation within a crate to run in parallel. Cargo may still perform local Thin LTO between that crate’s codegen units. `debug = 0` and `strip = "symbols"` keep debug information and symbols out of shipped binaries; `incremental = false` retains Cargo’s release default. Nix and native Linux packages use this same profile. See [Cargo profiles](https://doc.rust-lang.org/cargo/reference/profiles.html).
-
-保留默认的 panic unwind 策略，以兼容 GPUI 依赖中的展开处理。发布配置使用通用目标 CPU；仅供本机使用的构建可自行加 `RUSTFLAGS="-C target-cpu=native"`，此时产物可能无法在较旧的 CPU 上运行。
-
-## 二进制目录组织
-
-Files 和 Agents 采用 [Feature-Sliced Design 的层定义](https://feature-sliced.design/docs/reference/layers)、[切片与分段](https://feature-sliced.design/docs/reference/slices-segments)及[公开入口规则](https://feature-sliced.design/docs/reference/public-api)。入口 `main.rs` 只声明层模块并调用 `app::run()`。层按依赖方向排列：
+Graphical binaries organize `bin/<app>/src/` strictly along [Feature-Sliced Design](https://feature-sliced.design/docs/reference/layers):
 
 ```text
 app → pages → widgets → features → entities → shared
 ```
 
-模块可以跳过中间层，直接依赖任意下层。同层切片相互独立；`app` 和 `shared` 按职责分段，不再划分业务切片，也不受切片间隔离规则约束。只创建已有代码需要的层和切片。
+- **Strict downward imports**: Higher layers may import any lower layer through `<slice>.rs` public entry points; internal segments (`ui`, `model`, `api`) stay private.
+- **Peer slice isolation**: Slices on the same layer never import each other. Cross-entity relationships use explicit `@x` adapters (`entities/<provider>/x/<consumer>`, e.g., `entities/file/x/location` and `entities/location/x/tags` in Files). `app` and `shared` are segmented by technical role rather than domain slices.
 
-| 层 | 职责 | Files | Agents |
+| Layer | Responsibility | Files (`bin/files/src/`) | Agents (`bin/agents/src/`) |
 | --- | --- | --- | --- |
-| `app` | 命令行入口、初始化、路由安装和退出 | [app.rs](../bin/files/src/app.rs)、`app/{cli, config, desktop, ui, windows}.rs` | [app.rs](../bin/agents/src/app.rs)、`app/startup.rs`、`app/cli.rs` |
-| `pages` | 完整窗口及其页面组合 | `workspace`：浏览、选择模式、设置视图的组合 | `workspace`：会话工作区、后台切换和管理视图的窗口宿主 |
-| `widgets` | 可独立使用、也可嵌入页面的界面块 | `settings`、`remote_browser`、`help` | `settings`（含 Agent 管理与安装内容）、`history`、`help` |
-| `features` | 可由不同界面触发的用户操作与工作流 | `file_operations`、`pick_files`、`connect_server` | `navigation`（切换后台、打开管理视图）、`agent_auth`、`delete_session` |
-| `entities` | 领域数据、状态、相关 API 与呈现 | `file`、`location`、`preferences` | `agent`、`backend`、`session` |
-| `shared` | 不承载业务决策的应用内基础能力 | `i18n`、`lib`（剪贴板与选区）、`ui` | `i18n`、`config`、`api`、`lib`、`ui`、`routes` |
-
-每层使用 `<layer>.rs` 配合 `<layer>/`；每个切片使用 `<slice>.rs` 作为公开入口，内部按实际职责组织 `ui`、`model`、`api` 等分段。外部调用只通过切片入口公开的类型、函数或命名空间访问，内部实现分段保持私有。测试与资源留在所属模块附近。
-
-`app/cli` 将启动输入转换为运行参数。翻译目录、翻译接口和语言状态在 `shared/i18n`，由启动代码安装，供各切片直接使用。配置持久化保持既有语义：Files 的用户偏好属于 `entities/preferences`，文件列布局属于 `entities/file`；Agents 的前端配置与存储适配在 `shared/config`。
-
-Files 的位置记录引用文件列布局，通过 `entities/file/x/location` 明确公开该实体关系。这是 FSD `@x` 跨实体入口在 Rust 模块语法中的写法；其他层的同层切片不建立横向依赖。
-
-Agents 的设置和历史浏览器既可嵌入工作区，也可独立打开，因此归入 widgets。`features/navigation` 声明路由回调与请求；`pages/workspace` 实现原生宿主，`app` 在启动时安装。这样 widgets 可以请求跳转，同时保持对页面和应用层的依赖方向。App 的跨层集成测试放在 `app/tests/`；模块测试通过各自公开接口和测试夹具验证行为。
-
-跨应用通用组件继续使用公共库 `src/ui`。Agents 专属的通用组件和资源在 `shared/ui`。FileChooser Portal 位于 `bin/portal/src`，与其他应用共用根 manifest，保留独立的可执行入口，不属于 UI 应用的 FSD 层。
-
-## 公共库目录与服务边界
-
-公共库本身承担跨应用共享职责，根入口为 `src/lib.rs`，公开六组能力：
-
-```text
-src/
-├── lib.rs
-├── app.rs + app/                  # AppExt (gds / gds_mut) 与 tasks / appearance / i18n / ui 访问器
-├── appearance.rs + appearance/
-│   ├── theme.rs + theme/          # 主题来源、配色、明暗与热更新
-│   ├── typography.rs             # 字体与字号规则
-│   └── tokens.rs                 # 共享视觉默认值
-├── service.rs + service/
-│   ├── desktop.rs + desktop/       # 桌面打开、portal 与监听
-│   ├── remote.rs + remote/       # SFTP / SMB 地址、会话与文件传输接口
-│   ├── logs.rs + logs/             # 本进程日志、tracing 采集与保留队列
-│   ├── storage.rs + storage/       # Toasty SQLite 初始化与原生迁移接入
-│   ├── terminal.rs + terminal/      # 终端进程、会话、状态、协议编码
-│   └── file_inspection.rs + file_inspection/ # 文件内容元信息、缩略图与磁盘缓存
-├── ui.rs + ui/
-│   ├── file_inspection.rs          # 元信息／缩略图共享后台队列与内存缓存
-│   ├── feedback/                  # 通知、对话框、tooltip
-│   ├── forms/                     # 字段、设置行与 ConfigEditor
-│   ├── interaction/               # 快捷键提示、KeyTips、焦点区域及组件动作
-│   ├── terminal/                  # 终端的 GPUI 实例、绘制、字体和 IME
-│   ├── logs.rs + logs/            # 日志查看器、筛选、详情与窗口宿主
-│   ├── time/                      # 时间戳组件及其刷新时钟
-│   └── sidebar/、page/、frame/…    # 保留组件族的解剖边界
-├── persistence.rs                 # 原子读写、锁、冲突检测
-└── i18n.rs + i18n/                 # 翻译基础能力
-```
-
-`appearance` 提供外观规则：主题解析、字体应用和视觉默认值；它可以接入 GPUI，但不归入组件目录。`ui` 只放可复用组件，以及这些组件专属的状态、事件和渲染辅助实现。例如时间戳的刷新时钟、通知队列、终端的输入适配均随组件保存；全局主题、字体和视觉默认值统一从 `appearance` 使用；应用直接使用 `appearance`。
-
-主题来源集中在 `appearance/theme/provider`，按 `system`（DMS 活动方案）、`config`（Qt 配置指定的色板）、`builtin`（内置配色）分组。来源负责发现、读取和解析，`palette` 保存通用颜色角色，主题应用及热更新协调留在外层。具体目录和明暗解析规则见 [主题文档](vistual-language/theme.md#4-固定配色分工)。
-
-内置主题为竹林、怀旧、霓虹、马卡龙、高对比和 Aero，每套包含明暗两版，配色配置在 `appearance/theme/provider/builtin/assets/*.toml` 中并编入二进制。应用保存内置配色选择，修改主题不重置明暗偏好或透明度。
-
-`service` 提供运行时能力，其接口使用普通 Rust 类型、原生协议模型和异步通道；服务代码不引用 `ui` 或 GPUI 类型。组件可以将服务状态映射为界面，并把鼠标、键盘和 IME 转换为服务操作。`persistence` 提供配置文件的原子读写与冲突检测；`service::storage` 提供 SQLite 应用数据存储，应用定义自己的表结构与迁移 SQL。
-
-GPUI 与 Tokio 的执行器独立。Files、Agents 和 Nixes 的启动层持有 `service::task_manager::Supervisor`，TM 内部独占 Tokio Runtime；服务接收 `Scope`，通过 `spawn`、`spawn_cancellable`、`spawn_blocking` 和 `spawn_thread` 派生任务，不保存或查找 Runtime Handle。`Task<T>` 上报任务准入和执行错误；普通任务在句柄释放后继续受 TM 追踪，可丢弃的 I/O 显式选择取消策略。GPUI 前台负责等待结果和更新界面，纯界面任务继续使用 GPUI 所有权。原生工作线程通过作用域驱动异步 I/O，不另建运行时。
-
-Files 的启动顺序集中在 `app.rs` 及 `app/{cli, config, desktop, ui, windows}.rs`：`Bootstrap::init` 读取配置并建立日志和 TM；`Bootstrap::run_event_loop` 在 GPUI 回调中先由 `Bootstrap::bind_lifecycle` 绑定 TM 与退出处理，再在可取消作用域中调用 `Bootstrap::prepare_io` 执行桌面单实例协商（`DesktopIntegration::acquire`）与按需存储加载（`Storage::start`），随后在主线程通过 `PreparedIo::mount` 调用 `ui::Initializer::run` 安装界面与偏好/卷/快捷键、由 `windows::Host::install` 注册窗口宿主并返回 `Host` 句柄，按模式打开初始窗口（`Host::open_initial`），调用 `cx.gds_mut().tasks().ready(keep_alive)` 标记就绪，最后由 `DesktopIntegration::listen` 持有该句柄消费桌面请求。`app/ui.rs` 只负责 UI 与全局服务初始化，`app/windows.rs` 通过 `Host::install` 管理全局窗口宿主并在进程首次开窗时派发启动告警，`app/desktop.rs` 只负责单实例协商与请求分发；GPUI 事件循环在异步启动期间保持响应。配置通过携带载荷的 `Mode` 区分 Browser、Picker 与 Service 模式。桌面集成从属于应用；启动中不因无窗口退出，Service 模式持续保活。显式退出先关闭窗口，再由 TM 关闭任务准入、通知取消并等待清理，最后退出 GPUI。
-
-卷监听通过容量为 16 的 `tokio::sync::mpsc` 向 GPUI 发送 `Observation`。这个通道的普通异步收发不依赖 Tokio 上下文，GPUI 前台可以直接等待 `receiver.recv()`。GPUI 接收任务持有监听句柄，销毁时取消监听；监听拥有唯一发送端，发送端关闭并排空缓冲后，接收任务检查监听的执行结果并报告异常。监听期间的 D-Bus 错误仍通过 `Observation` 报告。
-
-`service::desktop::Desktop` 提供文件打开和外部终端操作；Linux Portal 连接按需建立，由克隆的 `Desktop` 共享。桌面操作返回 `desktop::Error`，Portal 失败保留为 `PortalError` 及其底层错误；默认应用和选择器均失败时保留两次错误，用户取消是正常结果。
-
-剪贴板随窗口平台连接管理。Wayland 通过 GPUI 的 `read_clipboard_mime` / `write_clipboard_mime` 使用核心 `wl_data_device` 协议，复用窗口的 seat、焦点和输入 serial，不依赖 `ext-data-control` / `wlr-data-control`。没有键盘焦点时返回 `NotFocused`；其他窗口平台继续使用 GPUI 的 `ClipboardItem` 接口。协议参见 [Wayland 数据设备](https://wayland.freedesktop.org/docs/html/apa.html#protocol-spec-wl_data_device)。
-
-格式读取在界面线程向同一个 `wl_data_offer` 请求所需 MIME，后台读取管道，共用超时与总字节限制。返回的 offer revision 可用于条件写入，剪切完成后若用户已经复制了新内容，清理不覆盖新选择。GPUI 只传输 MIME 字节；Agents 负责文本、文件 URI、图片格式选择及附件优先级，Files 负责 GNOME/KDE 复制／剪切格式与来源标记。普通文本剪贴板和拖放仍使用原有 GPUI 接口。
-
-Files 的 UDisks2 连接、设备操作、重连计时器以及 OpenURI 请求在这个 Tokio runtime 中运行。zbus 5.19 同时编译两种后端时，会根据连接创建时的 Tokio 环境选择后端。GPUI 自身依赖 ashpd 的 `async-io` feature，且 ashpd 不允许同时开启 `tokio` feature；应用通过 ashpd 官方 `OpenFileRequest::connection` 接口注入在 Tokio 中创建的 zbus 连接，避免复用框架可能已在其它执行器初始化的全局 Portal 连接。框架内部仍保留其原有依赖配置。相关机制见 [zbus 运行时文档](https://docs.rs/zbus/5.19.0/zbus/#special-tokio-support) 和 [GPUI 前台／后台执行器说明](https://zed.dev/blog/zed-decoded-async-rust)。
-
-SQLite 入口为 `gds::service::storage::Options`：应用通过 `Options::new(migrations).models(models!(...)).open(&tasks, path)` 注册模型并打开数据库，返回 Toasty 原生 `Db`（转导出为 `Database`）。Toasty 管理连接池、连接任务、请求队列与事务，本地库的池容量为 1，句柄克隆共享该连接。应用使用 `Model` 派生生成的强类型查询、更新和 upsert 接口；原生 `Json<T>` 字段负责结构化数据的编解码。裸 SQL 留给 SQLite 初始化配置和迁移。数据库操作在 TM 持有的多线程 Tokio runtime 中运行，GPUI 只等待结果并更新界面。Toasty 的 SQLite 驱动底层仍使用同步 rusqlite，由其连接任务执行。
-
-Files 的 `location/model/address` 定义与页签无关的位置身份：普通目录、最近访问、收藏、网络、回收站、卷列表，以及卷身份加卷内相对路径。`location/api/places/record` 保存位置记录和视图设置；Toasty 模型显式声明 `key_kind`、`key_identity`、`key_path` 三列组成主键，位置类型使用原生 `Embed` 枚举，路径保留非 UTF-8 OS 数据。`view_settings` 按位置保存列布局、以列身份索引的逻辑像素列宽、排序方式、详情栏开关和列表／网格模式；应用默认值也保存在这张表。页签只承载位置的浏览过程，设置不依赖页签 ID。侧栏位置在当前页签导航，特殊位置沿用相同的位置身份和视图设置。Agents 的 `session/api/connection/cache/record` 定义缓存会话、页面与事件模型，快照和事件保留各自的业务类型；页面起始游标单独存列，供覆盖页面查询使用。缓存写入按实际新增事件和替换页面更新会话的字节预算，重复写入不重复计数，淘汰按最近访问顺序执行。
-
-每个存储入口的 `Store` 管理数据库句柄及事务的开启、提交和回滚。事务内的业务读写集中在对应的 `accessor.rs`：`Accessor` 借用当前 `Transaction`，读写方法通过 `&mut self` 使用它；Agents 的访问器同时携带命名空间和缓存容量限制。多个修改与修改后的快照读取共用当前事务。
-
-应用通过 `Options::new(migrations)` 提供 Toasty 原生 `MigrationSet`，每项迁移为带固定 ID、名称及嵌入 SQL 的 `MigrationFile`。初始化直接调用 `MigrationSet::apply(&db)`；待执行项判断、SQL 执行、事务回滚和 `__toasty_migrations` 记录均由 Toasty 管理。SQL 文件使用原生 `-- #[toasty::breakpoint]` 语句分隔。多个进程通过数据库旁的 `.lock` 文件串行初始化；文件锁使用标准库 API，等待锁在 Tokio blocking pool 执行。
-
-默认 WAL、外键约束及 5 秒忙等待；Agents 缓存保留 DELETE journal 和 FULL auto-vacuum。文件准备使用 Tokio 文件 API，服务创建私有数据库文件，不修改已有目录权限。配置文件继续使用 TOML，缩略图继续使用 freedesktop 标准 PNG 缓存。参考 [Toasty 原生迁移管理](https://tokio-rs.github.io/toasty/0.11.0/guide/schema-management.html)、[SQLite 驱动](https://tokio-rs.github.io/toasty/0.11.0/guide/sqlite.html)和[事务接口](https://tokio-rs.github.io/toasty/0.11.0/guide/transactions.html)。
-
-终端服务入口为 `gds::service::terminal`，界面入口为 `gds::ui::terminal`。服务的 `Terminal::prepare(scope, options)` 返回终端句柄和阻塞启动任务 `Launch`；调用方在后台执行 `launch.run()`，随后可等待 `terminal.ready()`，通过 `Session` 读写、resize、观察状态或订阅合并后的更新通知。`shutdown()` 在调用时请求停止，其 future 等待尚未完成的启动及最终 PTY 清理；最后一个所有者释放时也请求清理。启动任务不会持有进程所有者，等待启动的 future 也不会阻止最后一个所有者释放。
-
-Backend reuse decisions and retained host policy are documented in [Terminal backend boundary](development/terminal-backend.md); terminal color ownership and live updates are documented in [Terminal appearance contract](development/terminal-theme.md).
-
-GUI 适配器负责把主题调色板和网格尺寸传给服务；GPUI `Keystroke` / `Modifiers` 在 UI 边界转换为服务自己的输入类型。字体、选区绘制、焦点、IME 和窗口状态留在 `ui/terminal`。TM 根作用域取消会通知终端停止，并等待 PTY 回收；`cx.gds_mut().ui().init_terminal()`（由 `cx.gds_mut().initialize` 调用）只注册终端输入上下文的 Tab 行为，其他快捷键和标签页归应用。
-
-公共界面组件仍通过 `gds::ui::sidebar`、`gds::ui::page`、`gds::ui::settings` 等显式入口使用；实现按视觉职责分组，入口不暴露组件内部文件。外观模型与视觉默认值位于 `gds::appearance::{theme, typography, tokens}`，GPUI 上下文读写统一通过 `cx.gds().appearance()` / `cx.gds_mut().appearance()`、`i18n()` 与 `ui()` 访问器完成，存储机制为 `gds::persistence`。暂不改动的 `gpui-fast` 与 `cosmic-text` 启动优化 backlog 归档于 [GPUI 与字体冷启动后续优化规划](development/gpui-startup-backlog.md)。
-
-### 本应用日志
-
-图形应用的启动参数统一由 clap 管理。Files 与 Agents 默认关闭内存日志和日志面板，只有显式传入 `--enable-logs` 才启用：
-
-```sh
-gds-files --enable-logs
-gds-files --enable-logs --pick-file --filter 'Text:*.txt,*.md' /path/to/folder
-gds-agents --enable-logs
-gds-agents --enable-logs --compact
-# 开发时也可使用 just dev files --enable-logs / just dev agents --enable-logs
-```
-
-启用后，公共 `service::logs` 采集本进程的 tracing 事件，`ui::logs::Viewer` 显示同一份队列。两个应用均以 `Ctrl+Shift+L`（macOS 为 `Cmd+Shift+L`）打开独立日志窗口；Files 主菜单也提供入口。未启用时不创建队列、不显示该菜单项，也不注册快捷键或允许直接打开面板。普通错误通知继续显示。终端输入上下文继续保留该按键给 PTY，不触发应用日志窗口。
-
-日志支持级别、来源和文本筛选、键盘选中、全文详情与复制。关闭窗口不会停止采集，重新打开保留记录；向上滚动时停止自动跟随，回到底部继续跟随。每个进程最多保留 2,000 条、约 2 MiB 消息，单条消息最多 64 KiB；清空只影响本进程，不写磁盘或读取其他应用日志。
-
-应用在启动任务前将 `enable_logs` 传给 `service::logs::init_tracing`；返回 `Some(Store)` 时，由 `cx.gds_mut().initialize`（或 `cx.gds_mut().ui().logs().install`）安装，再用 `cx.gds_mut().ui().logs().init` 提供应用身份、窗口样式和根视图组装。禁用时保留 stderr 的基本诊断，`cx.gds().ui().logs().store()` 返回 `None`，不会隐式创建队列。服务不依赖 GPUI 或 Tokio runtime；更新通知通过独立的有界异步通道发送给每个查看器。`RUST_LOG` 可覆盖过滤规则，但不会自行启用 GUI 日志功能。控制台输出固定走 stderr，Files 选择器的 stdout 仍只返回结果 JSON。开启采集时，公共操作通知及 Files 后台失败也进入日志队列。
-
-## UI 代码组织
-
-原生元素树使用当前锁定的 `gds-uim` 新语法（`.div`、后缀构造器、属性块及条件 children），不是在大段 builder 外只包一层宏。参考锁定提交的 [语法文档](https://github.com/GanDesktop/gds-uim/blob/90f5424edf6ba9c5ffaacc2b11cb5ffe24960519/docs/grammer.md) 和 [示例](https://github.com/GanDesktop/gds-uim/tree/90f5424edf6ba9c5ffaacc2b11cb5ffe24960519/examples)。
-
-公共 `Frame`、导航条目、键帽与设置控件都在公共库中；Files 专属渲染与具名事件处理器留在二进制模块。明显归属对象的构造、状态同步和呈现方法放在对应 `impl` 中。一次性原生显示检查脚本和数据放在临时目录，不保留到项目；常驻测试只覆盖关键工作流与非显然行为。
-
-Files 的应用层先安装 TM、位置存储、配置服务、卷监听和主题热更新，再创建窗口并开始处理桌面请求。页面读取已经安装的服务，不通过 `shared()` 隐式启动全局服务。位置存储统一登记各窗口的待保存队列，在应用退出时完成清理；窗口只持有自己的位置快照。
-
-`pages/workspace/ui::Browser` 负责窗口状态组合、事件路由和呈现。文件修改及其校验归 `features/file_operations`；重命名、新建目录、复制、拖放和回收站操作通过 TM 执行。选择器的筛选与选择规则归 `features/pick_files::Session`，页面保存输入控件、菜单和焦点。目录观察和快照合并归 `entities/file`，页面负责将结果应用到对应导航版本并更新视图。地址协议归 `entities/location/scheme`，标签后端通过 `location/x/tags` 使用地址类型。跨功能的 action 声明和快捷键元数据放在 `shared/ui/actions`，通过 `Command::register(cx)` 在应用启动时注册、由页面处理。
-
-Files 的配置、卷服务与文件剪贴板分别通过各自切片导出的扩展 trait（`PreferencesExt`、`VolumesExt`、`ClipboardExt`）挂载在 `cx.gds()` / `cx.gds_mut()` 下的 `.preferences()`、`.volumes()` 和 `.clipboard()` 访问。配置服务先校验全部呈现变更，再一次性应用并更新当前快照；窗口观察配置服务实体（`Entity<Service>`）同步本地呈现。局部交互通过 `edit` 修改最新快照，避免以窗口旧副本覆盖其他变更。持久化由 TM 管理的后台队列串行执行；保存失败保留已经发布的内存状态并报告错误，退出等待已接受的写入完成。
-
-### UIM 写法
-
-在使用处导入 `el`、`m` 和翻译宏，分别写 `el!`、`m!`、`tr!` / `t!`。元素 ID 统一用 `# expression`。路径、常量和宏调用直接作为 DSL 值；只有字段访问、Rust 方法链、运算等需要 Rust 语义的表达式才使用 `$()`。
-
-```rust
-use crate::shared::i18n::tr;
-use gds_uim::el;
-
-el! {
-    .div {
-        # format!("audio-{id}");
-        text_size: crate::shared::ui::SMALL;
-        text_color: $(cx.theme().muted_foreground);
-    } [tr!("audio-stop")]
-}
-```
-
-### 界面翻译
-
-Fluent 资源按语言存放在各自的 `i18n/assets/en-US/`、`i18n/assets/zh-CN/` 下。语言目录内按功能命名，例如 `core.ftl`、`terminal.ftl`；Files 和 Agents 的基础文案统一使用 `app.ftl`。
-
-公共翻译宏从 `gds::i18n::t`（也可用 `gds::t`）导入，返回 `SharedString`。`@` 标记立即求值的上下文；具名变量支持同名简写、显式表达式、混用和尾逗号，格式化与复数选择交给 Fluent。
-
-```rust
-use gds::i18n::t;
-
-t!(@cx, "tabs");
-t!(@cx, "items-count", count); // count = count
-t!(@cx, "summary", count, name = user.name.as_str(),);
-
-el! {
-    t!(@cx, "tabs").SideBarSectionTitle::new { flex_1 }
-}
-```
-
-省略 `@cx` 时通过固定签名的工厂生成翻译闭包，参数表达式在闭包调用时求值。UIM 可以将 `App` 或 `Context<T>` 的引用传给这个闭包：
-
-```rust
-el! { cx.t!("tabs").SideBarSectionTitle::new }
-el! { cx.t!("summary", count, name = user.name.as_str()) }
-```
-
-工厂返回的 `FnOnce(&App) -> SharedString` 签名为调用参数提供 Rust 的解引用和重新借用上下文，渲染方法中的 `&mut App`、`&mut Context<T>` 因而都可以直接写 `cx.t!(...)`，调用后仍可继续使用 `cx`。动态调用先构造可调用值，再从左到右求值输入，与普通 Rust 函数调用顺序一致。
-
-### 共享对话框底部操作
-
-确认与命名对话框统一使用公共 `DialogActions`：主操作是图标加文字（`Alt+A`），取消是 X 图标加文字（`Alt+C`），Kit 的 `Enter` / `Esc` 仍然有效。组件只派发 Kit 的 Confirm / Cancel，不接管业务回调；各对话框继续自己保留 `on_ok` / `on_cancel` / `on_close`、返回 `bool` 决定是否关闭、冻结目标、验证失败不关闭与关闭后的焦点恢复，也不另外注册一套 Alt 处理。
-
-```rust
-footer: $(DialogActions::default().primary_label(label).primary_icon(IconName::Check).cancel_label(cancel_label));
-// 危险操作在同一个组件上加 `.danger()`
-```
-
-| 对话框 | 主操作图标 |
-| --- | --- |
-| 列配置（应用） | `Check` |
-| `F2` 重命名 | `Pencil` |
-| 新建文件夹 | `FolderPlus` |
-| 粘贴改名冲突 | `ClipboardPaste` |
-| 普通永久删除确认 | `Trash`（危险色） |
-| 回收站永久删除 / 清空确认 | `Trash` / `Broom`（危险色） |
-
-标题图标只说明对象，不代替底部主操作图标；图标库没有 `Trash2`，回收站的“清空”因此用 `Broom` 与单项永久删除的 `Trash` 区分。对话框通过此组件统一设置底部操作，不分别设置 `ok_text` / `cancel_text` / `ok_variant`。
-
-### 共享操作通知
-
-公共接口位于 [notifications](../src/ui/feedback/notifications.rs)。窗口创建时调用 `gds::ui::notifications::bind_window(window, cx)`，组件或后台结果回到 GPUI 上下文后即可调用 `error` / `warning` / `info` / `success`，不需要 Files 的 `Browser` 引用：
-
-```rust
-gds::ui::notifications::error("操作失败的原因", cx);
-```
-
-带明细的报告使用 `Report`，异步操作的开始 / 结束使用 `Operation` 复用通知槽。消息由套件共享的 Kit 通知队列持有，由应用根视图挂载的覆盖层平铺渲染，不改变文件列表和设置页高度；完整摘要与明细在有界区域内滚动。错误保持到用户关闭，其余沿用 Kit 自动消退。具体位置、材质与交互约定见 [统一通知语言](vistual-language/README.md#通知气泡与共享接口)。
-
-## 设置与状态
-
-- 应用配置（Files）：`$XDG_CONFIG_HOME/gds/app/files/settings.toml`，默认 `~/.config/gds/app/files/settings.toml`。设置真实变化时立即请求应用并自动保存；重复选择同值不写入，程序回写不再发起应用请求。应用失败恢复上一次有效偏好并报错；持久化失败保留已生效的运行态，明确提示“已生效但未保存”。声明式符号链接或只读目标允许读取，但不被替换。应用与保存失败通过共享右上角通知气泡反馈，不插入设置页内容，也不另设全宽保存底栏。
-- Files 状态：`$XDG_STATE_HOME/gds/files/state.sqlite`，默认 `~/.local/state/gds/files/state.sqlite`。`locations` 保存收藏、最近访问和固定位置，远程 URI 使用独立记录；`view_settings` 保存应用默认值与各位置的列布局、列宽、排序、详情栏开关和列表／网格模式。列编辑器默认只作用于当前位置；“本应用默认”在同一 Toasty 事务中更新数据库默认列并清除当前位置的列覆盖，其它视图字段保留。`settings.toml` 保存主题、字体、语言、隐藏文件、侧栏等应用偏好，列与视图状态统一由 SQLite 管理。
-- Agents 的连接历史缓存继续位于 `$XDG_CACHE_HOME/gds/agents/history-v1/history.sqlite`（默认 `~/.cache/gds/agents/history-v1/history.sqlite`）。数据库执行接入公共 `service::storage`，窗口边界、连接命名空间和 512 MiB 淘汰策略仍由 Agents 管理；缓存可删除重建，不与 Files 的持久状态共库。
-- GNOME 系统来源在进程内通过纯 Rust 结合 XDG Settings Portal、Adwaita 基准色板与用户 GTK 3/4 `settings.ini` / `gtk.css` 解析颜色，监听 Portal、dconf 与用户 GTK 配置；不启动 Python 或依赖 GTK 运行时库。详见 [主题来源](vistual-language/theme.md#gnome)。
-- Qt 来源沿实际 qtct 配置中的 `color_scheme_path` 读取，不硬编码某个桌面生成文件。DMS 来源读取已经生成的 `DankMaterialShell/dms-colors.json`。缺失 / 不支持 / 格式错误会报错，不把内置主题伪装成成功跟随。
-- 外部主题在启动或主题 / 明暗选择变化时读取。DMS 的跟随系统模式读取导出的活动模式；内置 / Qt 读取平台明暗偏好。`theme::Observer` 统一监听 DMS、Qt 配置及解析后的色板路径，跟随原子替换与托管符号链接；后台读取成功后才安装，失败保留最后有效主题，旧来源结果不覆盖新选择。透明度变化只更新材质，不重读色板。
-- 透明度仅影响表面；窗口允许 alpha，Root 清除不透明垫底。整条左列（顶栏左区、文件或设置侧栏、终端左区、底部留白）各区域仅绘制一次相同侧栏背景，不叠加内容底色；右侧区域独立绘制内容背景。底部左区没有分割顶线。没有启用或宣称支持 Niri 的桌面背板模糊。
-
-## 文件选择器
-
-`gds-files --pick-file [DIRECTORY]` / `--pick-directory` 提供本地文件或目录选择；`--multiple` 支持多选。文件模式支持重复 `--filter` 与 `--read-only`。确认后 stdout 输出一行 JSON，取消无结果输出；诊断使用 stderr。Portal 通过 `--portal-request` 使用独立的结构化请求协议，支持打开与保存。完整参数与结果见 [文件选择器](apps/files/picker.md)。
-
-## 内置终端
-
-Files 和 Agents 已接入共享的本地 PTY 终端。`Ctrl+反引号` 显示／收起面板，有效本地目录的空集合在显式展开时自动新建一个终端；`+`（“新建终端 / New terminal”）继续增加实例，关闭最后一个后重绘不自动重启。Files 在窗口级独立持有集合及活动实例，切换 / 关闭文件标签不改变终端；新建使用当前可用真实目录，否则 Home；F2 重命名实例且自定义名不受 shell 标题影响；Agents 由本地连接和工作目录对应的 workspace 提供集合、实时标题与独立分隔尺寸，终端控制区关联其导航组，PTY 面板只拆分右侧工作内容区。终端输入区的 `Ctrl+C/W/L`、Tab 等交给 shell，复制／粘贴用 `Ctrl+Shift+C/V`，`F6` 返回文件或对话区域。
-
-隐藏、切换标签或打开设置不结束进程；关闭终端或窗口不弹确认，直接终止并等待受管终端清理；Files 的文件标签不拥有终端。Shell、字体、字号和滚屏仍从设置中心的终端页配置，终端区域不重复显示设置齿轮；外部模拟器配置仍独立。远程/TCP Agent 上下文不启动本机 shell，picker 不提供内置终端。
-
-Files 的终端标题栏提供显式“在新终端标签页打开当前文件夹”，新建实例而不改变原 shell、输入和作业；文件导航及目录动作均不向已有 PTY 注入 `cd`。实现边界与配置见 [共享终端](apps/terminal.md)；当前不包含远程 shell、退出后保活或 Agent 执行工具权限。
-
-## 外部终端
-
-优先使用 `GDS_TERMINAL` 指定的**单个可执行程序**，继承用户会话环境并设置工作目录；该变量不是 shell 命令或带参数的字符串。
-
-```sh
-GDS_TERMINAL=alacritty cargo run --bin gds-files --features files
-```
-
-未设置时调用 `xdg-terminal-exec --dir=…`。Nix 开发环境提供该启动器，正式安装时按需在用户环境中自行安装；不存在时应用会说明失败，不猜测终端模拟器的参数，也不硬编码用户 shell。
-
-## 检查边界
-
-日常检查使用 `just fmt-check`、`just check` 和 `just test`；只检查某个应用时显式传入其 feature 和 binary target。需要 GPUI 测试支持的回归使用 `gui-tests`。编译、单元测试与无显示服务器的 GPUI 测试不能代替目标桌面的输入、IME、父窗口和材质验收。
-
-Files 的关键流程使用 `just test-files` 在独立 Wayland 会话中验证，保留截图、日志、实际文件及源码快照。测试范围、运行方式和保留单元测试的理由见 [Files testing](apps/files/testing.md)。
-
-文件操作和配置写入的验证使用独立临时目录与 XDG 环境。一次性验证脚本、日志、截图和逐轮结果不纳入项目文档。文档描述当前行为、接口与限制；数据库和配置的运行时迁移机制仍按其兼容契约维护。
-
-
-## Agents workspace launch forms
-
-The workspace add action loads provider descriptors from the selected BAS connection.
-Provider parameter types and validation use JSON Schema 2020-12 with Schemars and
-`jsonschema`; GDS implements native controls, not schema validation rules. See the
-BAS `docs/rpc.md` workspace provider contract. The `workspace_launch` feature slice
-owns the form, backend requests, and provider selection.
-
-Connection profiles expose an explicit `local` boolean meaning that the connection
-shares the frontend filesystem namespace. The built-in local profile and locally
-discovered profiles set it to true. Existing saved profiles without this field
-conservatively use remote browsing; the connection editor can change the declaration.
-A loopback TCP or Unix socket address alone does not enable local directory browsing.
-
-`ServerDirectoryPath` fields use the native directory picker for declared local
-connections and `BrowseServerDirectories` for other connections. Manual path entry
-is available in parameter forms. When a local connection exposes a single provider
-with only one required directory field, the add action reuses the workspace's
-existing native chooser and activation lifecycle, then submits the selected path
-through that provider. Other parameter forms use the existing parent-window alert
-dialog, Kit form fields, and shared `DialogActions`; they do not create a separate
-window. Provider choice sources are queried with partial form values, search text
-and pagination. Schema versions are sent back on open/query.
-An unsupported schema or an older BAS without provider RPCs produces an error;
-GDS never substitutes a local filesystem picker for a remote backend.
-
-Remote directory forms embed the shared `gds::ui::picker::directory::DirectoryPicker`
-in an alert dialog. Its injected `Loader` returns paginated `Page` data, including
-opaque source paths, parent and breadcrumb locations. The shared UI has no BAS or
-filesystem dependency; `workspace_launch::api` adapts BAS responses. Dropping a
-loader future must cancel its work. Hosts call `cancel_loading` on dialog close and
-read `selected_path` for confirmation; `None` disables the decision while loading,
-editing a location, or showing an error. Local connections retain the native chooser.
-
-BAS channels use the shared HTTP/2 heartbeat policy, including lazy channels:
-15 seconds idle before a PING and a 5-second ACK timeout. Transport failure reaches
-the existing stream reconnection logic; subscriptions resume using their cursors.
-Heartbeat frames do not enter conversation history and never retry a prompt.
-
-
-Files 的目录 watcher 合并带路径的事件批次，忽略访问事件，普通变化只 inspect 涉及的条目；溢出、未知事件和目录自身变化才重新枚举。后台结果用导航 revision 校验，不能覆盖后来的导航。应用批次不进入加载状态，不重置滚动、选择、历史或展开状态；按可见范围与列的格式化值判断是否需要通知，列表元数据变化只通知表格。未显示的数据仍更新模型，滚动时读取最新行。
+| `app` | CLI, bootstrap, lifecycle, window host, desktop D-Bus | `cli`, `config`, `desktop`, `ui`, `windows` | `cli`, `startup` |
+| `pages` | Top-level window workspaces | `workspace` (browser, picker, settings host) | `workspace` (session workspace, compact popup) |
+| `widgets` | Composable self-contained views | `settings`, `remote_browser`, `help` | `settings`, `history`, `help` |
+| `features` | User workflows & mutations | `file_operations`, `pick_files`, `connect_server` | `navigation`, `agent_auth`, `delete_session`, `workspace_launch` |
+| `entities` | Domain state, storage & protocol models | `file`, `location`, `preferences` | `agent`, `backend`, `session` |
+| `shared` | Domain-agnostic app utilities | `i18n`, `lib` (clipboard/selection), `ui` | `i18n`, `config`, `api`, `lib`, `ui`, `routes` |
+
+## Shared Library Boundaries (`src/`)
+
+`src/lib.rs` exposes six top-level modules:
+
+1. **`app`**: Provides the single GPUI extension trait `AppExt` (`cx.gds()` and `cx.gds_mut()`), exposing inherent accessors `tasks()`, `appearance()`, `i18n()`, and `ui()`. Application slices attach domain accessors (such as `preferences()`, `volumes()`, `clipboard()` in Files) via local extension traits on `Gds`.
+2. **`appearance`**: Owns `theme` (providers, semantic `Palette`, `Observer` hot-reload), `typography` (Fontconfig aliases and scaling), and layout `tokens`.
+3. **`service`**: Pure Rust / Tokio runtime services (`task_manager`, `desktop`, `remote`, `storage`, `terminal`, `file_inspection`, `logs`, `watch`). **Services never reference `ui` or GPUI types.**
+4. **`ui`**: Reusable anatomical GPUI components (`frame`, `sidebar`, `page`, `forms`, `feedback`, `interaction`, `terminal`, `logs`, `time`, `about`, `picker`, `drag`) and UI-side caches (`ui::file_inspection::Cache` deduplicating metadata and thumbnail requests).
+5. **`persistence`**: Atomic file replacement, lock files, and protection against clobbering read-only or declaratively managed symlinks.
+6. **`i18n`**: Fluent bundle loading and GPUI text helpers.
+
+### Execution & Shutdown Model
+
+GPUI's foreground/background executors own UI rendering and disposable view tasks. `service::task_manager::Supervisor` owns a dedicated multi-threaded Tokio runtime for all I/O. Services accept `Scope` handles to register cancellable or must-drain tasks; explicit quit closes native windows first, seals task admission, drains tracked cleanup, and only then exits GPUI. See [Task Ownership & Shutdown](development/task-manager.md).
+
+## UIM, Translations & Shared Feedback
+
+- **Declarative UI (`gds-uim`)**: Construct trees with `el!` and `m!` using the `.Component::default` / `# id_expr` syntax (see [gds-uim grammar](https://github.com/GanDesktop/gds-uim/blob/90f5424edf6ba9c5ffaacc2b11cb5ffe24960519/docs/grammer.md) and [Component Composition](visual-language/composition.md)). Escape into `$(...)` only for field access, method chains, or arithmetic.
+- **Fluent i18n (`gds::i18n::t`)**: Store `.ftl` files under `i18n/assets/{en-US,zh-CN}/`. Use `t!(@cx, "key", count)` for immediate `SharedString` evaluation, or `cx.t!("key")` inside `el!` to borrow `cx` cleanly without consuming `&mut Context<T>`. Desktop `.desktop` files use POSIX locales (`zh_CN`) generated from `assets/<app>/desktop.toml`.
+- **Notifications (`gds::ui::notifications`)**: Bind windows with `notifications::bind_window(window, cx)`, then emit `error` / `warning` / `info` / `success`, `Report` (with copyable details), or `Operation` (progress-to-result slot reuse).
+- **Dialogs (`DialogActions`)**: Modal confirmations use `DialogActions::default().primary_label(...).primary_icon(...)` (`Alt+A` / `Enter` confirm, `Alt+C` / `Esc` cancel; `.danger()` for destructive actions).
+- **Diagnostics (`--enable-logs`)**: Disabled by default with zero allocation overhead. Passing `--enable-logs` activates `service::logs` (up to 2,000 entries / ~2 MiB in-memory) and `ui::logs::Viewer` + the Tasks inspector via `Ctrl+Shift+L`. `RUST_LOG` filters stderr/collector verbosity without implicitly enabling the GUI viewer.
+- **External Terminal**: Launching an external terminal uses `GDS_TERMINAL` (single executable name, not a shell string) or falls back to `xdg-terminal-exec --dir=…`.
+
+## Release & Distribution Pipeline
+
+- **Cargo Release Profile**: `opt-level = 3`, `lto = false`, `codegen-units = 16`, `debug = 0`, `strip = "symbols"`, `incremental = false`, keeping `unwind` panic semantics for GPUI compatibility.
+- **Local Container Packaging**: Build native distro packages from the working tree with `just rpm [43|44] [dev|release]`, `just deb [debian|ubuntu] [trixie|noble|resolute] [dev|release]`, and `just arch [dev|release]`.
+- **Automated Tag Releases ([release.yml](../.github/workflows/release.yml))**: Pushing a `v*` tag matching `Cargo.toml` runs a **Draft-First** pipeline:
+  1. `prepare` validates version parity, runs installer tests (`python3 -m unittest discover -s scripts/tests -v`), and creates a GitHub Draft Release.
+  2. `build` compiles `gds-files` and `xdg-desktop-portal-gds` across Arch, Debian 13 (`trixie`), Ubuntu 24.04 (`noble`), Ubuntu 26.04 (`resolute`), and Fedora 43/44 containers alongside `nix` NUR evaluation.
+  3. `smoke-native` verifies `install.sh --yes --with-portal`, `--help`, `desktop-file-validate`, and `--uninstall` inside clean minimal runtime containers.
+  4. `publish` generates `MANIFEST` and `SHA256SUMS`, uploads assets to GitHub Releases and Cloudflare R2 (`https://pkgs.gandesktop.dev`), updates `https://gds.gandesktop.dev/install.sh` (also tested and deployed on `main` via [installer.yml](../.github/workflows/installer.yml)), undrafts the release, and advances `nur` / `stable` for non-prerelease tags.
+
+## Architecture Deep Dives
+
+- [Task Ownership & Application Shutdown](development/task-manager.md)
+- [Storage & Configuration Persistence](development/storage.md)
+- [Agents & BAS Protocol Architecture](development/agents-protocol.md)
+- [Desktop Test Virtual Machines](development/virtual-machines.md)
+- [Technical Decisions & Active Compromises](decisions/README.md)

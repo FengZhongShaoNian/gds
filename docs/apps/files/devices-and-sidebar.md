@@ -1,45 +1,32 @@
-# Volumes and sidebar
+# Volumes & Sidebar
 
-GDS Files uses UDisks2 on Linux to discover volumes and perform device operations. The volume view provides capacity, labels, default mount-point selection, browsing and explicit mount/unmount actions.
+GDS Files uses UDisks2 on Linux to discover storage volumes, monitor capacity, and execute explicit mount, unmount, and filesystem-label operations.
 
-## Sidebar layout
+## Sidebar Layout
 
-The sidebar contains tabs, an optional volume group and location shortcuts. Locations stay at the bottom; tabs and volumes share the remaining height and scroll independently. The volume group is hidden by default and can be enabled in Files settings. Alt+V temporarily reveals and focuses it for the current session.
+The sidebar stacks **Tabs**, an optional **Volumes** group (hidden by default; enable in **Settings → Files** or reveal for the current session with `Alt+V`), and **Locations** pinned at the bottom.
 
-A draggable horizontal divider adjusts the tab/volume height allocation and supports keyboard adjustment. The saved height is retained when a small window temporarily constrains the actual size. Collapsing the sidebar preserves row heights, group state and scroll positions; only horizontal presentation changes. See [sidebar anatomy](../../vistual-language/sidebar.md).
+- A draggable horizontal splitter (with keyboard stepping) divides vertical space between Tabs and Volumes, preserving the user's preferred height when small windows temporarily clamp available space.
+- Collapsing the sidebar (`Ctrl+B`) narrows width while preserving row heights, group state, and scroll positions; see [Sidebar Anatomy](../../visual-language/sidebar.md).
+- Clicking a volume or location navigates within the active tab (`Ctrl/Cmd+Click` opens a new tab), sharing the tab's unified back/forward history.
 
-Locations and volumes navigate within the current tab. Ctrl/Cmd+click opens another tab; browsing a volume does not create a separate kind of hidden tab. Back and forward use the same location history as ordinary folders and collections.
+## Volume Management View (`location:/volumes`)
 
-## Volume view
+Displays one row per discovered volume using the shared `DataTable` and `CapacityBar` (showing user-available vs total space sampled asynchronously from `statvfs`, distinct from loading or unavailable states):
 
-The management page uses the common data table, with one row per volume. It shows the name, filesystem, available/total capacity and default mount point. System volumes have a small marker beside the name. Labels take precedence over fallback names.
+| Action | Shortcut / Trigger | Availability |
+| --- | --- | --- |
+| Open | `Enter` / Double-click | Navigates to the volume's active default mount point |
+| Mount | `Ctrl+M` / Toolbar / Menu | Eligible unmounted volumes (clicking an unmounted volume never auto-mounts) |
+| Unmount | `Ctrl+Shift+M` / Toolbar / Menu | Mounted non-system volumes |
+| Rename label | `F2` / Menu | Updates filesystem label via UDisks2 (empty clears label; unavailable if locked/read-only) |
+| Default mount point | Context menu | Persisted by stable volume identity when multiple mount points exist |
 
-Single-click selects; arrow keys, Home and End move selection. Double-click or Enter opens the selected volume. Right-click and row menus act on their selected volume. Clicking table background clears selection and keyboard range state.
+## Disconnects & Authorization
 
-| Action | Availability |
-| --- | --- |
-| Open | Browses the selected default mount point when available |
-| Mount / Ctrl+M | Explicit operation for an eligible unmounted volume |
-| Unmount / Ctrl+Shift+M | Eligible mounted volume; running system volumes are protected |
-| Rename / F2 | Sets the filesystem label through UDisks2; unavailable for locked/read-only volumes |
-| Choose default mount point | Selects among the volume's existing mount points |
-
-Clicking an unmounted volume displays its unmounted state; it does not mount automatically. Mount/unmount shortcuts apply only in the volume view or a volume directory. Duplicate operations are disabled while a request is running. An empty label clears the filesystem label; Files does not unmount a filesystem automatically to rename it.
-
-Default mount-point choices use stable volume identity when available. Without a stable identity, a choice lasts for the attachment. The initial choice favors the shallowest path, with stable path ordering. A disappeared selected mount point stays unavailable until explicitly changed.
-
-Capacity is sampled in the background from filesystem statistics, not a directory scan. Available space means space available to the current user. Periodic refresh, manual refresh and completed file operations update it; unloading a volume clears its capacity. Unknown, loading and failed capacity states are distinct from zero free space.
-
-## Disconnects and authorization
-
-An unplugged or unmounted volume leaves its tabs open with an unavailable state and hides the old file listing. Reconnection checks volume identity and the relative directory; reusing the same mount path does not identify the same device. A late operation result cannot navigate a tab that has since moved elsewhere.
-
-UDisks2 and polkit own authorization. A graphical session needs a working polkit agent for interactive requests. Missing services or denied actions produce an error while ordinary local browsing remains available. Insertion updates the volume list without stealing focus or opening a window. Encrypted volumes must be unlocked with a system tool; Files has no password-unlock interface.
-
-The backend also supports whole-device USB power-off and optical eject, but the current volume UI exposes single-volume mount/unmount and label operations. Whole-device removal and eject are not presented as completed UI features. The backend retains partial unmount results and reports busy or failed steps rather than claiming success.
+- **Identity-safe reconnects**: Unplugging or unmounting a volume marks open tabs on that device unavailable instead of exposing stale listings; reconnecting verifies volume identity (`location:/volume/...`) rather than trusting a reused mount path.
+- **Polkit & UDisks2**: Interactive privilege prompts rely on the desktop session's polkit agent. Missing UDisks2 or denied authorization surfaces a notification without blocking ordinary local browsing. Encrypted volumes must be unlocked externally; whole-disk power-off and optical eject are not exposed in the current UI.
 
 ## Implementation
 
-Device discovery and operations belong to [`entities/location/api/volumes`](../../../bin/files/src/entities/location/api/volumes.rs), including the Linux backend, observation service, identity model and capacity sampling. The service subscribes to UDisks2 object/property changes and periodically reconciles state. Live device state is separate from saved locations and preferences.
-
-The workspace composes sidebar groups, volume tables, navigation and task coordination. Shared UI provides navigation rows, capacity bars and split behavior. Device-specific policy stays in Files. Partitioning, formatting, filesystem repair, automatic mounting and other platform backends are not implemented.
+Device discovery, UDisks2 D-Bus subscriptions, identity resolution, and capacity sampling live in [`bin/files/src/entities/location/api/volumes.rs`](../../../bin/files/src/entities/location/api/volumes.rs), completely decoupled from saved preferences and SQLite location storage.

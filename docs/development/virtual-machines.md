@@ -17,15 +17,15 @@ Choose GNOME or Plasma at the Fedora login screen to test both environments.
 
 | Guest | Desktop | Resources | Address |
 | --- | --- | --- | --- |
-| `fedora-dev` | Fedora 44, GNOME + KDE | Existing: 8 vCPUs, 16 GiB RAM | DHCP; use `just vm` / `virsh domifaddr` |
+| `fedora-dev` | Fedora 44, GNOME + KDE | 8 vCPUs, 16 GiB RAM | DHCP; use `just vm` / `virsh domifaddr` |
 | `ubuntu-dev` | Ubuntu 26.04.1 LTS, GNOME | 8 vCPUs, 8 GiB RAM, 80 GiB disk | `192.168.122.120` |
 | `cachyos-dev` | CachyOS rolling, KDE Plasma | 8 vCPUs, 8 GiB RAM, 80 GiB disk | `192.168.122.121` |
 | `arch-noctalia` | Arch Linux, Umbriel + Noctalia | 8 vCPUs, 8 GiB RAM | DHCP (`192.168.122.63`) |
 
-The new guests use UEFI, virtio storage/network, and virtio graphics with SPICE.
-SPICE OpenGL is disabled because the host's NVIDIA display path failed to import
-its display buffers. Mesa software Vulkan supports application rendering; this
-setup is intended for functional testing rather than GPU performance measurement.
+Guests use UEFI, virtio storage/network, and virtio graphics with SPICE.
+SPICE OpenGL is disabled because the host's NVIDIA display path does not import
+its display buffers; Mesa software Vulkan handles application rendering for
+functional desktop testing (not GPU benchmark measurement).
 All four guests log in automatically as `atlas` on the desktop (Fedora preserves its
 existing desktop login), accept the host's Ed25519 key over SSH with password
 authentication disabled, and allow passwordless `sudo` (`NOPASSWD: ALL`) for automated
@@ -33,9 +33,9 @@ package testing. Local desktop/sudo credentials are stored only on this host in
 `~/.local/share/gds-vms/credentials` (mode `0600`).
 
 > [!IMPORTANT]
-> `arch-noctalia` now runs on a libvirt external disk snapshot (`clean-base`). Start
-> and manage it with `just vm noctalia` or `virsh` rather than the legacy standalone
-> `/home/atlas/VMs/arch-noctalia/start.sh` script (which points directly at the base `.qcow2` file).
+> `arch-noctalia` runs on a libvirt external disk snapshot (`clean-base`). Start
+> and manage it with `just vm noctalia` or `virsh` rather than legacy standalone
+> QEMU launch scripts that point directly at the base `.qcow2` image.
 
 ## Shared clipboard
 
@@ -91,8 +91,8 @@ just vm ubuntu stop
 just vm cachyos start
 ```
 
-`copy` uploads files into the desktop user's `Downloads` directory (`fedora-dev`
-links `~/Downloads` to `~/下载`). If SSH is requested immediately after starting a guest,
+`copy` uploads files into the desktop user's `~/Downloads` directory (symlinked on
+`fedora-dev` to the localized Downloads folder). If SSH is requested immediately after starting a guest,
 wait for boot to finish and retry.
 
 Build native packages on the host, then install them inside the corresponding

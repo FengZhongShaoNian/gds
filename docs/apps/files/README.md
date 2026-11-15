@@ -1,6 +1,6 @@
 # GDS Files
 
-GDS Files is a native file browser for Linux with Wayland. It browses local directories, mounted volumes and SFTP/SMB locations, and provides a native file chooser for desktop applications.
+GDS Files is a native Wayland file manager for browsing local directories, removable volumes, tags, and SFTP/SMB servers, paired with a native desktop file chooser.
 
 ```sh
 just dev files
@@ -8,53 +8,41 @@ just dev files "/path/to/folder"
 just build files
 ```
 
-See [Fedora RPM installation](fedora.md), [NixOS installation](../../nixos.md)
-and [desktop integration](nixos.md) for packaged use.
+For end-user installation and system integration, see the [Files User Guide](../../../bin/files/README.md), [NixOS Installation](../../nixos.md), [NixOS Desktop Integration](nixos.md), [Fedora RPMs](fedora.md), [Debian/Ubuntu DEBs](debian.md), and [Arch/AUR Packages](arch.md).
 
-## Navigation and views
+## Navigation & URI Model
 
-The window combines a top path bar, vertical file tabs, a content area, an optional details panel and a bottom terminal dock. The sidebar contains tabs, an optional volume group and fixed location entries. Its expanded and collapsed widths also apply to the terminal's left column.
+The workspace combines a top breadcrumb/address bar, a collapsible left sidebar (vertical tabs, optional volumes, and fixed locations), a virtualized table/grid content view, an optional single-item details panel (`Ctrl+P`), and a window-owned bottom terminal dock (`Ctrl+\``).
 
-Each tab has its own location history, selection, filter and scroll position. Home, recent items, favorites, network locations, trash and volumes all participate in that history. Sidebar entries open in the current tab; Ctrl/Cmd+click creates a tab. Closing the last tab creates a Home tab. Pinned locations reopen on the next launch; this does not restore shell processes.
+Every browsable target has a canonical URI and participates in per-tab back/forward history (right-click back/forward arrows to jump directly to a history entry; `Ctrl/Cmd+Click` opens a new tab; pinned tabs restore their order on launch):
 
-The address bar supports editable local paths, supported remote URIs and the virtual addresses `location:/recent`, `location:/favorites`, `location:/volumes`, `location:/network` and `location:/trash`. Click the address bar or press Ctrl+L to edit it, then press Enter to navigate. Home keeps its filesystem path. Navigation commits after loading succeeds; failure or cancellation preserves the previous location. Back/forward restores the visited view. Right-clicking a navigation arrow lists that direction's history.
+| URI Form | Target |
+| --- | --- |
+| `file:///…` (displayed as OS paths for local folders) | Local filesystem directories |
+| `sftp://…`, `smb://…` | Native remote SFTP and SMB directories |
+| `location:/recent`, `/favorites`, `/volumes`, `/network`, `/trash` | Built-in virtual collections (`location://` is invalid) |
+| `location:/volume/<stable\|attachment>/<id>?path=<rel>` | Removable/mounted volume paths preserving device identity across remounts |
+| `tags:/`, `tags:/<tag>` | Baloo/KIO hierarchical file tag catalogs |
 
-Every browsable location has a URI: local paths use `file://`, remote directories use `sftp://` or `smb://`, and built-in pages use `location:/`. Volume locations retain their device identity through `location:/volume/<stable|attachment>/<id>?path=<relative-path>`. Home and available local folders display filesystem paths in the address bar, which also accepts file URIs. The `location://…` form is not supported.
+## Views, Inspection & Live Monitoring
 
-Recent and Favorites use one list for local, remote and built-in locations. Successful visits share one most-recent-first history; bookmarks are added explicitly. Rows share selection, keyboard navigation, opening in a tab, copying their URI and bookmark removal. Removing a favorite does not delete its target. Existing local and remote records migrate automatically; their old separate histories cannot reconstruct a shared visit chronology, so unified ordering starts with subsequent visits.
+- **Per-location view state**: Saved in `$XDG_STATE_HOME/gds/files/state.sqlite` (`view_settings`), recording list vs grid mode (`Ctrl+G`), sort column/direction (`Alt+Shift+S`), column visibility/order/widths (`Alt+Shift+V`), and details panel state independently per location alongside customizable application defaults.
+- **Background content inspection (`service::file_inspection`)**: Deduplicates image, video, audio (including Lofty tags and embedded cover art), and text header probes (`<= 256 KiB` metadata prefix; `<= 32 MiB` image decode limit) across views, caching thumbnails in `$XDG_CACHE_HOME/thumbnails/x-large/`.
+- **Non-disruptive directory watcher**: Coalesces filesystem notifications, ignores pure access events, re-inspects only affected entries on ordinary edits, guards results by navigation revision, and updates rows in place while preserving selection and scroll position.
 
-Local directories offer a virtualized table and grid. Name filtering, hidden-file visibility, sorting, column order/visibility/width and the details panel are available. View settings are saved per location; application defaults are separate. The details panel presents single-item metadata, image/video previews and embedded audio covers. Audio details include available title, artist, album, genre, year, track number and stream properties. Audio covers use the same freedesktop thumbnail cache as images and videos (`$XDG_CACHE_HOME/thumbnails/x-large/`, normally `~/.cache/thumbnails/x-large/` on Linux); changes to the source file invalidate its cached preview. Audio files without embedded artwork keep their audio icon. Content metadata and thumbnails share a background inspection cache keyed by source path, kind, size and modification time; the list requests thumbnails, while the details panel also requests metadata. Filesystem attributes remain part of directory scanning. Recursive search is not implemented.
+## Local Operations, Trash & Desktop Handoff
 
-## File operations
+- **Non-destructive conflict policy**: Copy, cut, paste, drag-and-drop, new folder (`Ctrl+Shift+N`), and `F2` rename never silently overwrite existing targets or merge directories; paste conflicts open a rename/cancel dialog suggesting an available name.
+- **FreeDesktop Trash 1.0**: Supports home (`$XDG_DATA_HOME/Trash`) and per-volume (`.Trash-$uid` / `.Trash/$uid`) trash directories, preserving raw Unix path bytes, rejecting `..` traversal, and requiring destructive confirmation for `Shift+Delete` and Empty Trash.
+- **Opening files & archives**: Regular files open via the XDG OpenURI / AppChooser portals; executable scripts and `.desktop` files require explicit chooser confirmation. Archive files (`.zip`, `.7z`, `.tar`, `.tar.gz`) open in external archive managers.
+- **`org.freedesktop.FileManager1`**: Exports `ShowFolders`, `ShowItems`, and `ShowItemProperties` (`gds-files --dbus-service`), grouping revealed items into tabs and forwarding Wayland/X11 startup activation tokens without stealing an already owned bus name.
+- **Wayland & X11 clipboard**: Uses Wayland `wl_data_device` URI lists with GNOME/KDE copy-cut markers (conditional offer revisions prevent clearing newer clipboard contents after a cut completes; X11 file-clipboard metadata is currently scoped within the GDS process).
 
-Single-click selects; double-click or Enter opens. Ctrl toggles selection, Shift extends it, and blank-area selection supports dragging. Menus distinguish a single item, multiple items and the current directory.
+## Subsystem References
 
-Local operations include copying, cutting, pasting, new folders, renaming, trash, permanent deletion and file drag-and-drop. A paste-name conflict opens a rename/cancel dialog with an available-name suggestion. Commits do not overwrite existing targets; directory merging is unavailable. Permanent deletion and emptying trash require confirmation. Restoring a trash item fails visibly if its original destination is occupied.
-
-Regular files open through the desktop's default application; “Open with…” requests an application chooser. Executable content and desktop launchers require an explicit application choice, while recognized media with an executable permission bit can still open normally. Cancelling an application choice does not add a recent item.
-
-File clipboard exchange on Wayland uses URI lists plus GNOME/KDE copy/cut representations. X11 currently supports file clipboard metadata only within the same GDS process. Copying a path as text requires lossless UTF-8; browsing and opening local files retain raw OS paths. Unix owner/group/permission metadata does not constitute a full access-control check.
-
-Archive files use external applications through the usual open/open-with flow. Built-in archive browsing, compression, batch renaming and keyboard remapping are not implemented.
-
-## Network, volumes and terminals
-
-- [Network locations](network.md): native SFTP/SMB connections, saved locations and recursive transfers. Remote locations retain URI identity; remote deletion is permanent and moving remote files is unavailable.
-- [Volumes](devices-and-sidebar.md): UDisks2 discovery, capacity, labels, mount points and explicit mount/unmount operations.
-- [Embedded terminals](../terminal.md#files): window-owned local shells. Hiding the dock, switching tabs or opening settings preserves them; file navigation never changes an existing shell's directory.
-- [File picker](picker.md): file/directory selection, multiple selection and the native Portal request protocol. Results are local paths.
-
-## Settings and diagnostics
-
-Enable [tags](tags.md) under Settings → Extensions → Tags after Baloo backend detection succeeds. Commands can be discovered from PATH or configured explicitly. `tags:/` opens the tag catalogue.
-
-Open settings from the application menu or Ctrl+,. Changes apply immediately and save automatically; each field has its own default. Preferences apply only to Files. Settings are stored in `$XDG_CONFIG_HOME/gds/app/files/settings.toml`; location and view state are in `$XDG_STATE_HOME/gds/files/state.sqlite`. Managed symlinks and read-only settings are protected from replacement; save failures are reported separately from changes already applied in memory.
-
-Pass `--enable-logs` to enable the in-memory log viewer, available from the menu or Ctrl+Shift+L. Logs stay within the process and are not written to disk. Ordinary error notifications remain available without this flag.
-
-Developer architecture and commands are in [development](../../development.md). Visual and focus rules are defined by the shared [visual language](../../vistual-language/README.md) and [shortcuts](../../vistual-language/shortcuts.md).
-
-
-Custom themes are shared with Agents under `$XDG_CONFIG_HOME/gds/themes/` (default `~/.config/gds/themes/`). Copy the repository's `src/appearance/theme/provider/builtin/assets/bamboo.toml` there, edit its `[light]` and `[dark]` colors, then reopen Appearance settings and select the file from the theme source list. Subdirectories are supported. Changes to the selected theme reload automatically; invalid edits keep the last valid palette. Each application keeps its own theme selection and opacity settings.
-
-Directory monitoring reconciles changed paths in the background without restarting navigation. Writes that do not change visible labels, icons, previews, selection information, or ordering do not redraw the workspace. Changed metadata can update the table alone; entry additions, removals, and reordering preserve selection and scroll position by path.
+- [File Picker CLI & Portal Protocol](picker.md)
+- [SFTP & SMB Network Locations](network.md)
+- [Volumes & Sidebar](devices-and-sidebar.md)
+- [File Tags & URI Schemes](tags.md)
+- [Isolated Wayland E2E & Unit Testing](testing.md)
+- [Files Roadmap (Built-in Archives, Remote Move & Search)](../../roadmap/files.md)

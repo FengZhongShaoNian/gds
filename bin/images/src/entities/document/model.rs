@@ -5,7 +5,11 @@ use std::sync::Arc;
 use gds::service::image::{decode::DecodedImage, source::Format};
 use image::RgbaImage;
 
-use super::{annotation::AnnotationItem, cache::RenderCache, transform::TransformState};
+use super::{
+    annotation::AnnotationItem,
+    cache::{CompleteComposite, RenderCache},
+    transform::TransformState,
+};
 
 pub struct DocumentState {
     pub decoded: DecodedImage,
@@ -84,8 +88,11 @@ impl DocumentState {
         self.transform = TransformState::default();
         self.annotations.clear();
         self.bump_revision();
-        self.cache.composited = Some(composited);
-        self.cache.composited_revision = self.edit_revision;
+        self.cache.transformed_base = Some((self.transform, Arc::clone(&composited)));
+        self.cache.complete = Some(CompleteComposite {
+            revision: self.edit_revision,
+            rgba: composited,
+        });
         self.mark_clean();
     }
 }

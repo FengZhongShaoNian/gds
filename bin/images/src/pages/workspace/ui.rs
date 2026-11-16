@@ -26,7 +26,7 @@ use gpui_kit::{
     component::{
         ActiveTheme as _,
         color_picker::{ColorPickerEvent, ColorPickerState},
-        input::{InputEvent, InputState},
+        input::{InputEvent, InputState, TextareaState},
     },
     div,
     prelude::*,
@@ -38,12 +38,12 @@ use super::LaunchOptions;
 use crate::{
     entities::{
         catalog::CatalogState,
-        document::{DocumentState, RgbaColor},
+        document::{DocumentState, RgbaColor, SpatialTransformOp},
         metadata::MetadataState,
         preferences::{DEFAULT_INSPECTOR_WIDTH, PreferencesExt as _},
     },
     features::{
-        edit_canvas::{EditHistory, ToolFsm, ToolMode},
+        edit_canvas::{EditHistory, HoverTarget, ToolFsm, ToolMode},
         metadata_edit::MetadataCommitRequest,
     },
     shared::{
@@ -64,13 +64,7 @@ pub(crate) struct SettingsNotice;
 pub(crate) struct TrashNotice;
 pub(crate) struct EditNotice;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TransformOp {
-    RotateCw,
-    RotateCcw,
-    FlipH,
-    FlipV,
-}
+type TransformOp = SpatialTransformOp;
 
 struct RuntimeState {
     pub launch: LaunchOptions,
@@ -87,7 +81,7 @@ struct RuntimeState {
 struct FocusState {
     pub canvas: FocusHandle,
     pub path_input: Entity<InputState>,
-    pub text_overlay_input: Entity<InputState>,
+    pub text_overlay_input: Entity<TextareaState>,
     pub color_picker: Entity<ColorPickerState>,
 }
 
@@ -105,21 +99,46 @@ struct ChromeState {
     pub last_viewport_size: Size2,
 }
 
-#[derive(Default)]
 struct CanvasState {
     pub transform: ViewportTransform,
     pub panning: bool,
     pub last_pointer: Option<Point2>,
     pub tool_fsm: ToolFsm,
     pub history: EditHistory,
+    pub hover_target: HoverTarget,
     pub tool_popover: Option<ToolMode>,
     pub long_press_task: Option<Task<()>>,
     pub color_picker_open: bool,
     pub render_generation: u64,
     pub render_cancel: Option<CancellationToken>,
+    pub gesture_generation: u64,
+    pub gesture_render: Option<workflows::document_io::GestureRenderHandle>,
     pub svg_rerender_scale: Option<f32>,
     pub svg_rerender_generation: u64,
     pub svg_rerender_cancel: Option<CancellationToken>,
+}
+
+impl Default for CanvasState {
+    fn default() -> Self {
+        Self {
+            transform: ViewportTransform::default(),
+            panning: false,
+            last_pointer: None,
+            tool_fsm: ToolFsm::default(),
+            history: EditHistory::default(),
+            hover_target: HoverTarget::None,
+            tool_popover: None,
+            long_press_task: None,
+            color_picker_open: false,
+            render_generation: 0,
+            render_cancel: None,
+            gesture_generation: 0,
+            gesture_render: None,
+            svg_rerender_scale: None,
+            svg_rerender_generation: 0,
+            svg_rerender_cancel: None,
+        }
+    }
 }
 
 struct SessionState {
@@ -185,13 +204,17 @@ impl WorkspacePage {
 
         let path_input =
             cx.new(|cx| InputState::new(window, cx).placeholder(text("path-placeholder", cx)));
-        let text_overlay_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder(text("tool-text", cx)));
+        let text_overlay_input = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(1, 6)
+                .submit_on_enter(true)
+                .placeholder(text("tool-text", cx))
+        });
         let initial_hsla = color_to_hsla(ToolFsm::default().settings.color);
         let color_picker =
             cx.new(|cx| ColorPickerState::new(window, cx).default_value(initial_hsla));
 
-        let mut subscriptions = Vec::with_capacity(6);
+        let mut subscriptions = Vec::with_capacity(8);
         subscriptions.push(cx.subscribe_in(
             &path_input,
             window,
@@ -210,10 +233,15 @@ impl WorkspacePage {
         subscriptions.push(cx.subscribe_in(
             &text_overlay_input,
             window,
-            |this, _, event: &InputEvent, window, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
+            |this, input, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { shift: false, .. } => {
                     this.commit_text_overlay(window, cx);
                 }
+                InputEvent::Change => {
+                    let value = input.read(cx).value().to_string();
+                    this.on_text_draft_changed(value, cx);
+                }
+                _ => {}
             },
         ));
         subscriptions.push(cx.subscribe_in(
@@ -239,6 +267,14 @@ impl WorkspacePage {
                 cx.notify();
             }
         }));
+        subscriptions.push(cx.observe_window_activation(window, |this, window, cx| {
+            if !window.is_window_active() {
+                this.on_canvas_focus_lost(cx);
+            }
+        }));
+        subscriptions.push(cx.on_blur(&canvas_focus, window, |this, _, cx| {
+            this.on_canvas_focus_lost(cx);
+        }));
 
         cx.on_release(|this, cx| {
             if let Some(cancel) = this.session.load_cancel.take() {
@@ -250,6 +286,7 @@ impl WorkspacePage {
             if let Some(cancel) = this.canvas.render_cancel.take() {
                 cancel.cancel();
             }
+            this.cancel_gesture_render();
             this.cancel_svg_rerender();
             if let Some(doc) = this.session.document.as_mut() {
                 doc.cache.release_textures(cx);

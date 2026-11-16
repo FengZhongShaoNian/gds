@@ -1,6 +1,12 @@
-//! Image decoding, preview fallback, texture uploads, SVG zoom rerender, and discard guard.
+//! Image decoding, preview fallback, complete/transient texture installation, latest-wins
+//! gesture scheduling, SVG zoom rerender, and discard guard.
 
-use std::{cell::Cell, path::PathBuf, rc::Rc, sync::Arc};
+use std::{
+    cell::Cell,
+    path::PathBuf,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use gds::{
     i18n::t,
@@ -17,18 +23,20 @@ use gpui_kit::{
     assets::IconName,
     component::{Icon, WindowExt as _, dialog::AlertDialog},
 };
+use image::RgbaImage;
 use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::{
     entities::{
         document::{
-            DocumentState, PreparedPayload, PreparedTextures, RenderCache, build_render_textures,
-            build_svg_zoom_textures,
+            AnnotationItem, DocumentState, GesturePrepareInput, GestureSession, PreparedPayload,
+            PreparedTextures, RenderCache, SceneTag, TransformState, TransientFrame,
+            build_render_textures, build_svg_zoom_textures, encode_display_payload,
         },
         metadata::{self, MetadataState},
     },
-    features::navigation::open_file_dialog,
+    features::{edit_canvas::HoverTarget, navigation::open_file_dialog},
     shared::{
         clipboard::ClipboardExt as _,
         geometry::{FitMode, Size2, ViewportTransform},
@@ -37,6 +45,27 @@ use crate::{
 };
 
 const PREVIEW_FALLBACK_MAX_EDGE: u32 = 2048;
+
+#[derive(Clone)]
+pub(in crate::pages::workspace::ui) struct GesturePrepareSeed {
+    pub base_rgba: Arc<RgbaImage>,
+    pub transform: TransformState,
+    pub cached_base: Option<(TransformState, Arc<RgbaImage>)>,
+    pub complete_rgba: Option<Arc<RgbaImage>>,
+    pub initial_annotations: Arc<[AnnotationItem]>,
+}
+
+pub(in crate::pages::workspace::ui) struct GestureRenderHandle {
+    pub gesture_id: u64,
+    pub base_revision: u64,
+    pub first_changed_idx: usize,
+    pub next_seq: u64,
+    pub in_flight: bool,
+    pub pending: Option<(u64, Arc<[AnnotationItem]>)>,
+    pub cancel: CancellationToken,
+    pub prepare_seed: GesturePrepareSeed,
+    pub session: Arc<Mutex<Option<GestureSession>>>,
+}
 
 struct DecodeResultPayload {
     decoded: gds::service::image::decode::DecodedImage,
@@ -51,6 +80,9 @@ impl WorkspacePage {
         cx: &mut Context<Self>,
         on_confirm: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) {
+        self.flush_editing_text_before_external(window, cx);
+        self.cancel_pointer_gesture_before_external(cx);
+
         if !self.has_unsaved_changes() {
             on_confirm(self, window, cx);
             return;
@@ -156,6 +188,7 @@ impl WorkspacePage {
         if let Some(cancel) = self.canvas.render_cancel.take() {
             cancel.cancel();
         }
+        self.cancel_gesture_render();
         self.cancel_svg_rerender();
 
         self.session.load_generation = self.session.load_generation.wrapping_add(1);
@@ -266,7 +299,10 @@ impl WorkspacePage {
         self.session.editing_path = false;
         self.session.clipboard_dismissed = true;
         self.canvas.history.clear();
-        self.canvas.tool_fsm.cancel_active();
+        self.canvas.tool_fsm.selection.clear();
+        self.canvas.tool_fsm.cancel_active(&mut self.canvas.history);
+        self.canvas.hover_target = HoverTarget::None;
+        self.cancel_gesture_render();
         self.clear_text_overlay_input(window, cx);
         self.canvas.svg_rerender_scale = None;
         self.canvas.transform = ViewportTransform::compute_fit(
@@ -299,11 +335,231 @@ impl WorkspacePage {
         cx.notify();
     }
 
+    pub(in crate::pages::workspace::ui) fn cancel_gesture_render(&mut self) {
+        if let Some(handle) = self.canvas.gesture_render.take() {
+            handle.cancel.cancel();
+        }
+    }
+
+    pub(in crate::pages::workspace::ui) fn schedule_gesture_preview(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(doc) = &self.session.document else {
+            return;
+        };
+        let Some((first_changed_idx, snapshot)) = self.canvas.tool_fsm.transient_annotations(doc)
+        else {
+            return;
+        };
+
+        let edit_rev = doc.edit_revision;
+        let reuse = self.canvas.gesture_render.as_ref().is_some_and(|handle| {
+            handle.base_revision == edit_rev
+                && handle.first_changed_idx == first_changed_idx
+                && !handle.cancel.is_cancelled()
+        });
+
+        if !reuse {
+            let prepare_seed = GesturePrepareSeed {
+                base_rgba: Arc::clone(&doc.decoded.rgba),
+                transform: doc.transform,
+                cached_base: doc.cache.transformed_base.clone(),
+                complete_rgba: doc.cache.complete_at(edit_rev).cloned(),
+                initial_annotations: Arc::from(doc.annotations.as_slice()),
+            };
+            self.cancel_gesture_render();
+            self.canvas.gesture_generation = self.canvas.gesture_generation.wrapping_add(1);
+            let gesture_id = self.canvas.gesture_generation;
+            let cancel = CancellationToken::new();
+            self.canvas.gesture_render = Some(GestureRenderHandle {
+                gesture_id,
+                base_revision: edit_rev,
+                first_changed_idx,
+                next_seq: 0,
+                in_flight: false,
+                pending: None,
+                cancel,
+                prepare_seed,
+                session: Arc::new(Mutex::new(None)),
+            });
+        }
+
+        if let Some(handle) = &mut self.canvas.gesture_render {
+            handle.next_seq = handle.next_seq.saturating_add(1);
+            let seq = handle.next_seq;
+            handle.pending = Some((seq, snapshot));
+            if !handle.in_flight {
+                self.pump_gesture_render(cx);
+            }
+        }
+    }
+
+    fn pump_gesture_render(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = &mut self.canvas.gesture_render else {
+            return;
+        };
+        if handle.in_flight || handle.cancel.is_cancelled() {
+            return;
+        }
+        let Some((seq, snapshot)) = handle.pending.take() else {
+            return;
+        };
+        handle.in_flight = true;
+
+        let gesture_id = handle.gesture_id;
+        let first_changed_idx = handle.first_changed_idx;
+        let cancel = handle.cancel.clone();
+        let seed = handle.prepare_seed.clone();
+        let session_arc = Arc::clone(&handle.session);
+        let render_gen = self.canvas.render_generation;
+        let snap_for_worker = Arc::clone(&snapshot);
+
+        let task = self
+            .tasks
+            .spawn_blocking_named("Render gesture preview", move || {
+                let mut guard = session_arc
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let session = match guard.as_mut() {
+                    Some(existing) => existing,
+                    None => {
+                        let prepared = GestureSession::prepare(
+                            GesturePrepareInput {
+                                base_rgba: seed.base_rgba,
+                                transform: seed.transform,
+                                cached_base: seed.cached_base,
+                                complete_rgba: seed.complete_rgba,
+                                initial_annotations: &seed.initial_annotations,
+                                first_changed_idx,
+                            },
+                            &cancel,
+                        )?;
+                        guard.insert(prepared)
+                    }
+                };
+                session.step(&snap_for_worker, &cancel)
+            });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                let active_match = this
+                    .canvas
+                    .gesture_render
+                    .as_ref()
+                    .is_some_and(|h| h.gesture_id == gesture_id && !h.cancel.is_cancelled());
+                if !active_match {
+                    return;
+                }
+                if let Some(h) = &mut this.canvas.gesture_render {
+                    h.in_flight = false;
+                }
+
+                match result {
+                    Ok(Ok(payload)) => {
+                        if let Some(doc) = &mut this.session.document {
+                            doc.cache.install_transient(
+                                TransientFrame {
+                                    payload,
+                                    gesture_id,
+                                    seq,
+                                    annotations: snapshot,
+                                },
+                                render_gen,
+                                cx,
+                            );
+                            cx.notify();
+                        }
+                    }
+                    Ok(Err(ImageError::Cancelled)) => {}
+                    Ok(Err(err)) => {
+                        tracing::debug!(error = %err, "transient gesture render failed");
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, "transient gesture worker aborted");
+                    }
+                }
+
+                if this
+                    .canvas
+                    .gesture_render
+                    .as_ref()
+                    .is_some_and(|h| h.gesture_id == gesture_id && h.pending.is_some())
+                {
+                    this.pump_gesture_render(cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    pub(in crate::pages::workspace::ui) fn restore_complete_presentation(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_gesture_render();
+        let Some(doc) = &self.session.document else {
+            return;
+        };
+        let edit_rev = doc.edit_revision;
+        if doc
+            .cache
+            .presented
+            .as_ref()
+            .is_some_and(|scene| scene.tag == SceneTag::Complete { revision: edit_rev })
+        {
+            cx.notify();
+            return;
+        }
+        let Some(complete_rgba) = doc.cache.complete_at(edit_rev).cloned() else {
+            self.rebuild_textures(cx);
+            return;
+        };
+
+        if let Some(cancel) = self.canvas.render_cancel.take() {
+            cancel.cancel();
+        }
+        self.cancel_svg_rerender();
+        self.canvas.render_generation = self.canvas.render_generation.wrapping_add(1);
+        let render_gen = self.canvas.render_generation;
+        let cancel = CancellationToken::new();
+        self.canvas.render_cancel = Some(cancel.clone());
+        let task_cancel = cancel.clone();
+
+        let task = self
+            .tasks
+            .spawn_blocking_named("Restore complete presentation", move || {
+                encode_display_payload(&complete_rgba, &cancel)
+            });
+
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if this.canvas.render_generation != render_gen || task_cancel.is_cancelled() {
+                    return;
+                }
+                this.canvas.render_cancel = None;
+                if let Ok(Ok(payload)) = result
+                    && let Some(doc) = &mut this.session.document
+                    && doc.edit_revision == edit_rev
+                {
+                    doc.cache
+                        .install_display_output(payload, edit_rev, render_gen, cx);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(in crate::pages::workspace::ui) fn rebuild_textures(&mut self, cx: &mut Context<Self>) {
+        self.cancel_gesture_render();
         let Some(doc) = &self.session.document else {
             return;
         };
         let base_rgba = Arc::clone(&doc.decoded.rgba);
+        let cached_base = doc.cache.transformed_base.clone();
         let transform = doc.transform;
         let annotations = doc.annotations.clone();
         let edit_rev = doc.edit_revision;
@@ -321,7 +577,7 @@ impl WorkspacePage {
         let task = self
             .tasks
             .spawn_blocking_named("Composite image textures", move || {
-                build_render_textures(base_rgba, transform, &annotations, &cancel)
+                build_render_textures(base_rgba, cached_base, transform, &annotations, &cancel)
             });
 
         let cancel_check = self.canvas.render_cancel.clone();
@@ -344,6 +600,7 @@ impl WorkspacePage {
                             install_prepared_cache(
                                 &mut doc.cache,
                                 prepared,
+                                transform,
                                 render_gen,
                                 edit_rev,
                                 cx,
@@ -390,6 +647,7 @@ impl WorkspacePage {
         if doc.format() != Format::Svg || doc.has_unbaked_ops() {
             return;
         }
+        let edit_rev = doc.edit_revision;
         let scale = self.canvas.transform.scale;
         if scale <= 1.0 {
             if self.canvas.svg_rerender_scale.is_some() {
@@ -420,7 +678,7 @@ impl WorkspacePage {
                             && let Some(doc) = &mut this.session.document
                             && !doc.has_unbaked_ops()
                         {
-                            install_svg_payload(&mut doc.cache, payload, render_gen, cx);
+                            install_svg_payload(&mut doc.cache, payload, edit_rev, render_gen, cx);
                             cx.notify();
                         }
                     });
@@ -479,7 +737,7 @@ impl WorkspacePage {
                             && !doc.has_unbaked_ops()
                         {
                             this.canvas.svg_rerender_scale = Some(scale);
-                            install_svg_payload(&mut doc.cache, payload, render_gen, cx);
+                            install_svg_payload(&mut doc.cache, payload, edit_rev, render_gen, cx);
                             cx.notify();
                         }
                     }
@@ -500,18 +758,20 @@ impl WorkspacePage {
 fn install_prepared_cache(
     cache: &mut RenderCache,
     prepared: PreparedTextures,
+    transform: TransformState,
     render_gen: u64,
     edit_rev: u64,
     cx: &mut gpui_kit::App,
 ) {
-    cache.install(prepared, render_gen, edit_rev, cx);
+    cache.install_complete(prepared, transform, render_gen, edit_rev, cx);
 }
 
 fn install_svg_payload(
     cache: &mut RenderCache,
     payload: PreparedPayload,
+    revision: u64,
     render_gen: u64,
     cx: &mut gpui_kit::App,
 ) {
-    cache.install_display_output(payload, render_gen, cx);
+    cache.install_display_output(payload, revision, render_gen, cx);
 }

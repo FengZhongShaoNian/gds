@@ -42,14 +42,14 @@ pub enum PixelSource {
 }
 
 impl PixelSource {
-    /// Captures the exact pixel state for `doc`, reusing `RenderCache.composited` only when
-    /// `composited_revision == doc.edit_revision`, or sharing `doc.decoded.rgba` via `Arc::clone`
+    /// Captures the exact pixel state for `doc`, reusing `RenderCache.complete` only when
+    /// `complete.revision == doc.edit_revision`, or sharing `doc.decoded.rgba` via `Arc::clone`
     /// when no edits exist.
     pub fn from_document(doc: &DocumentState) -> Self {
         if !doc.has_unbaked_ops() {
             return Self::Ready(Arc::clone(&doc.decoded.rgba));
         }
-        if let Some(cached) = doc.cache.composited_at(doc.edit_revision) {
+        if let Some(cached) = doc.cache.complete_at(doc.edit_revision) {
             return Self::Ready(Arc::clone(cached));
         }
         Self::NeedsComposite {
@@ -77,9 +77,10 @@ impl PixelSource {
                     apply_transform(&base, &transform.spec)?
                 };
                 if !annotations.is_empty() {
+                    let (cw, ch) = rgba.dimensions();
                     let ops: Vec<_> = annotations
                         .iter()
-                        .map(AnnotationItem::to_raster_op)
+                        .filter_map(|item| item.to_raster_op(cw, ch))
                         .collect();
                     composite_ops(&mut rgba, &ops)?;
                 }

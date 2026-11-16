@@ -135,7 +135,7 @@ impl WorkspacePage {
                 label: $(text("action-undo", cx));
                 command: $(Shortcut::new(Box::new(UndoEdit), Some(WORKSPACE_CONTEXT)));
                 disabled: $(!has_doc || !self.canvas.history.can_undo());
-                on_click: $(cx.listener(|this, _, _, cx| this.undo_edit(cx)));
+                on_click: $(cx.listener(|this, _, window, cx| this.undo_edit(window, cx)));
             }
         };
         let redo_btn = el! {
@@ -144,7 +144,7 @@ impl WorkspacePage {
                 label: $(text("action-redo", cx));
                 command: $(Shortcut::new(Box::new(RedoEdit), Some(WORKSPACE_CONTEXT)));
                 disabled: $(!has_doc || !self.canvas.history.can_redo());
-                on_click: $(cx.listener(|this, _, _, cx| this.redo_edit(cx)));
+                on_click: $(cx.listener(|this, _, window, cx| this.redo_edit(window, cx)));
             }
         };
         let inspector_btn = el! {

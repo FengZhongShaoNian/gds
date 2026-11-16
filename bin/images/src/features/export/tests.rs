@@ -3,7 +3,6 @@ use std::{fs, path::Path, sync::Arc};
 use gds::service::{
     file_tags,
     image::{
-        PixelRect,
         decode::DecodedImage,
         encode::{EncodeOptions, encode_rgba},
         io::SaveMode,
@@ -13,10 +12,16 @@ use gds::service::{
 };
 use image::{Rgba, RgbaImage};
 
-use crate::entities::{
-    document::{AnnotationId, AnnotationItem, AnnotationKind, DocumentState, RgbaColor},
-    metadata::MetadataState,
-    preferences::Preferences,
+use crate::{
+    entities::{
+        document::{
+            AnnotationId, AnnotationItem, AnnotationKind, CompleteComposite, DocumentState,
+            RgbaColor,
+        },
+        metadata::MetadataState,
+        preferences::Preferences,
+    },
+    shared::geometry::Rect2,
 };
 
 use super::{
@@ -63,15 +68,17 @@ fn doc_with_red_square(width: u32, height: u32) -> DocumentState {
 #[test]
 fn stale_render_cache_still_bakes_annotations_into_save_and_clipboard_exports() {
     let mut doc = doc_with_red_square(16, 16);
-    // Simulate a stale cached composited buffer at revision 0.
-    doc.cache.composited = Some(Arc::clone(&doc.decoded.rgba));
-    doc.cache.composited_revision = 0;
+    // Simulate a stale cached complete buffer at revision 0.
+    doc.cache.complete = Some(CompleteComposite {
+        revision: 0,
+        rgba: Arc::clone(&doc.decoded.rgba),
+    });
 
     // Now apply a bright blue rectangle annotation without waiting for RenderCache update.
     doc.annotations.push(AnnotationItem {
         id: AnnotationId(1),
         kind: AnnotationKind::Rect {
-            rect: PixelRect::new(0, 0, 16, 16),
+            rect: Rect2::new(0.0, 0.0, 16.0, 16.0),
             stroke: RgbaColor::BLUE,
             stroke_width: 4.0,
             fill: Some(RgbaColor::BLUE),
@@ -109,6 +116,44 @@ fn stale_render_cache_still_bakes_annotations_into_save_and_clipboard_exports() 
     assert_eq!(*decoded_saved.get_pixel(8, 8), Rgba([59, 130, 246, 255]));
     assert!(outcome.composited_rgba.is_some());
     assert!(outcome.saved_tags.is_empty());
+}
+
+#[test]
+fn pixel_source_reads_complete_at_revision_and_never_uses_transient_or_stale_cache() {
+    let mut doc = doc_with_red_square(16, 16);
+    doc.annotations.push(AnnotationItem {
+        id: AnnotationId(1),
+        kind: AnnotationKind::Rect {
+            rect: Rect2::new(2.0, 2.0, 12.0, 12.0),
+            stroke: RgbaColor::GREEN,
+            stroke_width: 2.0,
+            fill: Some(RgbaColor::GREEN),
+        },
+    });
+    doc.bump_revision();
+    let complete_buf = Arc::new(RgbaImage::from_pixel(16, 16, Rgba([34, 197, 94, 255])));
+    doc.cache.complete = Some(CompleteComposite {
+        revision: doc.edit_revision,
+        rgba: Arc::clone(&complete_buf),
+    });
+
+    match PixelSource::from_document(&doc) {
+        PixelSource::Ready(rgba) => assert!(Arc::ptr_eq(&rgba, &complete_buf)),
+        PixelSource::NeedsComposite { .. } => panic!("expected matching complete buffer reuse"),
+    }
+
+    // After another committed edit before `complete` catches up, `from_document` falls back to
+    // independent compositing rather than returning the stale `complete` buffer.
+    doc.annotations.clear();
+    doc.bump_revision();
+    let meta = MetadataState::from_bundle(doc.decoded.metadata.clone(), Vec::new());
+    let plan = build_clipboard_plan(&doc, Some(&meta), &Preferences::default());
+    assert!(matches!(plan.pixels, PixelSource::Ready(_)));
+    let bytes = execute_clipboard_blocking(plan).expect("clipboard PNG encode");
+    let decoded = image::load_from_memory(&bytes)
+        .expect("decode PNG")
+        .to_rgba8();
+    assert_eq!(*decoded.get_pixel(8, 8), Rgba([220, 20, 20, 255]));
 }
 
 fn local_png_doc(path: &Path, tags: Vec<String>) -> (DocumentState, MetadataState) {

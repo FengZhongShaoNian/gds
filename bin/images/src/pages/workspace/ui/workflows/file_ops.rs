@@ -210,6 +210,7 @@ impl WorkspacePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.flush_editing_text_before_external(window, cx);
         let Some(doc) = &self.session.document else {
             return;
         };
@@ -241,6 +242,7 @@ impl WorkspacePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.flush_editing_text_before_external(window, cx);
         let Some(doc) = &self.session.document else {
             return;
         };
@@ -380,7 +382,8 @@ impl WorkspacePage {
                 if let Some(composited) = done.outcome.composited_rgba {
                     doc.apply_saved_pixels(composited);
                     self.canvas.history.clear();
-                    self.canvas.tool_fsm.cancel_active();
+                    self.canvas.tool_fsm.selection.clear();
+                    self.canvas.tool_fsm.cancel_active(&mut self.canvas.history);
                     should_clear_text = true;
                     needs_texture_rebuild = true;
                 } else {
@@ -455,6 +458,22 @@ impl WorkspacePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.flush_editing_text_before_external(window, cx);
+        self.cancel_pointer_gesture_before_external(cx);
+        let Some(doc) = &self.session.document else {
+            return;
+        };
+        if !matches!(doc.decoded.origin, Origin::LocalFile { .. })
+            || self.is_origin_busy(&doc.decoded.origin)
+        {
+            return;
+        }
+        self.confirm_discard_changes(window, cx, |this, window, cx| {
+            this.execute_move_active_to_trash(window, cx);
+        });
+    }
+
+    fn execute_move_active_to_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(doc) = &self.session.document else {
             return;
         };
@@ -499,7 +518,9 @@ impl WorkspacePage {
                                 this.session.metadata = None;
                                 this.session.editing_path = false;
                                 this.canvas.history.clear();
-                                this.canvas.tool_fsm.cancel_active();
+                                this.canvas.tool_fsm.selection.clear();
+                                this.canvas.tool_fsm.cancel_active(&mut this.canvas.history);
+                                this.cancel_gesture_render();
                                 this.clear_text_overlay_input(window, cx);
                                 this.sync_window_title(window, cx);
                                 this.refresh_clipboard_offer(cx);

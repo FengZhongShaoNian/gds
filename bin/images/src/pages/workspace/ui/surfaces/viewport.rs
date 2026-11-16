@@ -1,4 +1,5 @@
-//! Center viewport canvas: clipped checkerboard, tiled/single GPU output, crop/text/pan tools.
+//! Center viewport canvas: checkerboard, presented GPU output, chrome-only overlays,
+//! dynamic cursor feedback, and multiline IME text overlay.
 
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
@@ -9,24 +10,31 @@ use gds::{
 };
 use gds_uim::el;
 use gpui_kit::{
-    Bounds, Context, ExternalPaths, Hsla, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, PathBuilder, Point, ScrollDelta, ScrollEvent, TestSupportExt as _,
-    Window,
+    BorderStyle, Bounds, Context, CursorStyle, ExternalPaths, Hsla, IntoElement, Modifiers,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, PathBuilder, Point,
+    ScrollDelta, ScrollEvent, TestSupportExt as _, Window,
     assets::IconName,
     canvas,
     component::{
         ActiveTheme as _, Icon, Sizable as _, StyledExt as _, button::ButtonVariants as _,
-        input::Input, spinner::Spinner,
+        input::Textarea, spinner::Spinner,
     },
-    div, fill, img, point,
+    div, fill, img, outline, point,
     prelude::*,
     px, size,
 };
 
 use super::*;
 use crate::{
-    entities::{document::RenderOutput, preferences::PreferencesExt as _},
-    features::edit_canvas::{DragPreview, FinishOutcome, ToolMode, ToolSettings},
+    entities::{
+        document::{AnnotationItem, RenderOutput},
+        preferences::PreferencesExt as _,
+    },
+    features::edit_canvas::{
+        ActiveInteraction, FinishOutcome, HandleKind, HoverTarget, PointerDownInput,
+        PointerDownOutcome, PointerModifiers, PointerMoveOutcome, TextEditTarget, ToolMode,
+        handles_for_item, hover_test_canvas,
+    },
     pages::workspace::ui::navigation::catalog::entry_inspection_source,
     shared::{
         clipboard::ClipboardOfferKind,
@@ -37,6 +45,7 @@ use crate::{
 };
 
 const CHECKER_TILE: f32 = 12.0;
+const HANDLE_DRAW_SIZE: f32 = 8.0;
 
 impl WorkspacePage {
     pub(in crate::pages::workspace::ui) fn render_viewport(
@@ -110,8 +119,7 @@ impl WorkspacePage {
         let checker_layer = show_checkerboard.then(|| render_checkerboard(img_vp, vp_size, cx));
         let image_layer = doc
             .cache
-            .output
-            .as_ref()
+            .presented_output()
             .map(|out| render_document_output(out, tf, vp_size, img_vp));
         let overlay_layer = self.render_interactive_overlays(vp_size, cx);
         let staged_crop_bar = self.render_staged_crop_bar(vp_size, cx);
@@ -121,13 +129,14 @@ impl WorkspacePage {
             .is_loading
             .then(|| self.render_loading_pill(cx));
 
-        let cursor_pan = self.canvas.panning || self.canvas.tool_fsm.tool == ToolMode::Pan;
+        let cursor_style = self.viewport_cursor_style();
         let cell_down_l = vp_origin_cell.clone();
         let cell_down_m = vp_origin_cell.clone();
         let cell_move = vp_origin_cell.clone();
         let cell_up_l = vp_origin_cell.clone();
+        let cell_up_l_out = vp_origin_cell.clone();
         let cell_up_m = vp_origin_cell.clone();
-        let cell_up_out = vp_origin_cell.clone();
+        let cell_up_m_out = vp_origin_cell.clone();
         let cell_wheel = vp_origin_cell.clone();
 
         el! {
@@ -142,7 +151,7 @@ impl WorkspacePage {
                 size_full;
                 relative;
                 overflow_hidden;
-                cursor: $(if cursor_pan { gpui_kit::CursorStyle::OpenHand } else { gpui_kit::CursorStyle::Crosshair });
+                cursor: cursor_style;
                 on_drop: $(cx.listener(Self::on_external_drop));
                 drag_over: $(|style, _: &ExternalPaths, _, cx| style.bg(cx.theme().drop_target));
                 on_mouse_down: MouseButton::Left, $(cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
@@ -157,11 +166,14 @@ impl WorkspacePage {
                 on_mouse_up: MouseButton::Left, $(cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
                     this.on_canvas_mouse_up(ev, cell_up_l.get(), window, cx);
                 }));
+                on_mouse_up_out: MouseButton::Left, $(cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
+                    this.on_canvas_mouse_up(ev, cell_up_l_out.get(), window, cx);
+                }));
                 on_mouse_up: MouseButton::Middle, $(cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
                     this.on_canvas_mouse_up(ev, cell_up_m.get(), window, cx);
                 }));
                 on_mouse_up_out: MouseButton::Middle, $(cx.listener(move |this, ev: &MouseUpEvent, window, cx| {
-                    this.on_canvas_mouse_up(ev, cell_up_out.get(), window, cx);
+                    this.on_canvas_mouse_up(ev, cell_up_m_out.get(), window, cx);
                 }));
                 on_scroll: $(cx.listener(move |this, ev: &ScrollEvent, _, cx| {
                     this.on_canvas_wheel(ev, cell_wheel.get(), cx);
@@ -177,6 +189,36 @@ impl WorkspacePage {
             ]
         }
         .into_any_element()
+    }
+
+    pub(in crate::pages::workspace::ui) fn viewport_cursor_style(&self) -> CursorStyle {
+        if self.canvas.panning {
+            return CursorStyle::ClosedHand;
+        }
+        if self.canvas.tool_fsm.tool == ToolMode::Pan {
+            return CursorStyle::OpenHand;
+        }
+        match &self.canvas.tool_fsm.interaction {
+            ActiveInteraction::Moving { .. } | ActiveInteraction::DuplicatingMove { .. } => {
+                CursorStyle::ClosedHand
+            }
+            ActiveInteraction::Resizing { handle, .. } => cursor_for_handle(*handle),
+            ActiveInteraction::Marquee { .. } => CursorStyle::Arrow,
+            ActiveInteraction::Creating { .. } => CursorStyle::Crosshair,
+            ActiveInteraction::EditingText(_) => CursorStyle::IBeam,
+            ActiveInteraction::Idle | ActiveInteraction::PendingClickOrMove { .. } => {
+                match self.canvas.hover_target {
+                    HoverTarget::Handle { handle, .. } => cursor_for_handle(handle),
+                    HoverTarget::Body { .. } => CursorStyle::PointingHand,
+                    HoverTarget::None => match self.canvas.tool_fsm.tool {
+                        ToolMode::Pointer => CursorStyle::Arrow,
+                        ToolMode::Text => CursorStyle::IBeam,
+                        ToolMode::Pan => CursorStyle::OpenHand,
+                        _ => CursorStyle::Crosshair,
+                    },
+                }
+            }
+        }
     }
 
     fn render_loading_preview(&self, cx: &App) -> impl IntoElement + use<> {
@@ -317,10 +359,67 @@ impl WorkspacePage {
 
     fn render_interactive_overlays(&self, vp_size: Size2, cx: &App) -> impl IntoElement + use<> {
         let tf = self.canvas.transform;
-        let drag = self.canvas.tool_fsm.drag;
         let staged_crop = self.canvas.tool_fsm.staged_crop;
-        let tool_settings = self.canvas.tool_fsm.settings;
+        let active_crop = match &self.canvas.tool_fsm.interaction {
+            ActiveInteraction::Creating {
+                tool: ToolMode::Crop,
+                start_img,
+                current_img,
+                ..
+            } => Some(ViewportTransform::normalize_drag_rect(
+                *start_img,
+                *current_img,
+            )),
+            _ => None,
+        };
+        let marquee_rect = match &self.canvas.tool_fsm.interaction {
+            ActiveInteraction::Marquee {
+                start_img,
+                current_img,
+                ..
+            } => Some(ViewportTransform::normalize_drag_rect(
+                *start_img,
+                *current_img,
+            )),
+            _ => None,
+        };
+
+        // Sync selection outlines & handles strictly to the currently presented GPU texture.
+        let presented_items: Vec<AnnotationItem> = self
+            .session
+            .document
+            .as_ref()
+            .map(|doc| doc.cache.presented_annotations(&doc.annotations).to_vec())
+            .unwrap_or_default();
+
+        let selection = self.canvas.tool_fsm.selection.clone();
+        let hover_discovery_bounds =
+            if matches!(self.canvas.tool_fsm.interaction, ActiveInteraction::Idle)
+                && let HoverTarget::Body {
+                    id,
+                    discover_redaction: true,
+                } = self.canvas.hover_target
+            {
+                presented_items
+                    .iter()
+                    .find(|item| item.id == id)
+                    .map(AnnotationItem::visual_bounds)
+            } else {
+                None
+            };
+
+        let show_selection_chrome = staged_crop.is_none() && active_crop.is_none();
+        let selected_items: Vec<AnnotationItem> = if show_selection_chrome {
+            selection.selected_items_ordered(&presented_items)
+        } else {
+            Vec::new()
+        };
+        let union_bounds = (selected_items.len() >= 2)
+            .then(|| selection.union_bounds(&presented_items))
+            .flatten();
+
         let primary_color = cx.theme().primary;
+        let handle_fill: Hsla = gpui_kit::rgba(0xffffffff).into();
         let scrim: Hsla = gpui_kit::rgba(0x00000088).into();
 
         canvas(
@@ -337,17 +436,38 @@ impl WorkspacePage {
                         crop.height as f32,
                     ));
                     paint_crop_overlay(ox, oy, vp, vp_size, scrim, primary_color, window);
+                } else if let Some(crop_drag) = active_crop {
+                    let vp = tf.image_rect_to_viewport(crop_drag);
+                    paint_crop_overlay(ox, oy, vp, vp_size, scrim, primary_color, window);
                 }
 
-                if let Some(drag) = drag {
-                    paint_active_drag(
-                        drag,
-                        tf,
-                        tool_settings,
-                        (primary_color, scrim),
-                        (vp_size, Point2::new(ox, oy)),
-                        window,
+                if let Some(redaction_bounds) = hover_discovery_bounds {
+                    let vp = tf.image_rect_to_viewport(redaction_bounds);
+                    paint_dashed_rect(ox, oy, vp, primary_color.opacity(0.85), window);
+                }
+
+                if selected_items.len() == 1 {
+                    let item = &selected_items[0];
+                    paint_single_selection(ox, oy, item, tf, primary_color, handle_fill, window);
+                } else if selected_items.len() >= 2 {
+                    for item in &selected_items {
+                        let vp = tf.image_rect_to_viewport(item.visual_bounds());
+                        paint_rect_outline(ox, oy, vp, primary_color.opacity(0.65), 1.0, window);
+                    }
+                    if let Some(union) = union_bounds {
+                        let vp = tf.image_rect_to_viewport(union);
+                        paint_dashed_rect(ox, oy, vp, primary_color, window);
+                    }
+                }
+
+                if let Some(marquee) = marquee_rect {
+                    let vp = tf.image_rect_to_viewport(marquee);
+                    let fill_rect = Bounds::new(
+                        point(px(ox + vp.x), px(oy + vp.y)),
+                        size(px(vp.width), px(vp.height)),
                     );
+                    window.paint_quad(fill(fill_rect, primary_color.opacity(0.14)));
+                    paint_dashed_rect(ox, oy, vp, primary_color, window);
                 }
             },
         )
@@ -396,7 +516,7 @@ impl WorkspacePage {
                     small;
                     icon: IconName::Check;
                     label: $(text("tool-apply-crop", cx));
-                    on_click: $(cx.listener(|this, _, _, cx| this.apply_staged_crop(cx)));
+                    on_click: $(cx.listener(|this, _, window, cx| this.apply_staged_crop(window, cx)));
                 },
                 "crop-clear-btn".Button::new {
                     ghost;
@@ -414,19 +534,29 @@ impl WorkspacePage {
         vp_size: Size2,
         cx: &mut Context<Self>,
     ) -> Option<impl IntoElement + use<>> {
-        let pos = self.canvas.tool_fsm.pending_text_pos?;
-        let vp = self.canvas.transform.image_to_viewport(pos);
-        let left = vp.x.clamp(8.0, (vp_size.width - 284.0).max(8.0));
-        let top = vp.y.clamp(8.0, (vp_size.height - 48.0).max(8.0));
+        let ActiveInteraction::EditingText(draft) = &self.canvas.tool_fsm.interaction else {
+            return None;
+        };
+        let img_pos = match &draft.target {
+            TextEditTarget::New { position } => *position,
+            TextEditTarget::Existing { original, .. } => {
+                let bounds = original.visual_bounds();
+                Point2::new(bounds.x, bounds.y)
+            }
+        };
+        let vp = self.canvas.transform.image_to_viewport(img_pos);
+        let left = vp.x.clamp(8.0, (vp_size.width - 332.0).max(8.0));
+        let top = vp.y.clamp(8.0, (vp_size.height - 72.0).max(8.0));
 
         Some(el! {
             .div {
                 # "text-overlay-box";
+                test_support;
                 absolute;
                 left: $(px(left));
                 top: $(px(top));
                 flex;
-                items_center;
+                items_start;
                 gap_1;
                 p_1;
                 rounded_md;
@@ -436,8 +566,8 @@ impl WorkspacePage {
                 shadow_md;
                 on_mouse_down: MouseButton::Left, $(|_, _, cx| cx.stop_propagation());
             } [
-                .div { w: $(px(180.0)); } [
-                    $(&self.focus.text_overlay_input).Input::new { small; w_full; },
+                .div { w: $(px(240.0)); } [
+                    $(Textarea::new(&self.focus.text_overlay_input).small().w_full()),
                 ],
                 "text-commit-btn".Button::icon_button {
                     control_icon: IconName::Check;
@@ -472,6 +602,9 @@ impl WorkspacePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.canvas.tool_fsm.is_editing_text() {
+            self.flush_editing_text_before_external(window, cx);
+        }
         self.focus.canvas.focus(window, cx);
         let vp_pt = Point2::new(
             f32::from(event.position.x - vp_origin.x),
@@ -491,26 +624,33 @@ impl WorkspacePage {
         let Some(doc) = &self.session.document else {
             return;
         };
-        let (out_w, out_h) = doc.output_dimensions();
         let img_pt = self.canvas.transform.viewport_to_image(vp_pt);
+        let input = PointerDownInput {
+            vp_pt,
+            img_pt,
+            scale: self.canvas.transform.scale,
+            modifiers: to_pointer_modifiers(event.modifiers),
+            click_count: event.click_count,
+        };
+        let outcome = self
+            .canvas
+            .tool_fsm
+            .on_pointer_down(doc, &mut self.canvas.history, input);
 
-        if self.canvas.tool_fsm.tool == ToolMode::Text {
-            let clamped = Point2::new(
-                img_pt.x.clamp(0.0, out_w as f32),
-                img_pt.y.clamp(0.0, out_h as f32),
-            );
-            self.canvas.tool_fsm.pending_text_pos = Some(clamped);
-            self.focus
-                .text_overlay_input
-                .update(cx, |input, cx| input.focus(window, cx));
-            cx.notify();
-            return;
+        match outcome {
+            PointerDownOutcome::OpenTextEditor { initial_text } => {
+                let has_initial = !initial_text.trim().is_empty();
+                self.open_text_editor_with_value(initial_text, window, cx);
+                if has_initial {
+                    self.schedule_gesture_preview(cx);
+                }
+            }
+            PointerDownOutcome::NeedsTransientPreview => {
+                self.schedule_gesture_preview(cx);
+            }
+            PointerDownOutcome::SelectionChanged | PointerDownOutcome::None => {}
         }
-
-        if self.canvas.tool_fsm.tool != ToolMode::Pointer {
-            self.canvas.tool_fsm.begin_drag(img_pt);
-            cx.notify();
-        }
+        cx.notify();
     }
 
     fn on_canvas_mouse_move(
@@ -534,10 +674,43 @@ impl WorkspacePage {
             cx.notify();
             return;
         }
-        if self.canvas.tool_fsm.drag.is_some() {
-            let img_pt = self.canvas.transform.viewport_to_image(vp_pt);
-            self.canvas.tool_fsm.update_drag(img_pt);
-            cx.notify();
+
+        let Some(doc) = &self.session.document else {
+            return;
+        };
+        let img_pt = self.canvas.transform.viewport_to_image(vp_pt);
+        if self.canvas.tool_fsm.is_pointer_gesture() {
+            match self.canvas.tool_fsm.on_pointer_move(
+                doc,
+                vp_pt,
+                img_pt,
+                to_pointer_modifiers(event.modifiers),
+            ) {
+                PointerMoveOutcome::NeedsTransientPreview { .. } => {
+                    self.schedule_gesture_preview(cx);
+                    cx.notify();
+                }
+                PointerMoveOutcome::ChromeOnly => {
+                    cx.notify();
+                }
+                PointerMoveOutcome::None => {}
+            }
+            return;
+        }
+
+        if matches!(self.canvas.tool_fsm.interaction, ActiveInteraction::Idle) {
+            let annotations = doc.cache.presented_annotations(&doc.annotations);
+            let next_hover = hover_test_canvas(
+                annotations,
+                &self.canvas.tool_fsm.selection,
+                img_pt,
+                self.canvas.tool_fsm.tool,
+                self.canvas.transform.scale,
+            );
+            if next_hover != self.canvas.hover_target {
+                self.canvas.hover_target = next_hover;
+                cx.notify();
+            }
         }
     }
 
@@ -545,7 +718,7 @@ impl WorkspacePage {
         &mut self,
         event: &MouseUpEvent,
         _: Point<gpui_kit::Pixels>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if event.button == MouseButton::Middle || self.canvas.panning {
@@ -554,22 +727,33 @@ impl WorkspacePage {
             cx.notify();
             return;
         }
-        if event.button != MouseButton::Left || self.canvas.tool_fsm.drag.is_none() {
+        if event.button != MouseButton::Left || !self.canvas.tool_fsm.is_pointer_gesture() {
             return;
         }
+        let scale = self.canvas.transform.scale;
         let Some(doc) = &mut self.session.document else {
-            self.canvas.tool_fsm.drag = None;
+            self.canvas
+                .tool_fsm
+                .cancel_pointer_gesture(&mut self.canvas.history);
+            self.cancel_gesture_render();
             return;
         };
-        match self
+        let outcome = self
             .canvas
             .tool_fsm
-            .finish_drag(doc, &mut self.canvas.history)
-        {
+            .on_pointer_up(doc, &mut self.canvas.history, scale);
+        match outcome {
             FinishOutcome::Committed => {
+                // Keep the latest transient scene visible until `Complete(R+1)` installs.
+                self.sync_window_title(window, cx);
                 self.rebuild_textures(cx);
             }
-            FinishOutcome::CropStaged(_) | FinishOutcome::None => {}
+            FinishOutcome::SelectionChanged | FinishOutcome::CropStaged(_) => {
+                self.cancel_gesture_render();
+            }
+            FinishOutcome::None => {
+                self.restore_complete_presentation(cx);
+            }
         }
         cx.notify();
     }
@@ -598,6 +782,26 @@ impl WorkspacePage {
         self.canvas.transform.zoom_around_cursor(factor, cursor);
         self.schedule_svg_rerender_if_needed(cx);
         cx.notify();
+    }
+}
+
+const fn to_pointer_modifiers(mods: Modifiers) -> PointerModifiers {
+    PointerModifiers {
+        shift: mods.shift,
+        ctrl: mods.control || mods.platform,
+        alt: mods.alt,
+    }
+}
+
+const fn cursor_for_handle(handle: HandleKind) -> CursorStyle {
+    // Note `gpui-fast` swaps diagonal cursor names relative to CSS conventions:
+    // `ResizeUpRightDownLeft` maps to `nwse-resize`, `ResizeUpLeftDownRight` to `nesw-resize`.
+    match handle {
+        HandleKind::Nw | HandleKind::Se => CursorStyle::ResizeUpRightDownLeft,
+        HandleKind::Ne | HandleKind::Sw => CursorStyle::ResizeUpLeftDownRight,
+        HandleKind::N | HandleKind::S => CursorStyle::ResizeUpDown,
+        HandleKind::E | HandleKind::W => CursorStyle::ResizeLeftRight,
+        HandleKind::LineStart | HandleKind::LineEnd => CursorStyle::Crosshair,
     }
 }
 
@@ -775,44 +979,54 @@ fn paint_rect_outline(
     }
 }
 
-fn paint_active_drag(
-    drag: DragPreview,
+fn paint_dashed_rect(ox: f32, oy: f32, rect: Rect2, color: Hsla, window: &mut Window) {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+    let bounds = Bounds::new(
+        point(px(ox + rect.x), px(oy + rect.y)),
+        size(px(rect.width), px(rect.height)),
+    );
+    window.paint_quad(outline(bounds, color, BorderStyle::Dashed));
+}
+
+fn paint_single_selection(
+    ox: f32,
+    oy: f32,
+    item: &AnnotationItem,
     tf: ViewportTransform,
-    settings: ToolSettings,
-    theme_colors: (Hsla, Hsla),
-    viewport: (Size2, Point2),
+    primary_color: Hsla,
+    handle_fill: Hsla,
     window: &mut Window,
 ) {
-    let (primary_color, scrim) = theme_colors;
-    let (vp_size, origin) = viewport;
-    let norm = ViewportTransform::normalize_drag_rect(drag.start, drag.current);
-    let vp = tf.image_rect_to_viewport(norm);
-    let stroke_color = if drag.tool.uses_color() {
-        color_to_hsla(settings.color)
-    } else {
-        primary_color
-    };
-
-    if drag.tool == ToolMode::Crop {
-        paint_crop_overlay(
-            origin.x,
-            origin.y,
-            vp,
-            vp_size,
-            scrim,
-            primary_color,
-            window,
-        );
-    } else if matches!(drag.tool, ToolMode::Line | ToolMode::Arrow) {
-        let p0 = tf.image_to_viewport(drag.start);
-        let p1 = tf.image_to_viewport(drag.current);
-        let mut builder = PathBuilder::stroke(px(2.0));
-        builder.move_to(point(px(origin.x + p0.x), px(origin.y + p0.y)));
-        builder.line_to(point(px(origin.x + p1.x), px(origin.y + p1.y)));
-        if let Ok(path) = builder.build() {
-            window.paint_path(path, stroke_color);
+    match &item.kind {
+        crate::entities::document::AnnotationKind::Arrow { start, end, .. }
+        | crate::entities::document::AnnotationKind::Line { start, end, .. } => {
+            let p0 = tf.image_to_viewport(Point2::new(start[0], start[1]));
+            let p1 = tf.image_to_viewport(Point2::new(end[0], end[1]));
+            let mut builder = PathBuilder::stroke(px(1.5)).dash_array(&[px(4.0), px(4.0)]);
+            builder.move_to(point(px(ox + p0.x), px(oy + p0.y)));
+            builder.line_to(point(px(ox + p1.x), px(oy + p1.y)));
+            if let Ok(path) = builder.build() {
+                window.paint_path(path, primary_color.opacity(0.8));
+            }
         }
-    } else {
-        paint_rect_outline(origin.x, origin.y, vp, stroke_color, 2.0, window);
+        _ => {
+            let vp = tf.image_rect_to_viewport(item.visual_bounds());
+            paint_rect_outline(ox, oy, vp, primary_color.opacity(0.85), 1.0, window);
+        }
+    }
+
+    let half = HANDLE_DRAW_SIZE * 0.5;
+    for (_, img_pt) in handles_for_item(item) {
+        let vp = tf.image_to_viewport(img_pt);
+        let rect = Bounds::new(
+            point(px(ox + vp.x - half), px(oy + vp.y - half)),
+            size(px(HANDLE_DRAW_SIZE), px(HANDLE_DRAW_SIZE)),
+        );
+        let mut quad = fill(rect, handle_fill);
+        quad.border_widths = (1.5).into();
+        quad.border_color = primary_color;
+        window.paint_quad(quad);
     }
 }

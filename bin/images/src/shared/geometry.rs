@@ -49,6 +49,152 @@ impl Rect2 {
             height,
         }
     }
+
+    pub const fn right(self) -> f32 {
+        self.x + self.width
+    }
+
+    pub const fn bottom(self) -> f32 {
+        self.y + self.height
+    }
+
+    pub const fn center(self) -> Point2 {
+        Point2::new(self.x + self.width * 0.5, self.y + self.height * 0.5)
+    }
+
+    pub fn normalized(self) -> Self {
+        let (x, width) = if self.width < 0.0 {
+            (self.x + self.width, -self.width)
+        } else {
+            (self.x, self.width)
+        };
+        let (y, height) = if self.height < 0.0 {
+            (self.y + self.height, -self.height)
+        } else {
+            (self.y, self.height)
+        };
+        Self::new(x, y, width, height)
+    }
+
+    pub fn expand(self, pad: f32) -> Self {
+        let n = self.normalized();
+        Self::new(
+            n.x - pad,
+            n.y - pad,
+            (n.width + 2.0 * pad).max(0.0),
+            (n.height + 2.0 * pad).max(0.0),
+        )
+    }
+
+    pub fn union(self, other: Self) -> Self {
+        let a = self.normalized();
+        let b = other.normalized();
+        let x0 = a.x.min(b.x);
+        let y0 = a.y.min(b.y);
+        let x1 = a.right().max(b.right());
+        let y1 = a.bottom().max(b.bottom());
+        Self::new(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
+    }
+
+    pub fn intersect(self, other: Self) -> Option<Self> {
+        let a = self.normalized();
+        let b = other.normalized();
+        let x0 = a.x.max(b.x);
+        let y0 = a.y.max(b.y);
+        let x1 = a.right().min(b.right());
+        let y1 = a.bottom().min(b.bottom());
+        let width = x1 - x0;
+        let height = y1 - y0;
+        (width > 0.0 && height > 0.0).then(|| Self::new(x0, y0, width, height))
+    }
+
+    pub fn intersects_inclusive(self, other: Self) -> bool {
+        let a = self.normalized();
+        let b = other.normalized();
+        a.x <= b.right() && a.right() >= b.x && a.y <= b.bottom() && a.bottom() >= b.y
+    }
+
+    pub fn contains(self, pt: Point2) -> bool {
+        let n = self.normalized();
+        pt.x >= n.x && pt.x <= n.right() && pt.y >= n.y && pt.y <= n.bottom()
+    }
+
+    pub fn to_clamped_pixel_rect(self, bounds_w: u32, bounds_h: u32) -> Option<PixelRect> {
+        let n = self.normalized();
+        if !n.x.is_finite() || !n.y.is_finite() || !n.width.is_finite() || !n.height.is_finite() {
+            return None;
+        }
+        let bw = bounds_w as f32;
+        let bh = bounds_h as f32;
+        let x0 = n.x.floor().clamp(0.0, bw) as u32;
+        let y0 = n.y.floor().clamp(0.0, bh) as u32;
+        let x1 = n.right().ceil().clamp(0.0, bw) as u32;
+        let y1 = n.bottom().ceil().clamp(0.0, bh) as u32;
+        let width = x1.saturating_sub(x0);
+        let height = y1.saturating_sub(y0);
+        (width > 0 && height > 0).then(|| PixelRect::new(x0, y0, width, height))
+    }
+}
+
+/// Liang-Barsky segment clipping against `rect` so off-canvas segments are rejected cleanly.
+pub fn clip_segment_to_rect(p0: Point2, p1: Point2, rect: Rect2) -> Option<(Point2, Point2)> {
+    let n = rect.normalized();
+    if !p0.x.is_finite()
+        || !p0.y.is_finite()
+        || !p1.x.is_finite()
+        || !p1.y.is_finite()
+        || !n.x.is_finite()
+        || !n.y.is_finite()
+        || !n.width.is_finite()
+        || !n.height.is_finite()
+        || n.width <= 0.0
+        || n.height <= 0.0
+    {
+        return None;
+    }
+
+    let dx = p1.x - p0.x;
+    let dy = p1.y - p0.y;
+    let mut t0 = 0.0_f32;
+    let mut t1 = 1.0_f32;
+
+    let half_planes = [
+        (-dx, p0.x - n.x),
+        (dx, n.right() - p0.x),
+        (-dy, p0.y - n.y),
+        (dy, n.bottom() - p0.y),
+    ];
+
+    for (p, q) in half_planes {
+        if p == 0.0 {
+            if q < 0.0 {
+                return None;
+            }
+        } else {
+            let r = q / p;
+            if p < 0.0 {
+                if r > t1 {
+                    return None;
+                }
+                t0 = t0.max(r);
+            } else {
+                if r < t0 {
+                    return None;
+                }
+                t1 = t1.min(r);
+            }
+        }
+    }
+
+    let start = Point2::new(
+        (p0.x + t0 * dx).clamp(n.x, n.right()),
+        (p0.y + t0 * dy).clamp(n.y, n.bottom()),
+    );
+    let end = Point2::new(
+        (p0.x + t1 * dx).clamp(n.x, n.right()),
+        (p0.y + t1 * dy).clamp(n.y, n.bottom()),
+    );
+    Some((start, end))
 }
 
 /// Active viewport fitting policy.

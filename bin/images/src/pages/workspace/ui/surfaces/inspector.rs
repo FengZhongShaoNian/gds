@@ -1,8 +1,10 @@
-//! Single-column right inspector: resize handle, transforms, tool config popovers, and metadata.
+//! Single-column right inspector: resize handle, transforms, tool config popovers,
+//! contextual selection property bar (`Uniform`/`Mixed`), and metadata.
 
 use std::time::Duration;
 
 use gds::{
+    i18n::t,
     service::image::source::Origin,
     ui::{Shortcut, button::Button},
 };
@@ -28,13 +30,16 @@ use crate::{
         document::RgbaColor,
         preferences::{MAX_INSPECTOR_WIDTH, MIN_INSPECTOR_WIDTH},
     },
-    features::edit_canvas::ToolMode,
+    features::edit_canvas::{
+        ActiveInteraction, PropertyValue, ReorderOp, SelectionStyleSummary, ToolMode,
+    },
     shared::{
         i18n::text,
         ui::actions::{
-            FlipHorizontal, FlipVertical, RotateCcw, RotateCw, SelectToolArrow, SelectToolBlur,
-            SelectToolCrop, SelectToolEllipse, SelectToolLine, SelectToolMosaic, SelectToolPan,
-            SelectToolPointer, SelectToolRect, SelectToolText, WORKSPACE_CONTEXT,
+            BringForward, DeleteCanvasObject, DuplicateAnnotations, FlipHorizontal, FlipVertical,
+            RotateCcw, RotateCw, SelectToolArrow, SelectToolBlur, SelectToolCrop,
+            SelectToolEllipse, SelectToolLine, SelectToolMosaic, SelectToolPan, SelectToolPointer,
+            SelectToolRect, SelectToolText, SendBackward, WORKSPACE_CONTEXT,
         },
     },
 };
@@ -67,6 +72,7 @@ impl WorkspacePage {
             .is_some_and(|doc| self.is_origin_busy(&doc.decoded.origin));
 
         let edit_section = self.render_edit_section(has_doc, window, cx);
+        let selection_section = self.render_selection_section(cx);
         let props_section = self.render_properties_section(cx);
         let meta_section = self.render_metadata_section(has_doc, is_busy, cx);
 
@@ -105,6 +111,10 @@ impl WorkspacePage {
                     gap_2p5;
                 } [
                     edit_section,
+                    @if (let Some(sel) = selection_section)
+                        $(section_divider(cx)),
+                        sel,
+                    @end,
                     $(section_divider(cx)),
                     props_section,
                     $(section_divider(cx)),
@@ -202,14 +212,14 @@ impl WorkspacePage {
                 IconName::FlipHorizontal2,
                 "action-flip-h",
                 Shortcut::new(Box::new(FlipHorizontal), Some(WORKSPACE_CONTEXT)),
-                TransformOp::FlipH,
+                TransformOp::FlipHorizontal,
             ),
             (
                 "insp-flip-v",
                 IconName::FlipVertical2,
                 "action-flip-v",
                 Shortcut::new(Box::new(FlipVertical), Some(WORKSPACE_CONTEXT)),
-                TransformOp::FlipV,
+                TransformOp::FlipVertical,
             ),
         ];
 
@@ -222,7 +232,9 @@ impl WorkspacePage {
                         label: $(text(label_id, cx));
                         command: shortcut;
                         disabled: $(!has_doc);
-                        on_click: $(cx.listener(move |this, _, _, cx| this.apply_transform_op(op, cx)));
+                        on_click: $(cx.listener(move |this, _, window, cx| {
+                            this.apply_transform_op(op, window, cx);
+                        }));
                     }
                 }
                 .into_any_element()
@@ -242,6 +254,222 @@ impl WorkspacePage {
                 .div { flex; flex_wrap; gap_1; } [..tool_buttons],
             ]
         }
+    }
+
+    fn render_selection_section(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+        let doc = self.session.document.as_ref()?;
+        let annotations = doc.cache.presented_annotations(&doc.annotations);
+        let summary: SelectionStyleSummary =
+            self.canvas.tool_fsm.selection_style_summary(annotations)?;
+        let count_label: SharedString = t!(@cx, "inspector-selection-count", count = summary.count);
+        let can_reorder = annotations.len() >= 2;
+
+        let dup_btn = el! {
+            "sel-duplicate".gds::ui::button::IconButton::new {
+                icon: IconName::CopyPlus;
+                label: $(text("action-duplicate", cx));
+                command: $(Shortcut::new(Box::new(DuplicateAnnotations), Some(WORKSPACE_CONTEXT)));
+                on_click: $(cx.listener(|this, _, window, cx| this.duplicate_annotations(window, cx)));
+            }
+        };
+        let forward_btn = el! {
+            "sel-bring-forward".gds::ui::button::IconButton::new {
+                icon: IconName::LayersArrowUp;
+                label: $(text("action-bring-forward", cx));
+                command: $(Shortcut::new(Box::new(BringForward), Some(WORKSPACE_CONTEXT)));
+                disabled: $(!can_reorder);
+                on_click: $(cx.listener(|this, _, window, cx| {
+                    this.reorder_selection(ReorderOp::BringForward, window, cx);
+                }));
+            }
+        };
+        let backward_btn = el! {
+            "sel-send-backward".gds::ui::button::IconButton::new {
+                icon: IconName::LayersArrowDown;
+                label: $(text("action-send-backward", cx));
+                command: $(Shortcut::new(Box::new(SendBackward), Some(WORKSPACE_CONTEXT)));
+                disabled: $(!can_reorder);
+                on_click: $(cx.listener(|this, _, window, cx| {
+                    this.reorder_selection(ReorderOp::SendBackward, window, cx);
+                }));
+            }
+        };
+        let delete_btn = el! {
+            "sel-delete".gds::ui::button::IconButton::new {
+                icon: IconName::Trash;
+                label: $(text("action-delete-object", cx));
+                command: $(Shortcut::new(Box::new(DeleteCanvasObject), Some(WORKSPACE_CONTEXT)));
+                on_click: $(cx.listener(|this, _, window, cx| this.delete_canvas_object(window, cx)));
+            }
+        };
+
+        let mut rows: Vec<gpui_kit::AnyElement> = Vec::new();
+        if summary.color_applicable > 0 {
+            let swatches = RgbaColor::PALETTE
+                .into_iter()
+                .enumerate()
+                .map(|(idx, color)| {
+                    let selected = summary.color == PropertyValue::Uniform(color);
+                    let id: gpui_kit::ElementId = ("sel-swatch", idx).into();
+                    el! {
+                        .div {
+                            # id;
+                            size: $(px(18.0));
+                            rounded_full;
+                            cursor_pointer;
+                            border_2;
+                            border_color: $(if selected { cx.theme().primary } else { cx.theme().border });
+                            bg: $(color_to_hsla(color));
+                            on_mouse_down: MouseButton::Left, $(cx.listener(move |this, _, _, cx| {
+                                this.set_tool_color(color, cx);
+                            }));
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            rows.push(
+                el! {
+                    .div { flex; flex_col; gap_1; } [
+                        $(selection_prop_header(
+                            text("inspector-style-color", cx),
+                            matches!(summary.color, PropertyValue::Mixed),
+                            summary.color_applicable,
+                            summary.count,
+                            cx,
+                        )),
+                        .div { flex; items_center; gap_1p5; } [..swatches],
+                    ]
+                }
+                .into_any_element(),
+            );
+        }
+
+        if summary.stroke_applicable > 0 {
+            let chips = f32_preset_chips(
+                "sel-stroke-preset",
+                [
+                    (2.0, "size-small"),
+                    (3.0, "size-medium"),
+                    (6.0, "size-large"),
+                ],
+                summary.stroke_width,
+                cx,
+                |sz| cx.listener(move |this, _, _, cx| this.set_tool_stroke_width(sz, cx)),
+            );
+            rows.push(
+                el! {
+                    .div { flex; flex_col; gap_1; } [
+                        $(selection_prop_header(
+                            text("inspector-style-stroke", cx),
+                            matches!(summary.stroke_width, PropertyValue::Mixed),
+                            summary.stroke_applicable,
+                            summary.count,
+                            cx,
+                        )),
+                        .div { flex; items_center; gap_1; } [..chips],
+                    ]
+                }
+                .into_any_element(),
+            );
+        }
+
+        if summary.font_applicable > 0 {
+            let chips = f32_preset_chips(
+                "sel-font-preset",
+                [
+                    (14.0, "size-small"),
+                    (20.0, "size-medium"),
+                    (30.0, "size-large"),
+                ],
+                summary.font_size,
+                cx,
+                |sz| cx.listener(move |this, _, _, cx| this.set_tool_font_size(sz, cx)),
+            );
+            rows.push(
+                el! {
+                    .div { flex; flex_col; gap_1; } [
+                        $(selection_prop_header(
+                            text("inspector-style-font-size", cx),
+                            matches!(summary.font_size, PropertyValue::Mixed),
+                            summary.font_applicable,
+                            summary.count,
+                            cx,
+                        )),
+                        .div { flex; items_center; gap_1; } [..chips],
+                    ]
+                }
+                .into_any_element(),
+            );
+        }
+
+        if summary.mosaic_applicable > 0 {
+            let chips = u32_preset_chips(
+                "sel-mosaic-preset",
+                [(8, "size-small"), (14, "size-medium"), (22, "size-large")],
+                summary.mosaic_block_size,
+                cx,
+                |sz| cx.listener(move |this, _, _, cx| this.set_tool_mosaic_block(sz, cx)),
+            );
+            rows.push(
+                el! {
+                    .div { flex; flex_col; gap_1; } [
+                        $(selection_prop_header(
+                            text("inspector-style-mosaic", cx),
+                            matches!(summary.mosaic_block_size, PropertyValue::Mixed),
+                            summary.mosaic_applicable,
+                            summary.count,
+                            cx,
+                        )),
+                        .div { flex; items_center; gap_1; } [..chips],
+                    ]
+                }
+                .into_any_element(),
+            );
+        }
+
+        if summary.blur_applicable > 0 {
+            let chips = u32_preset_chips(
+                "sel-blur-preset",
+                [(4, "size-small"), (8, "size-medium"), (14, "size-large")],
+                summary.blur_radius,
+                cx,
+                |sz| cx.listener(move |this, _, _, cx| this.set_tool_blur_radius(sz, cx)),
+            );
+            rows.push(
+                el! {
+                    .div { flex; flex_col; gap_1; } [
+                        $(selection_prop_header(
+                            text("inspector-style-blur", cx),
+                            matches!(summary.blur_radius, PropertyValue::Mixed),
+                            summary.blur_applicable,
+                            summary.count,
+                            cx,
+                        )),
+                        .div { flex; items_center; gap_1; } [..chips],
+                    ]
+                }
+                .into_any_element(),
+            );
+        }
+
+        Some(
+            el! {
+                .div { # "inspector-selection"; test_support; flex; flex_col; gap_2; } [
+                    .div { flex; items_center; justify_between; gap_2; } [
+                        $(section_heading(text("inspector-selection", cx), cx)),
+                        .div { text_xs; text_color: $(cx.theme().muted_foreground); } [count_label],
+                    ],
+                    .div { flex; items_center; gap_1; } [
+                        dup_btn,
+                        forward_btn,
+                        backward_btn,
+                        delete_btn,
+                    ],
+                    ..rows,
+                ]
+            }
+            .into_any_element(),
+        )
     }
 
     fn render_tool_button(
@@ -292,7 +520,8 @@ impl WorkspacePage {
                         cx.background_executor().timer(TOOL_LONG_PRESS_DELAY).await;
                         let _ = handle.update(cx, |_, window, cx| {
                             let _ = view_ref.update(cx, |this, cx| {
-                                let current = color_to_hsla(this.canvas.tool_fsm.settings.color);
+                                let active_color = active_popover_color(this);
+                                let current = color_to_hsla(active_color);
                                 this.focus.color_picker.update(cx, |picker, cx| {
                                     picker.set_open(false, cx);
                                     picker.set_value(current, window, cx);
@@ -333,7 +562,7 @@ impl WorkspacePage {
                 on_open_change: $(move |next: &bool, window, cx| {
                     let _ = view_ref.update(cx, |this, cx| {
                         if *next {
-                            let current = color_to_hsla(this.canvas.tool_fsm.settings.color);
+                            let current = color_to_hsla(active_popover_color(this));
                             this.focus.color_picker.update(cx, |picker, cx| {
                                 picker.set_open(false, cx);
                                 picker.set_value(current, window, cx);
@@ -479,6 +708,93 @@ impl WorkspacePage {
     }
 }
 
+fn active_popover_color(page: &WorkspacePage) -> RgbaColor {
+    if let ActiveInteraction::EditingText(draft) = &page.canvas.tool_fsm.interaction {
+        return draft.color;
+    }
+    page.canvas.tool_fsm.settings.color
+}
+
+fn selection_prop_header(
+    label: SharedString,
+    is_mixed: bool,
+    applicable: usize,
+    total_selected: usize,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let scope_note: Option<SharedString> =
+        (applicable < total_selected).then(|| format!("{applicable}/{total_selected}").into());
+    el! {
+        .div { flex; items_center; justify_between; gap_1p5; text_xs; } [
+            .div { flex; items_center; gap_1; min_w_0; } [
+                .div { text_color: $(cx.theme().muted_foreground); truncate; } [label],
+                @if (let Some(note) = scope_note)
+                    .div { text_color: $(cx.theme().muted_foreground); } [note],
+                @end,
+            ],
+            @if (is_mixed)
+                .div {
+                    px_1p5;
+                    py_0p5;
+                    rounded_sm;
+                    bg: $(cx.theme().muted);
+                    text_color: $(cx.theme().muted_foreground);
+                } [$(text("inspector-mixed", cx))],
+            @end,
+        ]
+    }
+}
+
+fn f32_preset_chips<F>(
+    prefix: &'static str,
+    presets: [(f32, &'static str); 3],
+    value: PropertyValue<f32>,
+    cx: &App,
+    make_handler: impl Fn(f32) -> F,
+) -> Vec<Button>
+where
+    F: Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+{
+    presets
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (sz, key))| {
+            let selected = matches!(value, PropertyValue::Uniform(v) if (v - sz).abs() < 0.5);
+            preset_chip(
+                (prefix, idx).into(),
+                selected,
+                text(key, cx),
+                make_handler(sz),
+            )
+        })
+        .collect()
+}
+
+fn u32_preset_chips<F>(
+    prefix: &'static str,
+    presets: [(u32, &'static str); 3],
+    value: PropertyValue<u32>,
+    cx: &App,
+    make_handler: impl Fn(u32) -> F,
+) -> Vec<Button>
+where
+    F: Fn(&gpui_kit::ClickEvent, &mut Window, &mut App) + 'static,
+{
+    presets
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (sz, key))| {
+            let selected = value == PropertyValue::Uniform(sz);
+            preset_chip(
+                (prefix, idx).into(),
+                selected,
+                text(key, cx),
+                make_handler(sz),
+            )
+        })
+        .collect()
+}
+
 fn section_heading(title: SharedString, cx: &App) -> impl IntoElement + use<> {
     el! {
         .div {
@@ -541,6 +857,11 @@ fn render_tool_popover_content(
 ) -> gpui_kit::AnyElement {
     let page = entity.read(cx);
     let settings = page.canvas.tool_fsm.settings;
+    let active_color = active_popover_color(page);
+    let active_font_size = match &page.canvas.tool_fsm.interaction {
+        ActiveInteraction::EditingText(draft) => draft.font_size,
+        _ => settings.font_size,
+    };
     let picker_state = page.focus.color_picker.clone();
     let uses_color = mode.uses_color();
     let view = entity.downgrade();
@@ -549,7 +870,7 @@ fn render_tool_popover_content(
         .into_iter()
         .enumerate()
         .map(|(i, color)| {
-            let selected = settings.color == color;
+            let selected = active_color == color;
             let swatch_id: gpui_kit::ElementId = ("tool-swatch", i).into();
             let v = view.clone();
             el! {
@@ -578,7 +899,7 @@ fn render_tool_popover_content(
         .into_iter()
         .enumerate()
         .map(|(idx, (sz, key))| {
-            let selected = (settings.font_size - sz).abs() < 0.5;
+            let selected = (active_font_size - sz).abs() < 0.5;
             let v = view.clone();
             preset_chip(
                 ("tool-font-preset", idx).into(),

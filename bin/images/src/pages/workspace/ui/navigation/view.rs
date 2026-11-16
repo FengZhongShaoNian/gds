@@ -1,23 +1,26 @@
 //! Workspace action bindings, keyboard cancellation, and zoom/fit navigation.
 
-use gpui_kit::{Context, InteractiveElement, Window};
+use gpui_kit::{Context, InteractiveElement, Window, base::input::Escape as InputEscape};
 
 use super::*;
 use crate::{
     features::{
-        edit_canvas::ToolMode,
+        edit_canvas::{CancelOutcome, ReorderOp, ToolMode},
         navigation::{ZoomPreset, apply_zoom_preset},
     },
     shared::{
         geometry::{FitMode, Size2, ViewportTransform},
         ui::actions::{
-            CancelInteraction, CopyImage, EditLocation, FirstImage, FlipHorizontal, FlipVertical,
-            LastImage, MoveToTrash, NextImage, OpenClipboard, OpenFile, OpenSettings, OpenWithApp,
-            PrevImage, QuitApp, RedoEdit, RevealInFiles, RotateCcw, RotateCw, SaveImage,
-            SaveImageAs, SelectToolArrow, SelectToolBlur, SelectToolCrop, SelectToolEllipse,
-            SelectToolLine, SelectToolMosaic, SelectToolPan, SelectToolPointer, SelectToolRect,
-            SelectToolText, ToggleFilmstrip, ToggleInspector, UndoEdit, ZoomActual, ZoomFit,
-            ZoomIn, ZoomOut,
+            BringForward, BringToFront, CancelInteraction, ConfirmCanvasAction, CopyImage,
+            DeleteCanvasObject, DuplicateAnnotations, EditLocation, FirstImage, FlipHorizontal,
+            FlipVertical, LastImage, MoveToTrash, NextImage, NudgeDown, NudgeFastDown,
+            NudgeFastLeft, NudgeFastRight, NudgeFastUp, NudgeLeft, NudgeRight, NudgeUp,
+            OpenClipboard, OpenFile, OpenSettings, OpenWithApp, PrevImage, QuitApp, RedoEdit,
+            RevealInFiles, RotateCcw, RotateCw, SaveImage, SaveImageAs, SelectAllAnnotations,
+            SelectToolArrow, SelectToolBlur, SelectToolCrop, SelectToolEllipse, SelectToolLine,
+            SelectToolMosaic, SelectToolPan, SelectToolPointer, SelectToolRect, SelectToolText,
+            SendBackward, SendToBack, ToggleFilmstrip, ToggleInspector, UndoEdit, ZoomActual,
+            ZoomFit, ZoomIn, ZoomOut,
         },
     },
 };
@@ -50,12 +53,12 @@ impl WorkspacePage {
             ZoomOut => |this, _win, cx| this.apply_zoom(ZoomPreset::ZoomOut, cx),
             ZoomFit => |this, _win, cx| this.apply_zoom(ZoomPreset::Fit, cx),
             ZoomActual => |this, _win, cx| this.apply_zoom(ZoomPreset::Actual, cx),
-            RotateCw => |this, _win, cx| this.apply_transform_op(TransformOp::RotateCw, cx),
-            RotateCcw => |this, _win, cx| this.apply_transform_op(TransformOp::RotateCcw, cx),
-            FlipHorizontal => |this, _win, cx| this.apply_transform_op(TransformOp::FlipH, cx),
-            FlipVertical => |this, _win, cx| this.apply_transform_op(TransformOp::FlipV, cx),
-            UndoEdit => |this, _win, cx| this.undo_edit(cx),
-            RedoEdit => |this, _win, cx| this.redo_edit(cx),
+            RotateCw => |this, win, cx| this.apply_transform_op(TransformOp::RotateCw, win, cx),
+            RotateCcw => |this, win, cx| this.apply_transform_op(TransformOp::RotateCcw, win, cx),
+            FlipHorizontal => |this, win, cx| this.apply_transform_op(TransformOp::FlipHorizontal, win, cx),
+            FlipVertical => |this, win, cx| this.apply_transform_op(TransformOp::FlipVertical, win, cx),
+            UndoEdit => |this, win, cx| this.undo_edit(win, cx),
+            RedoEdit => |this, win, cx| this.redo_edit(win, cx),
             SaveImage => |this, win, cx| this.save_current_image(win, cx),
             SaveImageAs => |this, win, cx| this.save_image_as(win, cx),
             CopyImage => |this, win, cx| this.copy_to_clipboard(win, cx),
@@ -65,6 +68,22 @@ impl WorkspacePage {
             RevealInFiles => |this, _win, cx| this.reveal_active_file(cx),
             OpenWithApp => |this, _win, cx| this.open_active_file_with(cx),
             MoveToTrash => |this, win, cx| this.move_active_to_trash(win, cx),
+            DeleteCanvasObject => |this, win, cx| this.delete_canvas_object(win, cx),
+            DuplicateAnnotations => |this, win, cx| this.duplicate_annotations(win, cx),
+            SelectAllAnnotations => |this, _win, cx| this.select_all_annotations(cx),
+            ConfirmCanvasAction => |this, win, cx| this.confirm_canvas_action(win, cx),
+            BringForward => |this, win, cx| this.reorder_selection(ReorderOp::BringForward, win, cx),
+            SendBackward => |this, win, cx| this.reorder_selection(ReorderOp::SendBackward, win, cx),
+            BringToFront => |this, win, cx| this.reorder_selection(ReorderOp::BringToFront, win, cx),
+            SendToBack => |this, win, cx| this.reorder_selection(ReorderOp::SendToBack, win, cx),
+            NudgeLeft => |this, win, cx| this.handle_directional_key(-1.0, 0.0, -1, win, cx),
+            NudgeRight => |this, win, cx| this.handle_directional_key(1.0, 0.0, 1, win, cx),
+            NudgeUp => |this, win, cx| this.handle_directional_key(0.0, -1.0, -1, win, cx),
+            NudgeDown => |this, win, cx| this.handle_directional_key(0.0, 1.0, 1, win, cx),
+            NudgeFastLeft => |this, win, cx| this.nudge_selection_fast(-10.0, 0.0, win, cx),
+            NudgeFastRight => |this, win, cx| this.nudge_selection_fast(10.0, 0.0, win, cx),
+            NudgeFastUp => |this, win, cx| this.nudge_selection_fast(0.0, -10.0, win, cx),
+            NudgeFastDown => |this, win, cx| this.nudge_selection_fast(0.0, 10.0, win, cx),
             SelectToolPointer => |this, win, cx| this.select_tool(ToolMode::Pointer, win, cx),
             SelectToolPan => |this, win, cx| this.select_tool(ToolMode::Pan, win, cx),
             SelectToolCrop => |this, win, cx| this.select_tool(ToolMode::Crop, win, cx),
@@ -76,6 +95,7 @@ impl WorkspacePage {
             SelectToolMosaic => |this, win, cx| this.select_tool(ToolMode::Mosaic, win, cx),
             SelectToolBlur => |this, win, cx| this.select_tool(ToolMode::Blur, win, cx),
             CancelInteraction => |this, win, cx| this.cancel_interaction(win, cx),
+            InputEscape => |this, win, cx| this.cancel_interaction(win, cx),
             QuitApp => |this, win, cx| this.on_quit_app_action(&QuitApp, win, cx),
         })
     }
@@ -174,9 +194,19 @@ impl WorkspacePage {
             cx.notify();
             return;
         }
-        if self.canvas.tool_fsm.cancel_active() {
+        let outcome = self.canvas.tool_fsm.cancel_active(&mut self.canvas.history);
+        if outcome != CancelOutcome::None {
+            self.cancel_gesture_render();
             self.clear_text_overlay_input(window, cx);
             self.focus.canvas.focus(window, cx);
+            if outcome == CancelOutcome::NeedsRestoreComplete {
+                self.restore_complete_presentation(cx);
+            }
+            cx.notify();
+            return;
+        }
+        if self.canvas.tool_fsm.selection.clear() {
+            self.canvas.history.break_coalesce();
             cx.notify();
             return;
         }

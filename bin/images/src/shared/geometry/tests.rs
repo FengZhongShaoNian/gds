@@ -1,4 +1,6 @@
-use super::{FitMode, MIN_ZOOM, Point2, Rect2, Size2, ViewportTransform};
+use gds::service::image::PixelRect;
+
+use super::{FitMode, MIN_ZOOM, Point2, Rect2, Size2, ViewportTransform, clip_segment_to_rect};
 
 #[test]
 fn fit_modes_center_and_scale_accurately() {
@@ -87,4 +89,52 @@ fn non_finite_zoom_and_zero_scale_edges_stay_valid() {
     assert!((tf.scale - 1.5).abs() < 1e-6);
     tf.set_scale_centered(f32::NAN, Size2::new(800.0, 600.0));
     assert!((tf.scale - 1.5).abs() < 1e-6);
+}
+
+#[test]
+fn rect2_helpers_and_segment_clipping_handle_signed_and_crossing_geometry() {
+    let raw = Rect2::new(30.0, 40.0, -20.0, -10.0);
+    let norm = raw.normalized();
+    assert_eq!(norm, Rect2::new(10.0, 30.0, 20.0, 10.0));
+    assert_eq!(norm.right(), 30.0);
+    assert_eq!(norm.bottom(), 40.0);
+    assert_eq!(norm.center(), Point2::new(20.0, 35.0));
+
+    let expanded = norm.expand(2.5);
+    assert_eq!(expanded, Rect2::new(7.5, 27.5, 25.0, 15.0));
+    assert!(expanded.contains(Point2::new(7.5, 27.5)));
+    assert!(!expanded.contains(Point2::new(7.4, 27.5)));
+
+    let other = Rect2::new(25.0, 35.0, 15.0, 15.0);
+    assert_eq!(norm.union(other), Rect2::new(10.0, 30.0, 30.0, 20.0));
+    assert_eq!(
+        norm.intersect(other),
+        Some(Rect2::new(25.0, 35.0, 5.0, 5.0))
+    );
+    assert!(norm.intersects_inclusive(Rect2::new(30.0, 40.0, 5.0, 5.0)));
+    assert!(!norm.intersects_inclusive(Rect2::new(30.1, 40.0, 5.0, 5.0)));
+
+    let partial = Rect2::new(-5.2, 10.4, 15.5, 20.3);
+    assert_eq!(
+        partial.to_clamped_pixel_rect(100, 100),
+        Some(PixelRect::new(0, 10, 11, 21))
+    );
+    assert_eq!(
+        Rect2::new(-20.0, 0.0, 10.0, 10.0).to_clamped_pixel_rect(100, 100),
+        None
+    );
+
+    let box_rect = Rect2::new(0.0, 0.0, 100.0, 80.0);
+    let clipped =
+        clip_segment_to_rect(Point2::new(-50.0, 40.0), Point2::new(150.0, 40.0), box_rect)
+            .expect("crossing segment clips");
+    assert_eq!(clipped, (Point2::new(0.0, 40.0), Point2::new(100.0, 40.0)));
+    assert_eq!(
+        clip_segment_to_rect(
+            Point2::new(0.0, 100.0),
+            Point2::new(100.0, 0.0),
+            Rect2::new(0.0, 0.0, 20.0, 20.0)
+        ),
+        None
+    );
 }

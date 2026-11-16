@@ -307,7 +307,7 @@ impl WorkspacePage {
         cx: &App,
     ) -> AnyElement {
         let thumb = if let Some(crate::entities::document::RenderOutput::Single { image }) =
-            &doc.cache.output
+            doc.cache.presented_output()
         {
             img(Arc::clone(image))
                 .object_fit(ObjectFit::Cover)
@@ -385,7 +385,7 @@ impl WorkspacePage {
             && let Some(doc) = &self.session.document
             && matches!(&doc.decoded.origin, Origin::LocalFile { path, .. } if *path == entry.path)
             && let Some(crate::entities::document::RenderOutput::Single { image }) =
-                &doc.cache.output
+                doc.cache.presented_output()
         {
             return img(Arc::clone(image))
                 .object_fit(ObjectFit::Cover)

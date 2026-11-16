@@ -15,6 +15,7 @@ MARKER = "# Managed by GDS install-dev"
 APPLICATIONS = {
     "files": ("io.github.GanDesktop.GdsFiles", "System;FileTools;FileManager;"),
     "agents": ("io.github.GanDesktop.GdsAgents", "Development;Utility;"),
+    "images": ("io.github.GanDesktop.GdsImages", "Graphics;2DGraphics;RasterGraphics;Viewer;"),
 }
 
 
@@ -120,8 +121,13 @@ def main():
         for path, backup in backups:
             save_original(path, backup)
         write(launcher, f'#!/usr/bin/env bash\n{MARKER}\nexec {command} "$@"\n', 0o755)
-        arguments = " -- %f" if app == "files" else ""
-        mime = "MimeType=inode/directory;\n" if app == "files" else ""
+        arguments = " -- %f" if app in ("files", "images") else ""
+        if app == "files":
+            mime = "MimeType=inode/directory;\n"
+        elif app == "images":
+            mime = "MimeType=image/png;image/jpeg;image/webp;image/gif;image/svg+xml;image/bmp;image/tiff;image/x-icon;image/x-tga;image/x-portable-anymap;image/qoi;\n"
+        else:
+            mime = ""
         write(desktop, f"""{MARKER}
 [Desktop Entry]
 Type=Application

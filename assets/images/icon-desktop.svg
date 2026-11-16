@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+  <title>Images — desktop photo card</title>
+  <defs>
+    <linearGradient id="images-bg" x1="36" y1="36" x2="220" y2="220" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e8e2d4"/>
+      <stop offset="0.55" stop-color="#d4cab5"/>
+      <stop offset="1" stop-color="#b9ac92"/>
+    </linearGradient>
+    <linearGradient id="images-sky" x1="56" y1="56" x2="200" y2="176" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5d7f9e"/>
+      <stop offset="1" stop-color="#3c5670"/>
+    </linearGradient>
+    <linearGradient id="images-mountain" x1="56" y1="120" x2="200" y2="184" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8b9d86"/>
+      <stop offset="1" stop-color="#5a6c57"/>
+    </linearGradient>
+  </defs>
+  <rect x="28" y="32" width="200" height="192" rx="28" fill="url(#images-bg)"/>
+  <rect x="44" y="48" width="168" height="140" rx="18" fill="url(#images-sky)"/>
+  <circle cx="92" cy="88" r="16" fill="#f3dfc1"/>
+  <path d="M44 156 L96 108 L138 144 L168 118 L212 160 L212 188 L44 188 Z" fill="url(#images-mountain)"/>
+</svg>

@@ -1,5 +1,5 @@
 //! Standard file-manager requests, independent of the graphical toolkit.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 use zbus::{
     Connection,
@@ -245,6 +245,41 @@ impl Server {
             .await?;
         Ok(())
     }
+}
+
+fn encode_show_item_uris(paths: &[impl AsRef<Path>]) -> Result<Vec<String>, Error> {
+    let mut uris = Vec::with_capacity(paths.len());
+    for path in paths {
+        let raw = path.as_ref();
+        let abs =
+            std::path::absolute(raw).map_err(|_| Error::InvalidUri(raw.display().to_string()))?;
+        let uri = url::Url::from_file_path(&abs)
+            .map_err(|_| Error::InvalidUri(raw.display().to_string()))?;
+        uris.push(uri.to_string());
+    }
+    Ok(uris)
+}
+
+/// Reveal and select local items in whichever desktop file manager owns `org.freedesktop.FileManager1`.
+///
+/// # Errors
+/// Reports invalid local paths or D-Bus session call failures.
+pub async fn show_items(paths: &[impl AsRef<Path>], startup_id: &str) -> Result<(), Error> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let uris = encode_show_item_uris(paths)?;
+    let connection = Connection::session().await?;
+    connection
+        .call_method(
+            Some(BUS_NAME),
+            OBJECT_PATH,
+            Some(BUS_NAME),
+            "ShowItems",
+            &(uris, startup_id),
+        )
+        .await?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -27,6 +27,10 @@ icon = "assets/files/icon-solid.svg"
 name = "GDS Agents"
 icon = "assets/agents/icon-solid.svg"
 
+[package.metadata.gds.about.applications.gds-images]
+name = "GDS Images"
+icon = "assets/images/icon-solid.svg"
+
 [workspace]
 members = ["macros/gds-settings-derive"]
 resolver = "3"
@@ -89,6 +93,11 @@ required-features = ["portal"]
 name = "gds-nixes"
 path = "bin/nixes/src/main.rs"
 required-features = ["nixes"]
+
+[[bin]]
+name = "gds-images"
+path = "bin/images/src/main.rs"
+required-features = ["images"]
 
 [features]
 # Capability features. Dependencies are declared once in the group of the
@@ -162,6 +171,33 @@ agents = [
     "dep:process-wrap",
 ]
 nixes = ["ui", "dep:clap", "dep:tokio", "dep:serde", "dep:serde_json", "dep:anyhow"]
+image-engine = [
+    "file-tags",
+    "dep:image",
+    "dep:moxcms",
+    "dep:nix",
+    "dep:png",
+    "dep:resvg",
+    "dep:rustix",
+    "dep:tempfile",
+    "dep:thiserror",
+    "dep:tokio-util",
+    "dep:tracing",
+]
+images = [
+    "ui",
+    "desktop",
+    "file-tags",
+    "image-engine",
+    "dep:clap",
+    "dep:directories",
+    "dep:serde",
+    "dep:strum",
+    "dep:tokio-util",
+    "dep:toml",
+    "dep:trash",
+    "dep:url",
+]
 portal = [
     "desktop-protocol", "dep:anyhow", "dep:tokio", "dep:clap", "dep:nix",
     "dep:serde_json", "dep:thiserror", "dep:url", "dep:zbus",
@@ -244,9 +280,13 @@ image = { version = "0.25.10", optional = true, default-features = false, featur
     "ico",
     "jpeg",
     "png",
+    "pnm",
+    "qoi",
+    "tga",
     "tiff",
     "webp",
 ] }
+moxcms = { version = "0.8.1", features = ["in_place"], optional = true }
 
 # Remote filesystems.
 russh = { version = "=0.65.0", default-features = false, features = ["ring", "rsa"], optional = true }

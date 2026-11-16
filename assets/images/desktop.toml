@@ -1,0 +1,9 @@
+[default]
+Name = "Images"
+GenericName = "Image Viewer"
+Comment = "View, annotate, and edit images"
+
+[zh_CN]
+Name = "图片"
+GenericName = "图片查看器"
+Comment = "浏览、标注与编辑图片"

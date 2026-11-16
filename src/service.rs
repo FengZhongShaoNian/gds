@@ -5,6 +5,8 @@ pub mod desktop;
 pub mod file_inspection;
 #[cfg(feature = "file-tags")]
 pub mod file_tags;
+#[cfg(feature = "image-engine")]
+pub mod image;
 #[cfg(feature = "logs")]
 pub mod logs;
 #[cfg(feature = "remote")]

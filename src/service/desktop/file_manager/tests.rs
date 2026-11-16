@@ -219,3 +219,34 @@ fn launcher_interface_constant_and_name_has_no_owner_retry() {
             assert!(matches!(failed, Err(Error::Bus(_))));
         });
 }
+
+#[test]
+fn show_items_short_circuits_empty_and_absolutizes_paths() {
+    use std::path::Path;
+
+    let empty: &[PathBuf] = &[];
+    tokio::runtime::Runtime::new()
+        .expect("Tokio")
+        .block_on(async {
+            show_items(empty, "")
+                .await
+                .expect("empty show_items should short-circuit without session bus");
+        });
+
+    let expected_abs = std::path::absolute(Path::new("nested/../capture.png")).expect("abs");
+    let expected_uri = url::Url::from_file_path(&expected_abs)
+        .expect("file url")
+        .to_string();
+
+    let rel_slices: &[&Path] = &[Path::new("nested/../capture.png")];
+    assert_eq!(
+        encode_show_item_uris(rel_slices).expect("encode relative path"),
+        vec![expected_uri]
+    );
+
+    let owned_slices = vec![PathBuf::from("/tmp/example image.png")];
+    assert_eq!(
+        encode_show_item_uris(&owned_slices).expect("encode owned path"),
+        vec!["file:///tmp/example%20image.png".to_owned()]
+    );
+}

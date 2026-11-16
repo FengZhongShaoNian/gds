@@ -19,7 +19,7 @@ dev app *args:
 shell:
     {{ develop }}
 
-# 构建整个套件，或指定 files / agents / portal / nixes。
+# 构建整个套件，或指定 files / agents / images / portal / nixes。
 build app="all":
     @just _cargo build "$@"
 
@@ -95,19 +95,19 @@ uninstall-dev app="all":
 
 # 检查全部 Rust 目标。
 check:
-    {{ develop }} --command cargo check --workspace --features files,agents,portal,nixes,gpui-kit/test-support --all-targets
+    {{ develop }} --command cargo check --workspace --features files,agents,portal,nixes,images,gpui-kit/test-support --all-targets
 
 # 检查代码格式与全部 Clippy 规范门禁。
 lint:
     #!/usr/bin/env bash
     set -euo pipefail
     {{ develop }} --command cargo fmt --all --check
-    {{ develop }} --command cargo clippy --workspace --features gui-tests,files-e2e,portal,nixes --lib --bins -- -D clippy::disallowed_methods -D warnings
-    {{ develop }} --command cargo clippy --workspace --features gui-tests,files-e2e,portal,nixes --all-targets -- -D warnings
+    {{ develop }} --command cargo clippy --workspace --features gui-tests,files-e2e,portal,nixes,images --lib --bins -- -D clippy::disallowed_methods -D warnings
+    {{ develop }} --command cargo clippy --workspace --features gui-tests,files-e2e,portal,nixes,images --all-targets -- -D warnings
 
 # 运行测试，可传测试名称等 Cargo 参数。
 test *args:
-    {{ develop }} --command cargo test --workspace --features files,agents,portal,nixes,gpui-kit/test-support "$@"
+    {{ develop }} --command cargo test --workspace --features files,agents,portal,nixes,images,gpui-kit/test-support "$@"
 
 # 在隔离的 Wayland 会话中运行 Files 原生端到端流程，并保留工件。
 test-files:
@@ -135,17 +135,18 @@ _cargo command app *args:
     case "$app" in
         all)
             if [ "$command" = run ]; then
-                printf '%s\n' '启动时请指定目标：just dev files / just dev agents / just dev portal / just dev nixes' >&2
+                printf '%s\n' '启动时请指定目标：just dev files / just dev agents / just dev images / just dev portal / just dev nixes' >&2
                 exit 2
             fi
-            targets=(--bins --features files,agents,portal,nixes)
+            targets=(--bins --features files,agents,portal,nixes,images)
             ;;
         files) targets=(--bin gds-files --features files) ;;
         agents) targets=(--bin gds-agents --features agents) ;;
+        images) targets=(--bin gds-images --features images) ;;
         nixes) targets=(--bin gds-nixes --features nixes) ;;
         portal) targets=(--bin xdg-desktop-portal-gds --features portal) ;;
         *)
-            printf '未知应用：%s；可选 files、agents、portal、nixes\n' "$app" >&2
+            printf '未知应用：%s；可选 files、agents、images、portal、nixes\n' "$app" >&2
             exit 2
             ;;
     esac

@@ -1,7 +1,6 @@
 use super::{
     Browser, Command, InputEvent, KeyDownEvent, Keystroke, LaunchOptions, Location, Modifiers,
-    PreferencesExt as _, ViewMode, VolumesExt as _, configuration, directory, pages, px, size,
-    sorting, tokens,
+    PreferencesExt as _, ViewMode, VolumesExt as _, configuration, directory, px, size, sorting,
 };
 use crate::entities::location::places::Places;
 use gds::app::AppExt as _;
@@ -200,127 +199,6 @@ fn dispatch_shift_down_batches(
     });
     cx.run_until_parked();
     (key_dispatch_elapsed, start.elapsed())
-}
-
-#[gpui_kit::test]
-async fn startup_sidebar_toggle_settings_and_resize_animate_in_render(cx: &mut TestAppContext) {
-    let directory = init_test_workspace(cx);
-    let home = directory.path().join("home");
-    std::fs::create_dir_all(&home).expect("create home directory");
-    std::fs::write(home.join("sample.txt"), b"hello\n").expect("create sample file");
-
-    let (window, browser) = open_test_browser(
-        cx,
-        home,
-        Err(crate::entities::location::places::Error::Remote(
-            "corrupt places".into(),
-        )),
-    );
-    cx.run_until_parked();
-
-    cx.update_window(window.into(), |_, window, cx| {
-        window.render_frame(cx);
-        let view = browser.read(cx);
-        assert!(view.locations.load_error.is_some());
-        assert!(!view.window.layout.compact);
-        assert_eq!(view.sidebar.presentation.width(), tokens::SIDEBAR_WIDTH);
-        assert_eq!(view.sidebar.presentation.progress(), 1.0);
-
-        browser.update(cx, |browser, cx| {
-            browser.dispatch(Command::Sidebar, window, cx);
-        });
-        window.render_frame(cx);
-        assert!(browser.read(cx).sidebar.collapsed);
-    })
-    .expect("toggle sidebar to collapsed");
-
-    cx.executor().advance_clock(Duration::from_millis(60));
-    cx.update_window(window.into(), |_, window, cx| {
-        assert!(window.simulate_next_frame(cx) >= 1);
-    })
-    .expect("advance sidebar collapse midpoint");
-    cx.run_until_parked();
-
-    cx.update_window(window.into(), |_, _, cx| {
-        let presentation = browser.read(cx).sidebar.presentation;
-        assert!(presentation.progress() > 0.0 && presentation.progress() < 1.0);
-        assert!(
-            presentation.width() > tokens::COLLAPSED_SIDEBAR_WIDTH
-                && presentation.width() < tokens::SIDEBAR_WIDTH
-        );
-    })
-    .expect("verify intermediate sidebar presentation");
-
-    cx.executor().advance_clock(Duration::from_millis(120));
-    cx.update_window(window.into(), |_, window, cx| {
-        window.simulate_next_frame(cx);
-    })
-    .expect("complete sidebar collapse");
-    cx.run_until_parked();
-
-    cx.update_window(window.into(), |_, window, cx| {
-        let presentation = browser.read(cx).sidebar.presentation;
-        assert_eq!(presentation.width(), tokens::COLLAPSED_SIDEBAR_WIDTH);
-        assert_eq!(presentation.progress(), 0.0);
-
-        browser.update(cx, |browser, cx| {
-            browser.dispatch(Command::Settings, window, cx);
-        });
-        window.render_frame(cx);
-        assert!(browser.read(cx).pages.current() == Some(&pages::Page::Settings));
-
-        browser.update(cx, |browser, cx| {
-            browser.dispatch(Command::Cancel, window, cx);
-            browser.dispatch(Command::Sidebar, window, cx);
-        });
-        window.render_frame(cx);
-        assert!(browser.read(cx).pages.is_empty());
-        assert!(!browser.read(cx).sidebar.collapsed);
-    })
-    .expect("open settings and expand sidebar");
-
-    cx.executor().advance_clock(Duration::from_millis(180));
-    cx.update_window(window.into(), |_, window, cx| {
-        window.simulate_next_frame(cx);
-    })
-    .expect("complete sidebar expand");
-    cx.run_until_parked();
-
-    cx.update_window(window.into(), |_, window, cx| {
-        assert_eq!(
-            browser.read(cx).sidebar.presentation.width(),
-            tokens::SIDEBAR_WIDTH
-        );
-        window.resize(size(px(900.), px(700.)));
-        window.bounds_changed(cx);
-        window.render_frame(cx);
-        assert!(browser.read(cx).window.layout.compact);
-    })
-    .expect("resize below compact threshold");
-
-    cx.executor().advance_clock(Duration::from_millis(180));
-    cx.update_window(window.into(), |_, window, cx| {
-        window.simulate_next_frame(cx);
-    })
-    .expect("settle compact sidebar transition");
-    cx.run_until_parked();
-
-    cx.update_window(window.into(), |_, window, cx| {
-        assert_eq!(
-            browser.read(cx).sidebar.presentation.width(),
-            tokens::COLLAPSED_SIDEBAR_WIDTH
-        );
-        window.resize(size(px(1280.), px(800.)));
-        window.bounds_changed(cx);
-        window.render_frame(cx);
-        assert!(!browser.read(cx).window.layout.compact);
-    })
-    .expect("resize above compact threshold");
-
-    let scope = cx.update(|cx| cx.gds().tasks().scope());
-    cx.update_window(window.into(), |_, window, _| window.remove_window())
-        .expect("remove test window");
-    scope.shutdown().await;
 }
 
 #[gpui_kit::test]

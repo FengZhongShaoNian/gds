@@ -62,8 +62,12 @@ impl WorkspacePage {
                 .map(|bytes| format!(" · {}", format_byte_size(bytes)))
                 .unwrap_or_default();
             let summary = format!("{} · {w} × {h} px{size_part}", doc.format().label());
-            el! { .div { text_xs; text_color: $(cx.theme().muted_foreground); truncate; } [summary] }
-                .into_any_element()
+            el! { .div {
+                # "image-facts"; role: gpui_kit::Role::Label; aria_label: $(summary.clone());
+                aria_value: $(summary.clone());
+                text_xs; text_color: $(cx.theme().muted_foreground); truncate;
+            } [summary] }
+            .into_any_element()
         } else {
             el! {
                 .div {

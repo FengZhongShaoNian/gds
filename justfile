@@ -109,8 +109,28 @@ lint:
 test *args:
     {{ develop }} --command cargo test --workspace --features files,agents,portal,nixes,images,gpui-kit/test-support "$@"
 
-# 在隔离的 Wayland 会话中运行 Files 原生端到端流程，并保留工件。
-test-files:
+# 为真实桌面 VM 构建 Files/Images 普通版本，并打包精确源码和运行依赖。
+e2e-build:
+    {{ develop }} --command cargo build --locked --bin gds-files --bin gds-images --features files,images
+    {{ develop }} --command python3 scripts/e2e.py bundle
+
+# 安装客体的 AT-SPI/Python/剪贴板测试依赖，不重置磁盘快照。
+e2e-prepare machine="all":
+    @just _python scripts/e2e.py prepare "$1"
+
+# 在 QEMU 桌面中运行 pytest 工作流；可传 --vm、-k、-m、--collect-only。
+test-e2e *args:
+    uv run --locked --project tests/e2e pytest tests/e2e "$@"
+
+# 用统一 VM 框架运行 Files / Images 工作流。
+test-files *args:
+    @just test-e2e -m files "$@"
+
+test-images *args:
+    @just test-e2e -m images "$@"
+
+# 迁移期间保留的旧 Weston 流程；不作为桌面兼容性验收。
+test-files-native:
     #!/usr/bin/env bash
     set -euo pipefail
     {{ develop }} --command cargo build --locked --bin gds-files --features files-e2e

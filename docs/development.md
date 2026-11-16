@@ -43,7 +43,10 @@ just check                        # Typecheck workspace and test targets
 just lint                         # Check formatting and workspace Clippy lint gates
 just fmt-check                    # Check Rust formatting (just fmt to format)
 just test                         # Run workspace unit & integration tests
-just test-files                   # Run isolated Weston Wayland E2E suite for Files
+just e2e-prepare all              # Prepare existing desktop test VMs
+just e2e-build                    # Bundle normal Files/Images builds for VMs
+just test-e2e                     # Run Files + Images desktop workflows
+just test-files --vm ubuntu       # Select Files workflows and one guest
 just shell                        # Open an interactive Nix development shell
 ```
 

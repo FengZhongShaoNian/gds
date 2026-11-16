@@ -1,6 +1,14 @@
 # Files testing
 
-Run the native workflow from the repository root with `just test-files`. It builds
+The primary E2E entry point is `just test-files --vm all`, using the shared
+[desktop VM framework](../../development/vm-e2e.md). Run `just e2e-prepare all`
+and `just e2e-build` first. `just test-images` uses the same framework for Images.
+The VM tests exercise normal binaries through QEMU input and AT-SPI and preserve
+per-case UI and filesystem evidence.
+
+## Supplementary Weston runner
+
+Run the earlier native workflow with `just test-files-native`. It builds
 the opt-in `files-e2e` target, obtains Weston from the repository's locked Nixpkgs,
 and runs Files inside a private headless Wayland session. A working Vulkan or
 OpenGL driver is required; this is a real native window, not GPUI's test platform.

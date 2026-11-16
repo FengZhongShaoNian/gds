@@ -15,8 +15,8 @@ Shortcuts across Files and Agents currently use a single data-driven registry (`
 
 ## 3. End-to-End Test Expansion
 
-- Expand `just test-files` (`files-e2e`) coverage to include picker CLI / `--portal-request` roundtrips, multi-window `FileManager1` D-Bus activation, column editor persistence, and view-state recovery across restarts.
-- Add an equivalent headless Wayland E2E harness for GDS Agents covering local mock-BAS stream reconnection and compact/full workspace transitions.
+- Extend the [desktop VM workflows](../development/vm-e2e.md) with `--portal-request` roundtrips, multi-window `FileManager1` D-Bus activation, column editor persistence and the remaining desktop/service scenarios. CLI file picking and location view recovery already have VM workflows.
+- Extend the shared VM framework to GDS Agents, covering local mock-BAS stream reconnection and compact/full workspace transitions.
 
 ## 4. Secondary Display Servers & Operating Systems
 

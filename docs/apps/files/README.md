@@ -44,5 +44,5 @@ Every browsable target has a canonical URI and participates in per-tab back/forw
 - [SFTP & SMB Network Locations](network.md)
 - [Volumes & Sidebar](devices-and-sidebar.md)
 - [File Tags & URI Schemes](tags.md)
-- [Isolated Wayland E2E & Unit Testing](testing.md)
+- [Desktop VM E2E & Unit Testing](testing.md)
 - [Files Roadmap (Built-in Archives, Remote Move & Search)](../../roadmap/files.md)

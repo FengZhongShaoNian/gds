@@ -27,7 +27,8 @@ Documentation is organized into **Current State**, **Technical Decisions & Compr
 - [Network Locations](apps/files/network.md) — native SFTP and SMB browsing and transfers
 - [Volumes & Sidebar](apps/files/devices-and-sidebar.md) — UDisks2 discovery, mount actions, and sidebar layout
 - [Tags & URI Schemes](apps/files/tags.md) — `user.xdg.tags`, Baloo/KIO integration, and `location:` / `tags:` URIs
-- [Files Testing](apps/files/testing.md) — isolated Weston Wayland E2E suite (`just test-files`) and unit test boundaries
+- [Desktop VM Workflows](development/vm-e2e.md) — pytest workflows for Files/Images across QEMU desktops, evidence and replay
+- [Files Testing](apps/files/testing.md) — VM coverage, supplementary Weston runner and unit test boundaries
 
 ## Architecture & Development
 

@@ -421,6 +421,7 @@ impl Browser {
         let mut tile = el! {
             $(content.render(Some(index), cx)) { # $("file-tile", index);
                 role: Role::ListItem; aria_label: $(entry.display_name.clone()); aria_selected: selected;
+                aria_description: $(entry.path.to_string_lossy().into_owned());
                 cursor_pointer;
                 left: $(presented.origin.x - target_bounds.origin.x);
                 top: $(presented.origin.y - target_bounds.origin.y);

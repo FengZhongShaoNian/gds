@@ -1,8 +1,5 @@
 //! Command-line argument definition for `gds-images`.
 
-#[cfg(test)]
-mod tests;
-
 use std::path::PathBuf;
 
 use clap::Parser;

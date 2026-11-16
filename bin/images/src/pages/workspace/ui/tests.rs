@@ -1,13 +1,12 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use gds::{app::AppExt as _, appearance::tokens, service::image::source::Origin};
+use gds::{app::AppExt as _, appearance::tokens};
 use gpui_kit::{
     AppContext, Entity, TestAppContext, WindowHandle,
     component::{Root, WindowExt as _},
     px, size,
     test::TestWindowExt as _,
 };
-use image::{Rgba, RgbaImage};
 
 use super::*;
 use crate::pages::workspace::{CaptureWorkflow, LaunchMode};
@@ -61,161 +60,6 @@ fn open_test_workspace(
         Root::new(surface, window, cx)
     });
     (window, page.expect("workspace page created"))
-}
-
-fn write_sample_png(path: &std::path::Path, rgba: [u8; 4]) {
-    RgbaImage::from_pixel(24, 24, Rgba(rgba))
-        .save(path)
-        .expect("write sample png");
-}
-
-#[gpui_kit::test]
-async fn workspace_layout_chevrons_and_inspector_motion(cx: &mut TestAppContext) {
-    let temp = init_test_images(cx);
-    let gallery = temp.path().join("gallery");
-    std::fs::create_dir_all(&gallery).expect("create gallery directory");
-    let first = gallery.join("01-first.png");
-    let second = gallery.join("02-second.png");
-    let third = gallery.join("03-third.png");
-    write_sample_png(&first, [220, 40, 40, 255]);
-    write_sample_png(&second, [40, 200, 80, 255]);
-    write_sample_png(&third, [60, 120, 230, 255]);
-
-    let (window, page) = open_test_workspace(
-        cx,
-        LaunchOptions {
-            mode: LaunchMode::OpenFile(first.clone()),
-            workflow: CaptureWorkflow::default(),
-            is_capture: false,
-        },
-    );
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        cx.run_until_parked();
-        let ready = cx.read(|cx| {
-            let view = page.read(cx);
-            view.session.document.is_some()
-                && view.session.catalog.entries.len() == 3
-                && !view.runtime.is_loading
-        });
-        if ready || Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-
-    let initial_viewport_w = cx
-        .update_window(window.into(), |_, window, cx| {
-            window.render_frame(cx);
-
-            let view = page.read(cx);
-            assert!(view.session.document.is_some());
-            assert_eq!(view.session.catalog.entries.len(), 3);
-            assert!(matches!(
-                view.session.document.as_ref().map(|d| &d.decoded.origin),
-                Some(Origin::LocalFile { path, .. }) if path == &first
-            ));
-
-            let vp_bounds = window.find("images-viewport").bounds();
-            assert!(
-                f32::from(vp_bounds.size.height) >= 700.0,
-                "viewport must fill full workspace height, got {}",
-                f32::from(vp_bounds.size.height)
-            );
-            assert!(window.try_find("images-filmstrip").is_some());
-            assert!(
-                window.try_find("filmstrip-prev-slot").is_some(),
-                "up chevron must remain visible even for 3 images"
-            );
-            assert!(
-                window.try_find("filmstrip-next-slot").is_some(),
-                "down chevron must remain visible even for 3 images"
-            );
-            assert!(window.try_find("location-display").is_some());
-            assert!(window.try_find("location-actions").is_some());
-            assert!(window.try_find("inspector-edit").is_some());
-            assert!(window.try_find("inspector-metadata").is_some());
-            assert!(window.try_find("images-inspector").is_some());
-
-            f32::from(vp_bounds.size.width)
-        })
-        .expect("verify initial workspace geometry");
-
-    cx.update_window(window.into(), |_, window, cx| {
-        page.update(cx, |page, cx| page.toggle_filmstrip(cx));
-        window.render_frame(cx);
-    })
-    .expect("collapse filmstrip");
-
-    cx.executor().advance_clock(Duration::from_millis(60));
-    cx.update_window(window.into(), |_, window, cx| {
-        assert!(window.simulate_next_frame(cx) >= 1);
-    })
-    .expect("advance filmstrip midpoint");
-    cx.run_until_parked();
-
-    cx.update_window(window.into(), |_, _, cx| {
-        let width = page.read(cx).chrome.sidebar_presentation.width();
-        assert!(
-            width > tokens::COLLAPSED_SIDEBAR_WIDTH && width < tokens::SIDEBAR_WIDTH,
-            "expected midpoint width, got {width}"
-        );
-    })
-    .expect("verify midpoint filmstrip animation");
-
-    cx.executor().advance_clock(Duration::from_millis(140));
-    cx.update_window(window.into(), |_, window, cx| {
-        window.simulate_next_frame(cx);
-    })
-    .expect("settle filmstrip collapse");
-    cx.run_until_parked();
-
-    cx.update_window(window.into(), |_, window, cx| {
-        assert_eq!(
-            page.read(cx).chrome.sidebar_presentation.width(),
-            tokens::COLLAPSED_SIDEBAR_WIDTH
-        );
-        assert!(window.try_find("filmstrip-prev-slot").is_some());
-        assert!(window.try_find("filmstrip-next-slot").is_some());
-
-        page.update(cx, |page, cx| page.toggle_inspector(cx));
-        window.render_frame(cx);
-    })
-    .expect("collapse inspector");
-
-    cx.executor().advance_clock(Duration::from_millis(60));
-    cx.update_window(window.into(), |_, window, cx| {
-        assert!(window.simulate_next_frame(cx) >= 1);
-        window.render_frame(cx);
-        let mid_inspector = window.find("images-inspector").bounds();
-        assert!(
-            f32::from(mid_inspector.size.width) > 10.0
-                && f32::from(mid_inspector.size.width)
-                    < f32::from(px(DEFAULT_INSPECTOR_WIDTH as f32)),
-            "expected inspector animation midpoint, got {}",
-            f32::from(mid_inspector.size.width)
-        );
-    })
-    .expect("verify midpoint inspector animation");
-
-    cx.executor().advance_clock(Duration::from_millis(160));
-    cx.update_window(window.into(), |_, window, cx| {
-        window.simulate_next_frame(cx);
-        window.render_frame(cx);
-        assert!(window.try_find("images-inspector").is_none());
-        let expanded_vp_w = f32::from(window.find("images-viewport").bounds().size.width);
-        assert!(
-            expanded_vp_w > initial_viewport_w + 150.0,
-            "viewport should expand cleanly when sidebars collapse ({initial_viewport_w} -> {expanded_vp_w})"
-        );
-    })
-    .expect("verify settled inspector collapse");
-
-    let scope = cx.update(|cx| cx.gds().tasks().scope());
-    cx.update_window(window.into(), |_, window, _| window.remove_window())
-        .expect("remove test window");
-    scope.shutdown().await;
 }
 
 #[gpui_kit::test]

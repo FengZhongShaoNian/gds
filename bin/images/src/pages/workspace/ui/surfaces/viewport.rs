@@ -96,6 +96,7 @@ impl WorkspacePage {
         };
 
         let (out_w, out_h) = doc.output_dimensions();
+        let accessible_name = doc.decoded.origin.display_name();
         let tf = self.canvas.transform;
         let img_vp = tf.image_rect_to_viewport(Rect2::new(0.0, 0.0, out_w as f32, out_h as f32));
         let show_checkerboard = cx
@@ -133,6 +134,8 @@ impl WorkspacePage {
             .div {
                 # "images-viewport";
                 test_support;
+                role: gpui_kit::Role::Image;
+                aria_label: accessible_name;
                 key_context: CANVAS_CONTEXT;
                 track_focus: $(&self.focus.canvas);
                 tab_index: 0;

@@ -654,6 +654,10 @@ impl FileTable {
         el! {
             .div {
                 # $("file-name", row_ix); test_support; flex; items_center; size_full; min_w_0; overflow_hidden;
+                role: Role::Label; aria_label: $(entry.display_name.clone());
+                aria_value: $(entry.display_name.clone());
+                aria_selected: $(self.is_selected(&entry.path));
+                aria_description: $(entry.path.to_string_lossy().into_owned());
                 on_any_mouse_down: on_mouse_down; on_hover: on_hover;
                 @if (hint_enabled) tooltip_show_delay: TOOLTIP_DELAY; tooltip: tooltip; @end;
             } [

@@ -324,6 +324,11 @@ impl Report {
     {
         let summary = self.summary.clone();
         let details = self.details.clone();
+        let role = if matches!(self.level, Level::Error | Level::Warning) {
+            gpui_kit::Role::Alert
+        } else {
+            gpui_kit::Role::Status
+        };
         // Kept with the content builder so the scroll position outlives one
         // notification render.
         let scroll = ScrollHandle::new();
@@ -347,6 +352,7 @@ impl Report {
             let text = el! {
                 .div {
                     # CONTENT_ID;
+                    role: role; aria_label: $(summary.clone());
                     flex; flex_col; gap: DETAIL_GAP.px;
                     w_full; min_w_0;
                     max_h: height;

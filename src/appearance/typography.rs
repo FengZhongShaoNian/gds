@@ -4,11 +4,13 @@
 //! text styled with `rem` units follows it automatically. Explicit pixel sizes
 //! cannot, and use [`scaled`] instead.
 
+#[cfg(target_os = "linux")]
+mod linux;
 #[cfg(test)]
 mod tests;
 
 use gpui_kit::component::Theme;
-use gpui_kit::{App, Global, Pixels, SharedString, px};
+use gpui_kit::{App, Global, Pixels, SharedString, TextSystem, font, px};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -20,6 +22,8 @@ pub const MAX_SIZE: f32 = 24.0;
 pub const DEFAULT_SIZE: f32 = crate::appearance::tokens::FONT_SIZE;
 /// Native UI alias, also used if Linux font discovery fails.
 const SYSTEM_FAMILY: &str = ".SystemUIFont";
+/// Virtual monospace alias used when Linux Fontconfig discovery fails or on non-Linux hosts.
+const SYSTEM_MONO_FAMILY: &str = ".ZedMono";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ui", derive(crate::ConfigEditor))]
@@ -183,61 +187,66 @@ impl ResolvedFamily {
 }
 
 #[cfg(target_os = "linux")]
-struct SystemFamilies {
-    sans_serif: SharedString,
-    monospace: SharedString,
-}
-
-#[cfg(target_os = "linux")]
 pub(super) fn system_family() -> SharedString {
-    system_families().sans_serif.clone()
+    linux::system_families().sans_serif.clone()
 }
 
 #[cfg(target_os = "linux")]
-pub(super) fn system_mono_family() -> SharedString {
-    system_families().monospace.clone()
-}
-
-#[cfg(target_os = "linux")]
-fn system_families() -> &'static SystemFamilies {
-    static FAMILIES: std::sync::OnceLock<SystemFamilies> = std::sync::OnceLock::new();
-    FAMILIES.get_or_init(|| {
-        let source = font_kit::source::SystemSource::new();
-        SystemFamilies {
-            sans_serif: resolve_system_alias(&source, "sans-serif", SYSTEM_FAMILY),
-            monospace: resolve_system_alias(&source, "monospace", ".ZedMono"),
-        }
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn resolve_system_alias(
-    source: &font_kit::source::SystemSource,
-    alias: &str,
-    fallback: &str,
-) -> SharedString {
-    // Resolve Fontconfig aliases to real families before Kit probes its defaults.
-    let family = match source.select_family_by_name(alias) {
-        Ok(family) => family,
-        Err(error) => {
-            tracing::warn!(alias, %error, "cannot resolve the Fontconfig font; using GPUI fallback");
-            return fallback.into();
-        }
-    };
-    let mut last_error = None;
-    for handle in family.fonts() {
-        match handle.load() {
-            Ok(face) => return face.family_name().into(),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    tracing::warn!(alias, error = ?last_error, "cannot load the Fontconfig font; using GPUI fallback");
-    fallback.into()
+pub(crate) fn system_mono_family() -> SharedString {
+    linux::system_families().monospace.clone()
 }
 
 #[cfg(not(target_os = "linux"))]
-fn system_family() -> SharedString {
+pub(super) fn system_family() -> SharedString {
     SYSTEM_FAMILY.into()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn system_mono_family() -> SharedString {
+    SYSTEM_MONO_FAMILY.into()
+}
+
+/// Resolve a requested monospace family, falling back to the cached system monospace font.
+#[cfg_attr(not(feature = "terminal"), allow(dead_code))]
+pub(crate) fn resolve_monospace_family(requested: &str, text: &TextSystem) -> SharedString {
+    let trimmed = requested.trim();
+    if matches!(trimmed, "" | "monospace" | ".SystemMonospace") {
+        return system_mono_family();
+    }
+
+    #[cfg(target_os = "linux")]
+    if let Some(matched) = linux::resolve_custom_monospace(trimmed)
+        && (matched.confirmed_monospace || is_fixed_ascii_pitch(matched.family.as_ref(), text))
+    {
+        return matched.family;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    if text
+        .all_font_names()
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(trimmed))
+        && is_fixed_ascii_pitch(trimmed, text)
+    {
+        return trimmed.to_owned().into();
+    }
+
+    system_mono_family()
+}
+
+#[cfg_attr(not(feature = "terminal"), allow(dead_code))]
+fn is_fixed_ascii_pitch(family: &str, text: &TextSystem) -> bool {
+    let id = text.resolve_font(&font(SharedString::from(family.to_owned())));
+    let sample_size = px(14.0);
+    let (Ok(narrow), Ok(wide)) = (
+        text.advance(id, sample_size, 'i'),
+        text.advance(id, sample_size, 'W'),
+    ) else {
+        return false;
+    };
+    let narrow_width = f32::from(narrow.width);
+    let wide_width = f32::from(wide.width);
+    narrow_width > 0.0 && (narrow_width - wide_width).abs() <= 0.05
 }
 
 /// # Errors

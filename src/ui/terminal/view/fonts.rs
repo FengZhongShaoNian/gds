@@ -2,9 +2,8 @@
 //!
 //! GPUI treats unknown family names as ordinary font fallbacks; the CSS name
 //! `monospace` is not a portable font family in its public text API.
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
-use font_kit::{family_name::FamilyName, properties::Properties, source::SystemSource};
 use gpui_kit::{Font, FontFeatures, Pixels, Size, TextSystem, font, px, size};
 
 #[derive(Clone)]
@@ -23,7 +22,7 @@ impl Fonts {
     }
 
     pub fn resolve(requested: &str, font_size: f32, scale: f32, text: &TextSystem) -> Self {
-        let family = resolve_family(requested);
+        let family = crate::appearance::typography::resolve_monospace_family(requested, text);
         let mut font = font(family);
         // Terminal columns are owned by the emulator, not font ligatures.
         font.features = FontFeatures(Arc::new(vec![
@@ -53,33 +52,4 @@ impl Fonts {
             baseline,
         }
     }
-}
-
-fn resolve_family(requested: &str) -> String {
-    if !matches!(requested.trim(), "" | "monospace" | ".SystemMonospace") {
-        let source = SystemSource::new();
-        if let Ok(handle) = source.select_best_match(
-            &[FamilyName::Title(requested.to_owned())],
-            &Properties::new(),
-        ) && let Ok(face) = handle.load()
-            && face.is_monospace()
-        {
-            return face.family_name();
-        }
-    }
-    static SYSTEM_MONO: OnceLock<String> = OnceLock::new();
-    SYSTEM_MONO
-        .get_or_init(|| {
-            SystemSource::new()
-                .select_best_match(&[FamilyName::Monospace], &Properties::new())
-                .and_then(|handle| {
-                    handle
-                        .load()
-                        .map_err(|_| font_kit::error::SelectionError::NotFound)
-                })
-                .map(|face| face.family_name())
-                // This virtual family is GPUI's documented mono alias, not a CSS alias.
-                .unwrap_or_else(|_| ".ZedMono".into())
-        })
-        .clone()
 }

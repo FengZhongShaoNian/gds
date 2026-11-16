@@ -3433,8 +3433,8 @@ dependencies = [
  "walkdir",
  "which",
  "xdg-mime",
+ "yeslogic-fontconfig-sys",
  "zbus",
- "zed-font-kit",
 ]
 
 [[package]]

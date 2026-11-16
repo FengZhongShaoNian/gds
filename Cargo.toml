@@ -296,15 +296,15 @@ smb = { version = "=0.10.2", default-features = false, features = ["async", "sig
 
 # Appearance and i18n.
 # Same MIT/Apache font discovery library as GPUI; resolve system UI and monospace aliases.
-font-kit = { package = "zed-font-kit", version = "=0.14.1-zed", optional = true }
-gpui-kit = { version = "=0.9.0", optional = true, features = ["gpui-fast"] }
+font-kit = { package = "zed-font-kit", git = "https://github.com/zed-industries/font-kit", rev = "94b0f28166665e8fd2f53ff6d268a14955c82269", optional = true }
+gpui-kit = { git = "https://github.com/GanDesktop/gpui-kit", branch = "gds-0.10.0", optional = true, features = ["gpui-fast"] }
 rust-ini = { version = "0.21", features = ["brackets-in-section-names"], optional = true }
 fluent-bundle = { version = "0.16", optional = true }
 fluent-syntax = { version = "0.12", optional = true }
 unic-langid = { version = "0.9", optional = true }
 
 # Shared UI.
-gpui = { package = "gpui-fast", version = "=0.1.13", optional = true }
+gpui = { package = "gpui", git = "https://github.com/GanDesktop/gpui-fast", branch = "gds-0.1.16", optional = true }
 gds-uim = { git = "https://github.com/GanDesktop/gds-uim", rev = "90f5424edf6ba9c5ffaacc2b11cb5ffe24960519", optional = true }
 gds-settings-derive = { path = "macros/gds-settings-derive", optional = true }
 # Kit's RustEmbed sources must stay self-contained in installed dev builds too.
@@ -324,7 +324,7 @@ trash = { version = "5.3.0", optional = true }
 agent-client-protocol = { version = "=3.3.0", features = ["unstable", "unstable_protocol_v2"], optional = true }
 bas = { package = "bas-client", git = "https://github.com/GanDesktop/bas", branch = "main", features = ["workspace-schema"], optional = true }
 dirs = { version = "6", optional = true }
-reqwest_client = { package = "gpui-pre-reqwest-client", version = "=0.3.11", optional = true }
+reqwest_client = { package = "reqwest_client", git = "https://github.com/GanDesktop/gpui-fast", branch = "gds-0.1.16", optional = true }
 rodio = { version = "=0.21.1", optional = true, default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav", "tracing"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 tonic = { version = "0.14", features = ["tls-ring"], optional = true }
@@ -381,8 +381,3 @@ codegen-units = 16
 debug = 0
 strip = "symbols"
 incremental = false
-
-[patch.crates-io]
-gpui-component = { git = "https://github.com/GanDesktop/gpui-kit", branch = "gds-0.9.0" }
-gpui-fast = { git = "https://github.com/GanDesktop/gpui-fast", branch = "gds-0.1.13" }
-gpui-fast-linux = { git = "https://github.com/GanDesktop/gpui-fast-linux", rev = "2270030d3e0cf75def11e44e5cc0f6c9991fae49" }

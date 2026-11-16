@@ -40,13 +40,6 @@ fn placeholder_style(cx: &App) -> InputEditorStyle {
     }
 }
 
-impl<M: InputModeKind> IntoElement for Placeholder<M> {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
 impl<M: InputModeKind> Element for Placeholder<M> {
     type RequestLayoutState = ();
     type PrepaintState = ();

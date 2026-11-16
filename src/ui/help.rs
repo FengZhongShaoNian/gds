@@ -3,13 +3,13 @@ use super::{Shortcut, ShortcutBadge, container::container_traits};
 use crate::app::AppExt as _;
 use gds_uim::el;
 use gpui_kit::{
-    IntoElement,
+    App, Div, IntoElement, SharedString, Stateful, TestSupportExt, Window, actions,
     component::{ActiveTheme, StyledExt},
+    div,
     prelude::*,
-    *,
 };
 
-gpui_kit::actions!(help, [OpenHelp]);
+actions!(help, [OpenHelp]);
 
 #[derive(IntoElement)]
 pub struct HelpPage {

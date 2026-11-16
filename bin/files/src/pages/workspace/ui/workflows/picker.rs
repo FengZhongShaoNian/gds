@@ -28,6 +28,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 
 use super::*;
+use ::gpui;
 
 gpui_kit::actions!(
     gds_files_picker,

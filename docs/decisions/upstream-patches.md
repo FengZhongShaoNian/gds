@@ -1,19 +1,18 @@
-# Upstream Patches & Dependency Pins
+# Upstream Forks & Dependency Pins
 
-GDS never vendors third-party crate sources into this repository. When an upstream crate lacks required desktop protocol hooks or introduces ecosystem version conflicts, we maintain minimal patch branches under `GanDesktop/*` (or pin compatible versions in `Cargo.toml`), lock exact commits in `Cargo.lock` and `packaging/nix/cargo-lock.nix`, and retire each override once upstream releases an equivalent fix.
+GDS never vendors third-party crate sources into this repository. Instead of maintaining detached crates.io tarball overrides under `[patch.crates-io]`, GDS directly tracks versioned forks under `GanDesktop/*` in `Cargo.toml`, locks exact commits in `Cargo.lock` and `packaging/nix/cargo-lock.nix`, and retires each fork branch once upstream releases an equivalent fix.
 
-## Active Git Patch Branches
+## Active Git Forks
 
- GDS builds GPUI Kit `0.9.0` with its `gpui-fast` backend (`0.1.13` baseline):
+GDS builds GPUI Kit `0.10.0` (`gds-0.10.0`) directly against its `gpui-fast` (`0.1.16` / `gds-0.1.16`) monorepo fork:
 
-| Dependency | Patched Branch / Commit | Why Patched | Retirement Condition |
+| Dependency | Fork Repository / Branch | Why Forked | Retirement Condition |
 | --- | --- | --- | --- |
-| `gpui-component` | [`GanDesktop/gpui-kit` @ `gds-0.9.0`](https://github.com/GanDesktop/gpui-kit/tree/gds-0.9.0) | Adds configurable Linux client-side window corner radius (`10 px`), synchronizing content clipping and platform input hit regions while keeping `0 px` square corners as default. Other `gpui-kit` crates stay on crates.io `0.9.0`. | Upstream `gpui-kit` exposes configurable Linux CSD corner clipping and hit-region synchronization. |
-| `gpui-fast` | [`GanDesktop/gpui-fast` @ `gds-0.1.13`](https://github.com/GanDesktop/gpui-fast/tree/gds-0.1.13) | Exposes public window options for external parent window handles (Portal FileChooser modality) and caller startup activation tokens (`StartupId`), and restores mouse input modality upon external file drag-enter after keyboard navigation. | Upstream `gpui-fast` publishes external parent/activation APIs and drag-enter modality recovery. |
-| `gpui-fast-linux` | [`GanDesktop/gpui-fast-linux` @ `2270030`](https://github.com/GanDesktop/gpui-fast-linux/tree/2270030d3e0cf75def11e44e5cc0f6c9991fae49) | Implements Wayland (`xdg-foreign-v2`, `xdg-dialog`) and X11 (`WM_TRANSIENT_FOR`) external parent bindings, retaining the parent association until modal window destruction completes so KWin clears parent dimming reliably. | Upstream `gpui-fast-linux` lands matching Wayland/X11 transient teardown semantics. |
+| `gpui-kit` | [`GanDesktop/gpui-kit` @ `gds-0.10.0`](https://github.com/GanDesktop/gpui-kit/tree/gds-0.10.0) (`f61ebe1b`) | Forked from `longbridge/gpui-kit` `v0.10.0` (`f697c313`). Upstream `v0.10.0` adopted configurable Linux client-side corner radii (`Theme::window_radius`), so `gds-0.10.0` only points workspace GPUI dependencies directly to `GanDesktop/gpui-fast`. | Upstream `gpui-kit` depends on an upstream `gpui-fast` release containing all required GDS platform and Vulkan fixes. |
+| `gpui-fast` (`gpui`, `gpui_linux`, `gpui_wgpu`, `gpui_platform`, `compat/gpui-pre*`) | [`GanDesktop/gpui-fast` @ `gds-0.1.16`](https://github.com/GanDesktop/gpui-fast/tree/gds-0.1.16) (`8e6e750c`) | Forked from `longbridge/gpui-fast` `v0.1.16` (`454c29e`). Exposes external Wayland (`xdg-foreign-v2`, `xdg-dialog`) and X11 (`WM_TRANSIENT_FOR`) parent window handles across modal teardown, startup activation tokens (`StartupId`), drag-enter mouse modality recovery, core Wayland clipboard MIME transport, single-roundtrip `zwp_linux_dmabuf_v1` `dev_t` probing, and hybrid-GPU `VK_LUNARG_direct_driver_loading` initialization (see [Hybrid-GPU Direct Vulkan Initialization](hybrid-gpu-vulkan-init.md)). | Upstream `longbridge/gpui-fast` and `wgpu` ([gfx-rs/wgpu#9912](https://github.com/gfx-rs/wgpu/issues/9912)) merge matching platform integration and targeted Vulkan initialization semantics. |
 
 > [!NOTE]
-> Because `gpui-kit` enables features additively, `gpui-pre` may still appear in `cargo tree` metadata alongside `gpui-fast` (`gpui-pre-http-client` also shares HTTP client types). Only `gpui-fast` is linked and executed at runtime. Whenever updating `gds-0.1.13` or `gds-0.9.0`, update both `Cargo.lock` and `packaging/nix/cargo-lock.nix`.
+> Because `gpui-kit` enables features additively across its compatibility packages (`compat/gpui-pre*`), `gpui-pre` aliases resolve directly to `GanDesktop/gpui-fast` alongside `gpui-fast` in `Cargo.lock` with zero duplicate crates.io GPUI snapshots. Whenever updating `gds-0.1.16` or `gds-0.10.0`, update both `Cargo.lock` and `packaging/nix/cargo-lock.nix`.
 
 ## Pinned Crate Versions & Features
 

@@ -1,5 +1,5 @@
 use crate::ui::Shortcut;
-use gpui_kit::*;
+use gpui_kit::{Action, App, Global, KeyBinding, Unbind, actions};
 
 actions!(
     directory_picker,

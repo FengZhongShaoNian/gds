@@ -231,12 +231,6 @@ impl Painted {
         }
     }
 }
-impl IntoElement for Grid {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
 impl Element for Grid {
     type RequestLayoutState = ();
     type PrepaintState = Painted;

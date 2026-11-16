@@ -1,5 +1,6 @@
 //! Files commands and their workspace-specific default key bindings.
 
+use ::gpui;
 use gds::ui::Shortcut;
 pub use gds::ui::actions::{Cancel, CloseAllNotifications, CloseNotification, FocusNotifications};
 use gpui_kit::*;

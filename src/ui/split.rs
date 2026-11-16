@@ -5,7 +5,11 @@ mod state;
 
 use gds_uim::{component, el};
 use gpui_kit::component::StyledExt as _;
-use gpui_kit::{IntoElement, prelude::*, *};
+use gpui_kit::{
+    AnyElement, App, DispatchPhase, DragMoveEvent, Entity, IntoElement, MouseButton,
+    MouseMoveEvent, MouseUpEvent, RenderOnce, SharedString, StyleRefinement, Styled, Window,
+    actions, canvas, div, prelude::*, px,
+};
 
 use handle::{Resize, SplitHandle};
 pub use state::{State, constrained_height};

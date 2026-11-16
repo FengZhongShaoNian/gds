@@ -2,25 +2,15 @@
 
 In-repo P0 startup optimizations (pure-Rust GNOME theme reader, deferred Settings Center initialization, deduplicated theme reloads, cached Fontconfig alias resolution, and deferred `FileManager1` bus registration) reduced warm-cache `gds-files --release` time-to-first-frame to **313.4 ms** median (`54.5 ms` pre-surface; `275.5 ms` GPU adapter init on Ryzen 7 8745H + RTX 4060 / Weston).
 
-The remaining cold-start bottlenecks live in upstream dependencies and are tracked below.
+P1 has now been implemented in GDS's `gpui-fast` fork; the deferred font-discovery item remains tracked below.
 
-## P1: `gpui-fast` Hybrid-GPU `D3cold` Wake & Duplicate Wayland Probe
+## P1: Hybrid-GPU `suspended` Wake & Duplicate Wayland Probe (Implemented)
 
-**Target repositories**: `GanDesktop/gpui-fast` and `GanDesktop/gpui-fast-linux`
+Moved to [Hybrid-GPU Direct Vulkan Initialization](../decisions/hybrid-gpu-vulkan-init.md).
 
-### Root Causes
-
-1. **Unconditional multi-backend GPU enumeration wakes suspended dGPUs (~600 ms penalty)**:
-   - `gpui-fast-wgpu` (`WgpuContext::instance` / `select_adapter_and_device`) creates `wgpu::Instance` with `Backends::VULKAN | Backends::GL` and calls `enumerate_adapters(Backends::all())` before sorting by `CompositorGpuHint`.
-   - On hybrid laptops where the Wayland compositor runs on the iGPU and the discrete NVIDIA GPU is suspended in PCIe `D3cold`, enumerating every Vulkan ICD and EGL device node wakes the dGPU even though the iGPU is ultimately chosen.
-2. **Duplicate Wayland socket & synchronous roundtrip during startup**:
-   - `gpui-fast-linux` (`WaylandClient::new` → `detect_compositor_gpu()`) opens a second `Connection::connect_to_env()`, binds `zwp_linux_dmabuf_v1`, runs a blocking `event_queue.roundtrip()` solely to read `main_device` (`vendor_id` / `device_id`), and immediately closes that connection.
-
-### Planned Upstream Changes
-
-1. **Fold `zwp_linux_dmabuf_v1` feedback into the primary Wayland handshake**: Bind `zwp_linux_dmabuf_v1` during `WaylandClient::new`'s initial registry roundtrip so `CompositorGpuHint` is obtained with zero extra sockets or blocking roundtrips.
-2. **Two-stage targeted Vulkan adapter selection**: When `ZED_DEVICE_ID` is unset and `CompositorGpuHint` identifies the compositor GPU, probe a fast path restricted to Vulkan and the matching `vendor_id`/`device_id` first; fall back to full `VULKAN | GL` enumeration only if no compatible surface adapter is found or device loss occurs.
-3. **Acceptance**: Verify `/sys/bus/pci/devices/*/power/runtime_status` stays `suspended` on the dGPU throughout `gds-files` cold startup on an iGPU-composited Wayland session without regressing GL/software fallbacks or multi-window `GpuContext` sharing.
+Summary of shipped changes in `GanDesktop/gpui-fast` (`gds-0.1.16`):
+- Bound `zwp_linux_dmabuf_v1` during `WaylandClient::new`'s initial registry roundtrip and retained `dev_t` in `CompositorGpuHint` across windows and recovery.
+- Added a gated `VK_LUNARG_direct_driver_loading` exclusive-driver fast path in `gpui_wgpu` (with direct-ICD extension discovery and clean `VULKAN | GL` fallback) when an allowlisted Mesa iGPU (`RADV` / `ANV`) drives the Wayland compositor alongside a runtime-suspended heterogeneous dGPU.
 
 ---
 

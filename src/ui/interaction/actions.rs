@@ -1,8 +1,8 @@
 //! Suite-wide decisions and notification navigation. Applications own their commands.
 use crate::app::AppExt as _;
-use gpui_kit::*;
+use gpui_kit::{Action, App, KeyBinding, actions};
 
-gpui_kit::actions!(
+actions!(
     gds,
     [
         FocusNotifications,

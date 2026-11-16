@@ -1,5 +1,6 @@
 //! Apply desktop requests through the workspace's existing tabs and selection.
 use super::*;
+use ::gpui;
 use gds::service::desktop::file_manager::{Command as DesktopCommand, Request};
 use gds::ui::window::TitleBar;
 use gpui_kit::component::ActiveTheme;

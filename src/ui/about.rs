@@ -6,6 +6,8 @@ pub use metadata::{APPLICATIONS, Application, Credit};
 
 use gds_uim::el;
 use gpui_kit::{
+    AnyElement, App, ClickEvent, Context, FocusHandle, Focusable, FontWeight, IntoElement,
+    KeyBinding, Render, SharedString, Window, actions,
     assets::IconName,
     base::SelectableText,
     component::{
@@ -15,8 +17,9 @@ use gpui_kit::{
         dialog::DialogTitle,
         link::Link,
     },
+    div,
     prelude::*,
-    *,
+    px,
 };
 
 use crate::{
@@ -33,7 +36,7 @@ pub const WIDTH: f32 = 480.;
 pub const HEIGHT: f32 = 360.;
 const DETAILS_CONTEXT: &str = "AboutDetails";
 
-gpui_kit::actions!(gds_about, [Back]);
+actions!(gds_about, [Back]);
 
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 enum Section {

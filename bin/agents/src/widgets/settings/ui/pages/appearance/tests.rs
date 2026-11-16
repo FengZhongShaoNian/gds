@@ -77,11 +77,7 @@ fn animations_are_searchable_saved_and_reset_without_changing_other_preferences(
         });
         window.render_frame(cx);
         window.click("appearance-rounded-corners", cx);
-        assert!(
-            cx.global::<gpui_kit::component::WindowBorderStyle>()
-                .corner_radius()
-                > px(0.)
-        );
+        assert!(gpui_kit::component::Theme::global(cx).window_radius > px(0.));
     })
     .expect("enable rounded window corners");
     let rounded = store.load().expect("saved corners").settings.appearance;
@@ -89,20 +85,12 @@ fn animations_are_searchable_saved_and_reset_without_changing_other_preferences(
     assert_eq!(rounded.content_opacity, original.content_opacity);
     cx.update(|cx| {
         theme::init(cx);
-        assert!(
-            cx.global::<gpui_kit::component::WindowBorderStyle>()
-                .corner_radius()
-                > px(0.)
-        );
+        assert!(gpui_kit::component::Theme::global(cx).window_radius > px(0.));
     });
     cx.update_window(window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("appearance-rounded-corners-default", cx);
-        assert_eq!(
-            cx.global::<gpui_kit::component::WindowBorderStyle>()
-                .corner_radius(),
-            px(0.)
-        );
+        assert_eq!(gpui_kit::component::Theme::global(cx).window_radius, px(0.));
     })
     .expect("reset window corners");
     assert_eq!(

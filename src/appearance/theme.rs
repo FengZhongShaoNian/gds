@@ -161,15 +161,14 @@ impl Error {
 
 /// Update client-side window corners without reloading the palette.
 pub(crate) fn update_window_corners(rounded: bool, cx: &mut App) {
-    cx.set_global(
-        gpui_kit::component::WindowBorderStyle::default().with_corner_radius(gpui_kit::px(
-            if rounded {
-                crate::appearance::tokens::WINDOW_CORNER_RADIUS
-            } else {
-                0.
-            },
-        )),
-    );
+    let radius = gpui_kit::px(if rounded {
+        crate::appearance::tokens::WINDOW_CORNER_RADIUS
+    } else {
+        0.
+    });
+    Theme::update(cx, |theme| {
+        theme.window_radius = radius;
+    });
     cx.refresh_windows();
 }
 

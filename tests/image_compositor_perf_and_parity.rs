@@ -10,7 +10,7 @@ use image::{Rgba, RgbaImage};
 
 fn textured_canvas(width: u32, height: u32) -> RgbaImage {
     let mut img = RgbaImage::new(width, height);
-    let raw = img.as_mut();
+    let raw: &mut [u8] = img.as_mut();
     for y in 0..height {
         for x in 0..width {
             let off = ((y * width + x) * 4) as usize;

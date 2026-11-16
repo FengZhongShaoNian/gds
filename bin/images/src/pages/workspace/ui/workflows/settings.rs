@@ -18,6 +18,8 @@ impl WorkspacePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.flush_editing_text_before_external(window, cx);
+        self.cancel_pointer_gesture_before_external(cx);
         self.set_app_menu_open(false, cx);
         self.settings.open = true;
         let sidebar_state = self.sidebar_state();

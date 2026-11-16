@@ -417,6 +417,43 @@ fn hybrid_hit_testing_and_hover_obey_tool_and_screen_scale_rules() {
         ),
         vec![AnnotationId(4), AnnotationId(3)]
     );
+    // When lower overlapping Mosaic is already selected, hit_test_canvas keeps it draggable
+    // instead of letting the unselected upper Rect shadow it, while Alt+Click stack stays ordered.
+    let sel_lower = SelectionSet::single(AnnotationId(3));
+    assert_eq!(
+        hit_test_canvas(
+            &stacked,
+            &empty_sel,
+            Point2::new(140.0, 35.0),
+            ToolMode::Pointer,
+            1.0
+        ),
+        Some(HitTarget::Body {
+            id: AnnotationId(4)
+        })
+    );
+    assert_eq!(
+        hit_test_canvas(
+            &stacked,
+            &sel_lower,
+            Point2::new(140.0, 35.0),
+            ToolMode::Pointer,
+            1.0
+        ),
+        Some(HitTarget::Body {
+            id: AnnotationId(3)
+        })
+    );
+    assert_eq!(
+        hit_test_cycle_stack(
+            &stacked,
+            &sel_lower,
+            Point2::new(140.0, 35.0),
+            ToolMode::Pointer,
+            1.0
+        ),
+        vec![AnnotationId(4), AnnotationId(3)]
+    );
     assert_eq!(
         marquee_hits(&annotations, Rect2::new(15.0, 15.0, 40.0, 40.0)),
         vec![AnnotationId(1), AnnotationId(2)]

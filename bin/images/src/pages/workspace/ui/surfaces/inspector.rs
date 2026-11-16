@@ -514,7 +514,9 @@ impl WorkspacePage {
                 disabled: $(!has_doc);
                 toggled: active;
                 on_mouse_down: MouseButton::Left, $(cx.listener(move |this, _, window, cx| {
-                    this.select_tool(mode, window, cx);
+                    if this.canvas.tool_fsm.tool != mode {
+                        this.select_tool(mode, window, cx);
+                    }
                     let view_ref = cx.entity().downgrade();
                     this.canvas.long_press_task = Some(cx.spawn(async move |_, cx| {
                         cx.background_executor().timer(TOOL_LONG_PRESS_DELAY).await;
@@ -567,7 +569,9 @@ impl WorkspacePage {
                                 picker.set_open(false, cx);
                                 picker.set_value(current, window, cx);
                             });
-                            this.select_tool(mode, window, cx);
+                            if this.canvas.tool_fsm.tool != mode {
+                                this.select_tool(mode, window, cx);
+                            }
                             this.canvas.tool_popover = Some(mode);
                             cx.notify();
                         } else if !this.focus.color_picker.read(cx).is_open()

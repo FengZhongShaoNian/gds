@@ -149,6 +149,21 @@ impl RenderCache {
         self.generation = generation;
     }
 
+    /// Stores `transformed_base` and `complete` without overwriting `presented`, keeping a live
+    /// transient gesture frame undisturbed until the subsequent gesture ends or cancels.
+    pub fn store_complete_only(
+        &mut self,
+        prepared: PreparedTextures,
+        transform: TransformState,
+        revision: u64,
+    ) {
+        self.transformed_base = Some((transform, prepared.transformed_base));
+        self.complete = Some(CompleteComposite {
+            revision,
+            rgba: prepared.composited_rgba,
+        });
+    }
+
     /// Replaces only the presented GPU scene with a live gesture preview frame.
     ///
     /// Never alters [`Self::complete`] or [`Self::transformed_base`].

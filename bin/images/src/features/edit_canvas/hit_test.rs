@@ -112,7 +112,13 @@ pub fn hit_test_canvas(
     }
 
     let stack = hit_test_cycle_stack(annotations, selection, img_pt, tool, scale);
-    stack.first().copied().map(|id| HitTarget::Body { id })
+    // Keep an already-selected item draggable even when a higher unselected item overlaps it.
+    stack
+        .iter()
+        .copied()
+        .find(|id| selection.contains(*id))
+        .or_else(|| stack.first().copied())
+        .map(|id| HitTarget::Body { id })
 }
 
 pub fn hover_test_canvas(

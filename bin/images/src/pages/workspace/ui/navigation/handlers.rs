@@ -30,6 +30,8 @@ impl WorkspacePage {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.flush_editing_text_before_external(window, cx);
+        self.cancel_pointer_gesture_before_external(cx);
         let Some(doc) = &self.session.document else {
             return;
         };

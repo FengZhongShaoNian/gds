@@ -658,3 +658,167 @@ async fn r5_r6_mixed_inspector_rigid_clamp_text_draft_and_cursor_mapping(cx: &mu
         .expect("remove test window");
     scope.shutdown().await;
 }
+
+#[gpui_kit::test]
+async fn spec_verifier_regressions_ctrl_s_flush_text_popover_and_mid_drag_rebuild(
+    cx: &mut TestAppContext,
+) {
+    let temp = init_test_images(cx);
+    let (window, page, path) = open_png_file_workspace(cx, &temp, "regress.png", 200, 120).await;
+
+    // 1. Ctrl+S while typing in New TextDraft must flush & bake text into the saved PNG.
+    cx.update_window(window.into(), |_, window, cx| {
+        page.update(cx, |this, cx| {
+            this.select_tool(ToolMode::Text, window, cx);
+        });
+        window.render_frame(cx);
+        let click_offset = img_to_viewport_offset(&page, cx, Point2::new(30.0, 30.0));
+        window.click_with_options(
+            "images-viewport",
+            ClickOptions::new().with_offset(click_offset),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(page.read(cx).canvas.tool_fsm.is_editing_text());
+        page.update(cx, |this, cx| {
+            this.focus
+                .text_overlay_input
+                .update(cx, |input, cx| input.set_value("CtrlS", window, cx));
+        });
+        window.press("ctrl-s", cx);
+    })
+    .expect("dispatch ctrl-s during active text draft");
+
+    let wait_save_page = page.clone();
+    cx.wait_for(window.into(), Duration::from_secs(5), move |_, cx| {
+        let p = wait_save_page.read(cx);
+        !p.runtime.is_saving
+            && p.session
+                .document
+                .as_ref()
+                .is_some_and(|doc| doc.annotations.is_empty() && !doc.is_dirty())
+    })
+    .await;
+    let saved_rev = cx.update(|cx| {
+        page.read(cx)
+            .session
+            .document
+            .as_ref()
+            .expect("doc")
+            .edit_revision
+    });
+    wait_for_complete_revision(cx, window, &page, saved_rev).await;
+
+    let saved = image::open(&path).expect("read saved png").to_rgba8();
+    let has_text_pixel = saved.pixels().any(|px| *px != Rgba([240, 240, 240, 255]));
+    assert!(has_text_pixel);
+
+    // 2. Right-clicking / pressing Text tool button during New TextDraft keeps draft open & editable.
+    cx.update_window(window.into(), |_, window, cx| {
+        let click_offset = img_to_viewport_offset(&page, cx, Point2::new(90.0, 50.0));
+        window.click_with_options(
+            "images-viewport",
+            ClickOptions::new().with_offset(click_offset),
+            cx,
+        );
+        window.render_frame(cx);
+        page.update(cx, |this, cx| {
+            this.focus
+                .text_overlay_input
+                .update(cx, |input, cx| input.set_value("KeepDraft", window, cx));
+        });
+        window.right_click("tool-text", cx);
+        window.render_frame(cx);
+        page.update(cx, |this, cx| {
+            assert!(this.canvas.tool_fsm.is_editing_text());
+            this.set_tool_color(RgbaColor::RED, cx);
+        });
+        assert!(window.try_find("text-overlay-box").is_some());
+        page.update(cx, |this, cx| {
+            this.commit_text_overlay(window, cx);
+            assert_eq!(
+                this.session.document.as_ref().expect("doc").annotations[0].color(),
+                Some(RgbaColor::RED)
+            );
+        });
+    })
+    .expect("verify text tool popover keeps active draft open");
+
+    let rev_after_text = cx.update(|cx| {
+        page.read(cx)
+            .session
+            .document
+            .as_ref()
+            .expect("doc")
+            .edit_revision
+    });
+    wait_for_complete_revision(cx, window, &page, rev_after_text).await;
+
+    // 3. Rebuilding Complete(R) while G2 gesture is already active never overwrites Transient(G2).
+    let expected_complete_rev = rev_after_text + 1;
+    cx.update_window(window.into(), |_, window, cx| {
+        page.update(cx, |this, cx| {
+            let doc = this.session.document.as_mut().expect("doc");
+            doc.annotations.push(AnnotationItem {
+                id: AnnotationId(99),
+                kind: AnnotationKind::Rect {
+                    rect: Rect2::new(10.0, 10.0, 25.0, 20.0),
+                    stroke: RgbaColor::BLUE,
+                    stroke_width: 2.0,
+                    fill: None,
+                },
+            });
+            doc.next_annotation_id = 100;
+            doc.bump_revision();
+            assert_eq!(doc.edit_revision, expected_complete_rev);
+            this.select_tool(ToolMode::Rect, window, cx);
+            this.rebuild_textures(cx);
+        });
+        let from = img_to_window(window, &page, cx, Point2::new(140.0, 90.0));
+        let to = img_to_window(window, &page, cx, Point2::new(180.0, 115.0));
+        simulate_mouse_drag_start(window, from, to, cx);
+    })
+    .expect("start G2 drag while Complete rebuild is in flight");
+
+    let wait_mid_drag = page.clone();
+    cx.wait_for(window.into(), Duration::from_secs(5), move |_, cx| {
+        wait_mid_drag
+            .read(cx)
+            .session
+            .document
+            .as_ref()
+            .is_some_and(|doc| {
+                doc.cache.complete_at(expected_complete_rev).is_some()
+                    && doc
+                        .cache
+                        .presented
+                        .as_ref()
+                        .is_some_and(|scene| matches!(scene.tag, SceneTag::Transient { .. }))
+            })
+    })
+    .await;
+
+    cx.update_window(window.into(), |_, window, cx| {
+        let p = page.read(cx);
+        let doc = p.session.document.as_ref().expect("doc");
+        assert!(doc.cache.complete_at(expected_complete_rev).is_some());
+        assert!(
+            doc.cache
+                .presented
+                .as_ref()
+                .is_some_and(|scene| matches!(scene.tag, SceneTag::Transient { .. }))
+        );
+        assert_eq!(doc.cache.presented_annotations(&doc.annotations).len(), 3);
+
+        let to = img_to_window(window, &page, cx, Point2::new(180.0, 115.0));
+        simulate_mouse_release(window, to, cx);
+    })
+    .expect("finish G2 drag");
+
+    wait_for_complete_revision(cx, window, &page, expected_complete_rev + 1).await;
+
+    let scope = cx.update(|cx| cx.gds().tasks().scope());
+    cx.update_window(window.into(), |_, window, _| window.remove_window())
+        .expect("remove test window");
+    scope.shutdown().await;
+}

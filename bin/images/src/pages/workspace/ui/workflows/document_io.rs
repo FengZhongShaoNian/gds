@@ -494,6 +494,16 @@ impl WorkspacePage {
         .detach();
     }
 
+    fn can_install_complete_presentation(&self, edit_rev: u64) -> bool {
+        self.session
+            .document
+            .as_ref()
+            .is_some_and(|doc| doc.edit_revision == edit_rev)
+            && self.canvas.gesture_render.is_none()
+            && !self.canvas.tool_fsm.is_pointer_gesture()
+            && !self.canvas.tool_fsm.is_editing_text()
+    }
+
     pub(in crate::pages::workspace::ui) fn restore_complete_presentation(
         &mut self,
         cx: &mut Context<Self>,
@@ -541,8 +551,8 @@ impl WorkspacePage {
                 }
                 this.canvas.render_cancel = None;
                 if let Ok(Ok(payload)) = result
+                    && this.can_install_complete_presentation(edit_rev)
                     && let Some(doc) = &mut this.session.document
-                    && doc.edit_revision == edit_rev
                 {
                     doc.cache
                         .install_display_output(payload, edit_rev, render_gen, cx);
@@ -596,18 +606,25 @@ impl WorkspacePage {
                 this.canvas.render_cancel = None;
                 match result {
                     Ok(Ok(prepared)) => {
-                        if let Some(doc) = &mut this.session.document {
-                            install_prepared_cache(
-                                &mut doc.cache,
-                                prepared,
-                                transform,
-                                render_gen,
-                                edit_rev,
-                                cx,
-                            );
+                        let install_presented = this.can_install_complete_presentation(edit_rev);
+                        if let Some(doc) = &mut this.session.document
+                            && doc.edit_revision == edit_rev
+                        {
+                            if install_presented {
+                                install_prepared_cache(
+                                    &mut doc.cache,
+                                    prepared,
+                                    transform,
+                                    render_gen,
+                                    edit_rev,
+                                    cx,
+                                );
+                                this.schedule_svg_rerender_if_needed(cx);
+                            } else {
+                                doc.cache.store_complete_only(prepared, transform, edit_rev);
+                            }
+                            cx.notify();
                         }
-                        this.schedule_svg_rerender_if_needed(cx);
-                        cx.notify();
                     }
                     Ok(Err(ImageError::Cancelled)) => {}
                     Ok(Err(err)) => {
@@ -675,6 +692,7 @@ impl WorkspacePage {
                         }
                         this.canvas.svg_rerender_cancel = None;
                         if let Ok(Ok(payload)) = result
+                            && this.can_install_complete_presentation(edit_rev)
                             && let Some(doc) = &mut this.session.document
                             && !doc.has_unbaked_ops()
                         {
@@ -732,7 +750,8 @@ impl WorkspacePage {
                 this.canvas.svg_rerender_cancel = None;
                 match result {
                     Ok(Ok(payload)) => {
-                        if let Some(doc) = &mut this.session.document
+                        if this.can_install_complete_presentation(edit_rev)
+                            && let Some(doc) = &mut this.session.document
                             && doc.format() == Format::Svg
                             && !doc.has_unbaked_ops()
                         {

@@ -1,7 +1,7 @@
 use crate::entities::file::columns::{Column as LayoutColumn, Layout};
 use crate::entities::location::{ColumnWidths, Location};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     path::{Path, PathBuf},
     rc::Rc,
@@ -162,8 +162,20 @@ impl NameContent {
     }
 }
 
+struct LeaseGuard {
+    flag: Rc<Cell<bool>>,
+    previous: bool,
+}
+
+impl Drop for LeaseGuard {
+    fn drop(&mut self) {
+        self.flag.set(self.previous);
+    }
+}
+
 pub(in crate::pages::workspace) struct FileTable {
     browser: WeakEntity<Browser>,
+    leased: Rc<Cell<bool>>,
     rows: Arc<[Entry]>,
     selected: Selection<PathBuf>,
     selection_dirty: bool,
@@ -190,6 +202,7 @@ impl FileTable {
     /// Create the native table once; the caller retains this entity across renders.
     pub(in crate::pages::workspace) fn make_state(
         browser: WeakEntity<Browser>,
+        leased: Rc<Cell<bool>>,
         window: &mut Window,
         cx: &mut App,
     ) -> Entity<TableState<Self>> {
@@ -200,6 +213,7 @@ impl FileTable {
             TableState::new(
                 Self {
                     browser,
+                    leased,
                     rows: Arc::from([]),
                     selected: Selection::new(),
                     selection_dirty: false,
@@ -403,12 +417,25 @@ impl FileTable {
             return;
         }
         state.update(cx, |state, _| {
-            let delegate = state.delegate_mut();
-            delegate.drag.clear_source();
-            delegate.selected.clear();
-            delegate.selection_dirty = true;
-            delegate.row_selection = None;
+            state.delegate_mut().clear_selection_mirror();
         });
+    }
+
+    fn enter_leased_callback(&self) -> LeaseGuard {
+        let previous = self.leased.replace(true);
+        LeaseGuard {
+            flag: Rc::clone(&self.leased),
+            previous,
+        }
+    }
+
+    fn clear_selection_mirror(&mut self) {
+        if !self.selected.is_empty() {
+            self.drag.clear_source();
+            self.selected.clear();
+            self.selection_dirty = true;
+            self.row_selection = None;
+        }
     }
 
     pub(in crate::pages::workspace) fn suspend_rows_for_enrichment(
@@ -510,14 +537,12 @@ impl FileTable {
             .collect()
     }
 
-    /// Request ordering by `key`, reversing the direction when it is already active.
-    fn request_sort(&mut self, key: Key, cx: &mut App) {
+    /// Compute and stage ordering by `key`, reversing the direction when it is already active.
+    fn prepare_sort(&mut self, key: Key) -> Sort {
         let sort = self.sort.next(key);
         self.sort = sort;
         self.sort_pending = true;
-        if let Some(browser) = self.browser.upgrade() {
-            browser.update(cx, |browser, cx| browser.set_sort(sort, cx));
-        }
+        sort
     }
 
     fn header_click_handler(
@@ -526,8 +551,17 @@ impl FileTable {
     ) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
         move |_, _, cx| {
             cx.stop_propagation();
-            if let Some(table) = table.upgrade() {
-                table.update(cx, |table, cx| table.delegate_mut().request_sort(key, cx));
+            let Some(table) = table.upgrade() else {
+                return;
+            };
+            let (sort, browser) = table.update(cx, |table, _| {
+                let delegate = table.delegate_mut();
+                delegate.clear_selection_mirror();
+                let sort = delegate.prepare_sort(key);
+                (sort, delegate.browser.clone())
+            });
+            if let Some(browser) = browser.upgrade() {
+                browser.update(cx, |browser, cx| browser.set_sort(sort, cx));
             }
         }
     }
@@ -730,10 +764,18 @@ impl TableDelegate for FileTable {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        if let Some(column) = self.layout.columns().get(col_ix).copied() {
-            // Files always has one active ordering; Kit's unsorted stage is not a model state.
-            self.request_sort(sort_key(column), cx);
-        }
+        let Some(column) = self.layout.columns().get(col_ix).copied() else {
+            return;
+        };
+        // Files always has one active ordering; Kit's unsorted stage is not a model state.
+        self.clear_selection_mirror();
+        let sort = self.prepare_sort(sort_key(column));
+        let browser = self.browser.clone();
+        cx.defer(move |cx| {
+            if let Some(browser) = browser.upgrade() {
+                browser.update(cx, |browser, cx| browser.set_sort(sort, cx));
+            }
+        });
     }
 
     fn render_th(
@@ -749,7 +791,7 @@ impl TableDelegate for FileTable {
         let on_click = Self::header_click_handler(cx.entity().downgrade(), sort_key(column));
         el! {
             .div {
-                # $("file-column", col_ix);
+                # $("file-column", col_ix); test_support;
                 size_full; flex; items_center; cursor_pointer; on_click: on_click;
                 text_size: $(cx.gds().appearance().typography().scaled(DataListStyle::HEADER_SIZE));
                 font_weight: FontWeight::NORMAL; text_color: $(cx.theme().muted_foreground);
@@ -788,11 +830,14 @@ impl TableDelegate for FileTable {
                         return;
                     }
                     let rows = Arc::clone(&delegate.rows);
-                    if let Some(browser) = delegate.browser.upgrade() {
-                        browser.update(cx, |browser, cx| {
-                            browser.request_viewport_enrichment(&rows[start..end], cx);
-                        });
-                    }
+                    let browser = delegate.browser.clone();
+                    cx.defer(move |cx| {
+                        if let Some(browser) = browser.upgrade() {
+                            browser.update(cx, |browser, cx| {
+                                browser.request_viewport_enrichment(&rows[start..end], cx);
+                            });
+                        }
+                    });
                 });
             }
         }
@@ -931,9 +976,13 @@ impl TableDelegate for FileTable {
         let Some(browser) = self.browser.upgrade() else {
             return menu;
         };
+        if !self.is_selected(&path) {
+            self.clear_selection_mirror();
+        }
         // Omitting the name tooltip builder drops both visible and waiting GPUI hints.
         self.menu_focus = Some(menu.focus_handle(cx));
         cx.notify();
+        let _lease_guard = self.enter_leased_callback();
         browser.update(cx, |browser, cx| {
             browser.entry_context_menu(path, menu, window, cx)
         })

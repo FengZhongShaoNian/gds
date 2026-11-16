@@ -1900,3 +1900,80 @@ async fn middle_clicking_tabs_closes_regular_tabs_while_preserving_pinned_and_ri
 
     close_test_browser(cx, window).await;
 }
+
+#[gpui_kit::test]
+async fn list_column_header_sort_and_unselected_row_context_menu_do_not_double_lease_table(
+    cx: &mut TestAppContext,
+) {
+    let temp = init_test_workspace(cx);
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    let first = home.join("alpha.txt");
+    let second = home.join("beta.txt");
+    std::fs::write(&first, b"a").expect("write alpha");
+    std::fs::write(&second, b"b").expect("write beta");
+
+    let mut places = Places::default();
+    places.set_view_mode(Location::from(home.as_path()), ViewMode::List);
+    let (window, browser) = open_test_browser(cx, home, Ok(places));
+    wait_for_tabs_loaded(cx, window, &browser);
+
+    // 1. Left-clicking a list column header toggles sort without double-leasing `TableState`.
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let initial = browser.read(cx).active().expect("active tab").sort;
+        assert_eq!(initial.key, sorting::Key::Name);
+        assert_eq!(initial.direction, sorting::Direction::Ascending);
+        window.click(("file-column", 0usize), cx);
+        window.render_frame(cx);
+        let toggled = browser.read(cx).active().expect("active tab").sort;
+        assert_eq!(toggled.key, sorting::Key::Name);
+        assert_eq!(toggled.direction, sorting::Direction::Descending);
+    })
+    .expect("click column header to toggle sort");
+
+    // 2. Clicking the TableState sort icon invokes `TableDelegate::perform_sort` while leased.
+    cx.update_window(window.into(), |_, window, cx| {
+        window.click(("icon-sort", 0usize), cx);
+    })
+    .expect("click TableState sort icon");
+    cx.run_until_parked();
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let toggled = browser.read(cx).active().expect("active tab").sort;
+        assert_eq!(toggled.key, sorting::Key::Name);
+        assert_eq!(toggled.direction, sorting::Direction::Ascending);
+    })
+    .expect("verify TableState sort icon toggled sort");
+
+    // 3. Right-clicking an unselected row triggers `TableDelegate::context_menu` -> `select`
+    // while `TableState` is leased, without double-leasing `TableState`.
+    cx.update_window(window.into(), |_, window, cx| {
+        browser.update(cx, |browser, cx| {
+            browser.select(0, Modifiers::default(), cx);
+        });
+        window.render_frame(cx);
+        window.click_with_options(
+            ("file-row", 1usize),
+            gpui_kit::test::ClickOptions::new().with_button(gpui_kit::MouseButton::Right),
+            cx,
+        );
+    })
+    .expect("right-click unselected row");
+    cx.run_until_parked();
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let selected = &browser
+            .read(cx)
+            .active()
+            .expect("active tab")
+            .navigation
+            .view()
+            .selected;
+        assert_eq!(selected.len(), 1);
+        assert!(selected.contains(&second));
+    })
+    .expect("right-click unselected row opens context menu without double-leasing table");
+
+    close_test_browser(cx, window).await;
+}

@@ -51,7 +51,9 @@ impl Browser {
     /// subsequent `Selection` mutations can update their `Arc` backing in place.
     pub(in crate::pages::workspace) fn release_active_selection_mirrors(&mut self, cx: &mut App) {
         self.files.grid_selection.clear();
-        table::FileTable::release_selection(&self.files.table, cx);
+        if !self.files.table_leased.get() {
+            table::FileTable::release_selection(&self.files.table, cx);
+        }
     }
 
     pub(in crate::pages::workspace) fn on_list_background_press(

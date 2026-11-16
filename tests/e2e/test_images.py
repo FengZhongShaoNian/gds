@@ -167,3 +167,107 @@ def test_I10_rectangle_annotation_is_exported(case):
         assert changes.crop((130, 80, 150, 100)).getbbox() is None
         assert changes.crop((0, 0, 320, 15)).getbbox() is None
         assert changes.crop((0, 170, 320, 200)).getbbox() is None
+
+
+def test_I11_move_annotation_and_repeat_delete_safety(case):
+    original = case.sample_image('original.png', (320, 200))
+    case.launch('images', case.path('original.png'))
+    case.expect('original.png', 'image')
+    target = case.image_target(original)
+    case.key('4')
+    case.drag_image(target, (40, 30), (120, 90))
+    # Drag on the top stroke away from NW (40, 30) and N (80, 30) handles to translate (+100, +50).
+    case.drag_image(target, (60, 30), (160, 80))
+    case.key('ctrl+c')
+    case.expect('Copied image to clipboard')
+    with case.step('Verify moved rectangle pixels in guest Wayland clipboard'):
+        encoded = case.desktop.call('clipboard', mime='image/png')
+        copied = Image.open(io.BytesIO(base64.b64decode(encoded))).convert('RGBA')
+        assert copied.size == original.size
+        changes = ImageChops.difference(copied.convert('RGB'), original.convert('RGB'))
+        assert changes.crop((35, 25, 75, 35)).getbbox() is None
+        assert changes.crop((35, 25, 125, 95)).getbbox() is None
+        assert changes.crop((135, 75, 225, 145)).getbbox() is not None
+        assert changes.crop((175, 75, 185, 86)).getbbox() is not None
+        assert changes.crop((135, 105, 146, 115)).getbbox() is not None
+        assert changes.crop((170, 105, 190, 115)).getbbox() is None
+        assert changes.crop((0, 0, 320, 65)).getbbox() is None
+        assert changes.crop((0, 155, 320, 200)).getbbox() is None
+    case.key('delete')
+    case.key('delete')
+    case.key('delete')
+    case.key('ctrl+s')
+    case.expect(contains='Saved ', role='status bar')
+    case.expect_file('original.png', exists=True)
+    case.expect_empty_trash()
+    case.expect_image('original.png', original)
+
+
+def test_I12_rotate_and_crop_preserve_annotations(case):
+    original = case.sample_image('original.png', (320, 200))
+    case.launch('images', case.path('original.png'))
+    case.expect('original.png', 'image')
+    target = case.image_target(original)
+    case.key('4')
+    case.drag_image(target, (60, 40), (160, 120))
+    case.key('escape')
+    case.key('escape')
+    case.key('r')
+    case.expect(contains='200 × 320')
+    case.key('ctrl+s')
+    case.expect(contains='Saved ', role='status bar')
+    with case.step('Verify rotated rectangle strokes and unchanged background'):
+        expected_base = original.transpose(Image.Transpose.ROTATE_270).convert('RGB')
+        saved = Image.open(io.BytesIO(case.desktop.read(case.path('original.png')))).convert('RGB')
+        assert saved.size == (200, 320)
+        changes = ImageChops.difference(saved, expected_base)
+        bounds = changes.getbbox()
+        assert bounds is not None, 'Rotated annotation must change pixels'
+        assert 74 <= bounds[0] <= 85 and 54 <= bounds[1] <= 65
+        assert 155 <= bounds[2] <= 166 and 155 <= bounds[3] <= 166
+        assert changes.crop((115, 55, 125, 66)).getbbox() is not None
+        assert changes.crop((75, 105, 86, 115)).getbbox() is not None
+        assert changes.crop((95, 75, 145, 145)).getbbox() is None
+        assert changes.crop((0, 0, 70, 320)).getbbox() is None
+        assert changes.crop((170, 0, 200, 320)).getbbox() is None
+    case.quit()
+    crop_src = case.coordinate_image('crop-source.png')
+    case.launch('images', case.path('crop-source.png'))
+    case.expect('crop-source.png', 'image')
+    crop_target = case.image_target(crop_src)
+    case.key('4')
+    case.drag_image(crop_target, (60, 40), (160, 120))
+    case.key('escape')
+    case.key('3')
+    case.drag_image(crop_target, (90, 20), (240, 160))
+    case.activate('Apply Crop')
+    case.expect('Apply Crop', present=False)
+    width, height = case.image_dimensions()
+    assert 148 <= width <= 152 and 138 <= height <= 142
+    case.key('ctrl+c')
+    case.expect('Copied image to clipboard')
+    with case.step('Verify cropped clipboard retains clipped rectangle without border artifacts'):
+        encoded = case.desktop.call('clipboard', mime='image/png')
+        cropped = Image.open(io.BytesIO(base64.b64decode(encoded))).convert('RGBA')
+        assert cropped.size == (width, height)
+        left, top, blue, _ = cropped.getpixel((0, 0))
+        assert blue == 123 and 89 <= left <= 91 and 19 <= top <= 21
+        expected_crop = crop_src.crop((left, top, left + width, top + height)).convert('RGB')
+        crop_changes = ImageChops.difference(cropped.convert('RGB'), expected_crop)
+        assert crop_changes.crop((20, 40 - top - 5, 45, 40 - top + 6)).getbbox() is not None
+        assert crop_changes.crop((160 - left - 5, 50, 160 - left + 6, 70)).getbbox() is not None
+        assert crop_changes.crop((20, 120 - top - 5, 45, 120 - top + 6)).getbbox() is not None
+        assert crop_changes.crop((0, 40 - top + 8, 6, 120 - top - 8)).getbbox() is None
+        assert crop_changes.crop((15, 40 - top + 8, 160 - left - 10, 120 - top - 8)).getbbox() is None
+        assert crop_changes.crop((160 - left + 8, 0, width, height)).getbbox() is None
+    case.key('ctrl+z')
+    case.expect(contains='320 × 200')
+    case.key('ctrl+s')
+    case.expect(contains='Saved ', role='status bar')
+    with case.step('Verify crop undo restores complete rectangle'):
+        restored = Image.open(io.BytesIO(case.desktop.read(case.path('crop-source.png')))).convert('RGB')
+        assert restored.size == (320, 200)
+        restored_changes = ImageChops.difference(restored, crop_src.convert('RGB'))
+        assert restored_changes.crop((55, 70, 66, 90)).getbbox() is not None
+        assert restored_changes.crop((155, 70, 166, 90)).getbbox() is not None
+        assert restored_changes.crop((75, 55, 145, 105)).getbbox() is None

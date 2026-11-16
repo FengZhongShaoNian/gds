@@ -177,3 +177,231 @@ fn apply_transform_covers_crop_rotations_flips_and_validation() {
         .is_err()
     );
 }
+
+fn textured_canvas(width: u32, height: u32) -> RgbaImage {
+    let mut img = RgbaImage::new(width, height);
+    for y in 0..height {
+        for x in 0..width {
+            let r = ((x * 7 + y * 3) % 256) as u8;
+            let g = ((x * 5 + y * 11) % 256) as u8;
+            let b = ((x * 13 + y * 17) % 256) as u8;
+            let a = if (x + y) % 19 == 0 { 160 } else { 255 };
+            img.put_pixel(x, y, Rgba([r, g, b, a]));
+        }
+    }
+    img
+}
+
+fn point_in_rect(x: u32, y: u32, rect: PixelRect) -> bool {
+    x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
+}
+
+fn assert_clipped_pixels_match(
+    full: &RgbaImage,
+    clipped: &RgbaImage,
+    original: &RgbaImage,
+    clip: PixelRect,
+) {
+    assert_eq!(full.dimensions(), clipped.dimensions());
+    assert_eq!(original.dimensions(), clipped.dimensions());
+    let (w, h) = clipped.dimensions();
+    for y in 0..h {
+        for x in 0..w {
+            let actual = clipped.get_pixel(x, y).0;
+            if point_in_rect(x, y, clip) {
+                let expected = full.get_pixel(x, y).0;
+                assert_eq!(
+                    actual, expected,
+                    "pixel ({x}, {y}) inside clip differed from unclipped composite"
+                );
+            } else {
+                let untouched = original.get_pixel(x, y).0;
+                assert_eq!(
+                    actual, untouched,
+                    "pixel ({x}, {y}) outside clip was unexpectedly modified"
+                );
+            }
+        }
+    }
+}
+
+fn stacked_clip_ops() -> Vec<RasterOp> {
+    vec![
+        // Pre-redaction vector shape strictly inside clip away from blur halo.
+        RasterOp::Rect {
+            x: 45.0,
+            y: 35.0,
+            width: 20.0,
+            height: 15.0,
+            color: [240, 60, 20, 255],
+            stroke_width: 2.0,
+            fill: Some([40, 180, 90, 220]),
+        },
+        // Blur region straddling top and left edges of clip (30, 20).
+        RasterOp::GaussianBlur {
+            region: PixelRect::new(10, 10, 70, 55),
+            radius: 3,
+        },
+        // Mosaic anchored at (68, 36) with 8x8 blocks straddling right (110) and bottom (90) edges.
+        RasterOp::Mosaic {
+            region: PixelRect::new(68, 36, 56, 64),
+            block_size: 8,
+        },
+        // Translucent solid fill straddling left and bottom clip edges.
+        RasterOp::SolidFill {
+            region: PixelRect::new(20, 72, 35, 30),
+            color: [20, 90, 210, 128],
+        },
+        // Stacked vector shapes crossing clip boundaries after redactions.
+        RasterOp::Rect {
+            x: 65.0,
+            y: 55.0,
+            width: -50.0,
+            height: -40.0,
+            color: [255, 220, 0, 255],
+            stroke_width: 2.0,
+            fill: None,
+        },
+        RasterOp::Ellipse {
+            x: 50.0,
+            y: 35.0,
+            width: 45.0,
+            height: 35.0,
+            color: [200, 30, 190, 255],
+            stroke_width: 2.5,
+            fill: Some([20, 140, 220, 100]),
+        },
+        RasterOp::Arrow {
+            start: [55.0, 65.0],
+            end: [128.0, 80.0],
+            color: [255, 50, 50, 255],
+            stroke_width: 3.0,
+        },
+        RasterOp::Line {
+            start: [40.0, 50.0],
+            end: [95.0, 105.0],
+            color: [10, 220, 180, 255],
+            stroke_width: 2.0,
+        },
+        RasterOp::Polyline {
+            points: vec![[35.0, 25.0], [70.0, 85.0], [105.0, 45.0]],
+            color: [250, 140, 10, 255],
+            stroke_width: 2.0,
+            opacity: 0.85,
+        },
+        RasterOp::StepBadge {
+            center: [95.0, 75.0],
+            number: 2,
+            radius: 10.0,
+            fill: [220, 20, 60, 255],
+            text_color: [255, 255, 255, 255],
+        },
+        RasterOp::Text {
+            position: [38.0, 28.0],
+            content: "Hello\nClip".to_owned(),
+            font_size: 14.0,
+            color: [15, 15, 15, 255],
+        },
+        // Completely off-clip vector op must not leak or expand clip.
+        RasterOp::Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 14.0,
+            height: 10.0,
+            color: [255, 0, 255, 255],
+            stroke_width: 2.0,
+            fill: Some([255, 0, 255, 255]),
+        },
+    ]
+}
+
+#[test]
+fn measure_text_bounds_distinguishes_widths_multiline_cjk_and_rejects_blank() {
+    assert_eq!(measure_text_bounds([10.0, 20.0], "", 16.0), None);
+    assert_eq!(measure_text_bounds([10.0, 20.0], "   \n\t ", 16.0), None);
+    assert_eq!(measure_text_bounds([f32::NAN, 20.0], "abc", 16.0), None);
+    assert_eq!(
+        measure_text_bounds([10.0, 20.0], "abc", f32::INFINITY),
+        None
+    );
+
+    let narrow =
+        measure_text_bounds([12.0, 24.0], "iiii", 20.0).expect("narrow text should produce bounds");
+    let wide =
+        measure_text_bounds([12.0, 24.0], "WWWW", 20.0).expect("wide text should produce bounds");
+    assert!(
+        narrow[2] < wide[2],
+        "expected 'iiii' width ({}) < 'WWWW' width ({})",
+        narrow[2],
+        wide[2]
+    );
+
+    let single_line = measure_text_bounds([10.0, 15.0], "a", 18.0).expect("single line bounds");
+    let multi_line = measure_text_bounds([10.0, 15.0], "a\nb", 18.0).expect("multiline bounds");
+    assert!(
+        multi_line[3] > single_line[3],
+        "expected multiline height ({}) > single line height ({})",
+        multi_line[3],
+        single_line[3]
+    );
+
+    let cjk = measure_text_bounds([8.0, 16.0], "中文测试", 20.0).expect("CJK bounds");
+    let cjk_single = measure_text_bounds([8.0, 16.0], "中", 20.0).expect("single CJK bounds");
+    assert!(cjk[2] > cjk_single[2] && cjk[3] > 0.0);
+
+    // Deterministic sandbox fallback metrics behave identically regardless of system fonts.
+    let fb_narrow = fallback_text_bounds([12.0, 24.0], "iiii", 20.0);
+    let fb_wide = fallback_text_bounds([12.0, 24.0], "WWWW", 20.0);
+    assert!(fb_narrow[2] < fb_wide[2]);
+    let fb_multi = fallback_text_bounds([10.0, 15.0], "a\nb", 20.0);
+    let fb_trailing_nl = fallback_text_bounds([10.0, 15.0], "a\n", 20.0);
+    assert_eq!(fb_multi[3], 2.0 * 20.0 * 1.25);
+    assert_eq!(fb_trailing_nl[3], 2.0 * 20.0 * 1.25);
+    let fb_cjk = fallback_text_bounds([0.0, 0.0], "中文", 20.0);
+    assert_eq!(fb_cjk[2], 40.0);
+
+    // Dirty bounds expand measure_text_bounds by 4.0 on all sides.
+    let dirty = op_dirty_bounds(&RasterOp::Text {
+        position: [12.0, 24.0],
+        content: "WWWW".to_owned(),
+        font_size: 20.0,
+        color: [0, 0, 0, 255],
+    })
+    .expect("text dirty bounds");
+    assert_eq!(
+        dirty,
+        (
+            wide[0] - 4.0,
+            wide[1] - 4.0,
+            wide[0] + wide[2] + 4.0,
+            wide[1] + wide[3] + 4.0
+        )
+    );
+}
+
+#[test]
+fn composite_ops_clipped_matches_unclipped_inside_clip_and_preserves_outside() {
+    let original = textured_canvas(160, 120);
+    let ops = stacked_clip_ops();
+    let clip = PixelRect::new(30, 20, 80, 70);
+
+    let mut full = original.clone();
+    composite_ops(&mut full, &ops).expect("unclipped composite");
+
+    let mut clipped = original.clone();
+    composite_ops_clipped(&mut clipped, &ops, Some(clip)).expect("clipped composite");
+    assert_clipped_pixels_match(&full, &clipped, &original, clip);
+
+    let mut unclipped_via_none = original.clone();
+    composite_ops_clipped(&mut unclipped_via_none, &ops, None).expect("none clip composite");
+    assert_eq!(unclipped_via_none.as_raw(), full.as_raw());
+
+    let mut outside_clip = original.clone();
+    composite_ops_clipped(
+        &mut outside_clip,
+        &ops,
+        Some(PixelRect::new(500, 500, 20, 20)),
+    )
+    .expect("empty clamped clip should succeed");
+    assert_eq!(outside_clip.as_raw(), original.as_raw());
+}

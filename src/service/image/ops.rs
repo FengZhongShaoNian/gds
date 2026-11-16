@@ -128,54 +128,89 @@ pub fn apply_transform(source: &RgbaImage, spec: &TransformSpec) -> Result<RgbaI
 
 /// Pixelates `region` into solid `block_size`×`block_size` cells using alpha-weighted averaging.
 pub fn apply_mosaic(image: &mut RgbaImage, region: PixelRect, block_size: u32) {
+    apply_mosaic_clipped(image, region, block_size, None);
+}
+
+fn apply_mosaic_clipped(
+    image: &mut RgbaImage,
+    region: PixelRect,
+    block_size: u32,
+    clip: Option<PixelRect>,
+) {
     let Some(rect) = region.clamp_to(image.width(), image.height()) else {
         return;
     };
+    if let Some(clip_rect) = clip
+        && intersect_rect(rect, clip_rect).is_none()
+    {
+        return;
+    }
     let step = block_size.max(2);
     let mut by = rect.y;
     while by < rect.bottom() {
         let bh = (rect.bottom() - by).min(step);
+        if let Some(clip_rect) = clip
+            && (by + bh <= clip_rect.y || by >= clip_rect.bottom())
+        {
+            by += bh;
+            continue;
+        }
         let mut bx = rect.x;
         while bx < rect.right() {
             let bw = (rect.right() - bx).min(step);
-            let mut sum_ra = 0u64;
-            let mut sum_ga = 0u64;
-            let mut sum_ba = 0u64;
-            let mut sum_a = 0u64;
-            let mut count = 0u64;
-            for py in by..by + bh {
-                for px in bx..bx + bw {
-                    let [r, g, b, a] = image.get_pixel(px, py).0;
-                    let a_u64 = u64::from(a);
-                    sum_ra += u64::from(r) * a_u64;
-                    sum_ga += u64::from(g) * a_u64;
-                    sum_ba += u64::from(b) * a_u64;
-                    sum_a += a_u64;
-                    count += 1;
-                }
-            }
-            if count > 0 {
-                let avg = if sum_a == 0 {
-                    Rgba([0, 0, 0, 0])
-                } else {
-                    let half_a = sum_a / 2;
-                    let avg_a = (sum_a + count / 2).checked_div(count).unwrap_or(0).min(255) as u8;
-                    Rgba([
-                        ((sum_ra + half_a) / sum_a).min(255) as u8,
-                        ((sum_ga + half_a) / sum_a).min(255) as u8,
-                        ((sum_ba + half_a) / sum_a).min(255) as u8,
-                        avg_a,
-                    ])
+            let block = PixelRect::new(bx, by, bw, bh);
+            let write_rect = if let Some(clip_rect) = clip {
+                let Some(intersection) = intersect_rect(block, clip_rect) else {
+                    bx += bw;
+                    continue;
                 };
-                for py in by..by + bh {
-                    for px in bx..bx + bw {
-                        image.put_pixel(px, py, avg);
-                    }
-                }
-            }
+                intersection
+            } else {
+                block
+            };
+            let avg = average_mosaic_block(image, block);
+            fill_mosaic_block(image, write_rect, avg);
             bx += bw;
         }
         by += bh;
+    }
+}
+
+fn average_mosaic_block(image: &RgbaImage, block: PixelRect) -> Rgba<u8> {
+    let mut sum_ra = 0u64;
+    let mut sum_ga = 0u64;
+    let mut sum_ba = 0u64;
+    let mut sum_a = 0u64;
+    let mut count = 0u64;
+    for py in block.y..block.bottom() {
+        for px in block.x..block.right() {
+            let [r, g, b, a] = image.get_pixel(px, py).0;
+            let a_u64 = u64::from(a);
+            sum_ra += u64::from(r) * a_u64;
+            sum_ga += u64::from(g) * a_u64;
+            sum_ba += u64::from(b) * a_u64;
+            sum_a += a_u64;
+            count += 1;
+        }
+    }
+    if sum_a == 0 || count == 0 {
+        return Rgba([0, 0, 0, 0]);
+    }
+    let half_a = sum_a / 2;
+    let avg_a = (sum_a + count / 2).checked_div(count).unwrap_or(0).min(255) as u8;
+    Rgba([
+        ((sum_ra + half_a) / sum_a).min(255) as u8,
+        ((sum_ga + half_a) / sum_a).min(255) as u8,
+        ((sum_ba + half_a) / sum_a).min(255) as u8,
+        avg_a,
+    ])
+}
+
+fn fill_mosaic_block(image: &mut RgbaImage, rect: PixelRect, color: Rgba<u8>) {
+    for py in rect.y..rect.bottom() {
+        for px in rect.x..rect.right() {
+            image.put_pixel(px, py, color);
+        }
     }
 }
 
@@ -507,6 +542,19 @@ pub enum RasterOp {
 /// # Errors
 /// Returns [`Error::Svg`] or [`Error::TooLarge`] if vector overlay rasterization fails.
 pub fn composite_ops(canvas: &mut RgbaImage, ops: &[RasterOp]) -> Result<(), Error> {
+    composite_ops_clipped(canvas, ops, None)
+}
+
+/// Composites ordered redactions, vector shapes, and typography onto a canvas image,
+/// optionally restricting writes to `clip`.
+///
+/// # Errors
+/// Returns [`Error::Svg`] or [`Error::TooLarge`] if vector overlay rasterization fails.
+pub fn composite_ops_clipped(
+    canvas: &mut RgbaImage,
+    ops: &[RasterOp],
+    clip: Option<PixelRect>,
+) -> Result<(), Error> {
     if ops.is_empty() {
         return Ok(());
     }
@@ -515,26 +563,39 @@ pub fn composite_ops(canvas: &mut RgbaImage, ops: &[RasterOp]) -> Result<(), Err
     if width == 0 || height == 0 {
         return Ok(());
     }
+    let clip_rect = if let Some(raw) = clip {
+        let Some(clamped) = raw.clamp_to(width, height) else {
+            return Ok(());
+        };
+        Some(clamped)
+    } else {
+        None
+    };
 
     let mut svg_body = String::new();
     let mut dirty_bounds: Option<PixelRect> = None;
     for op in ops {
         match op {
             RasterOp::Mosaic { region, block_size } => {
-                flush_svg_overlay(canvas, &mut svg_body, &mut dirty_bounds)?;
-                apply_mosaic(canvas, *region, *block_size);
+                flush_svg_overlay(canvas, &mut svg_body, &mut dirty_bounds, clip_rect)?;
+                apply_mosaic_clipped(canvas, *region, *block_size, clip_rect);
             }
             RasterOp::GaussianBlur { region, radius } => {
-                flush_svg_overlay(canvas, &mut svg_body, &mut dirty_bounds)?;
-                apply_gaussian_blur(canvas, *region, *radius);
+                flush_svg_overlay(canvas, &mut svg_body, &mut dirty_bounds, clip_rect)?;
+                if let Some(target) = clip_target(*region, clip_rect) {
+                    apply_gaussian_blur(canvas, target, *radius);
+                }
             }
             RasterOp::SolidFill { region, color } => {
-                flush_svg_overlay(canvas, &mut svg_body, &mut dirty_bounds)?;
-                apply_solid_fill(canvas, *region, *color);
+                flush_svg_overlay(canvas, &mut svg_body, &mut dirty_bounds, clip_rect)?;
+                if let Some(target) = clip_target(*region, clip_rect) {
+                    apply_solid_fill(canvas, target, *color);
+                }
             }
             other => {
                 if let Some(op_box) = op_dirty_bounds(other)
                     .and_then(|bounds| clamp_f32_bounds(bounds, width, height))
+                    .and_then(|rect| clip_target(rect, clip_rect))
                 {
                     append_svg_op(&mut svg_body, other);
                     dirty_bounds = Some(match dirty_bounds {
@@ -545,16 +606,28 @@ pub fn composite_ops(canvas: &mut RgbaImage, ops: &[RasterOp]) -> Result<(), Err
             }
         }
     }
-    flush_svg_overlay(canvas, &mut svg_body, &mut dirty_bounds)?;
+    flush_svg_overlay(canvas, &mut svg_body, &mut dirty_bounds, clip_rect)?;
     Ok(())
+}
+
+fn clip_target(rect: PixelRect, clip: Option<PixelRect>) -> Option<PixelRect> {
+    match clip {
+        Some(clip_rect) => intersect_rect(rect, clip_rect),
+        None => Some(rect),
+    }
 }
 
 fn flush_svg_overlay(
     canvas: &mut RgbaImage,
     svg_body: &mut String,
     dirty_bounds: &mut Option<PixelRect>,
+    clip_rect: Option<PixelRect>,
 ) -> Result<(), Error> {
-    let Some(rect) = dirty_bounds.take() else {
+    let Some(raw_rect) = dirty_bounds.take() else {
+        svg_body.clear();
+        return Ok(());
+    };
+    let Some(rect) = clip_target(raw_rect, clip_rect) else {
         svg_body.clear();
         return Ok(());
     };
@@ -725,28 +798,69 @@ fn op_dirty_bounds(op: &RasterOp) -> Option<(f32, f32, f32, f32)> {
             font_size,
             ..
         } => {
-            if content.trim().is_empty() || !finite_slice(&[position[0], position[1], *font_size]) {
-                return None;
-            }
-            let size = font_size.max(8.0);
-            let line_count = content.lines().count().max(1);
-            let max_chars = content
-                .lines()
-                .map(|line| line.chars().count())
-                .max()
-                .unwrap_or(0);
-            let text_w = (max_chars as f32) * size * 1.4 + size * 4.0;
-            Some((
-                position[0] - size * 0.5,
-                position[1] - size * 0.5,
-                position[0] + text_w,
-                position[1] + (line_count as f32 * 1.35 + 0.75) * size,
-            ))
+            let [x, y, w, h] = measure_text_bounds(*position, content, *font_size)?;
+            Some((x - 4.0, y - 4.0, x + w + 4.0, y + h + 4.0))
         }
         RasterOp::Mosaic { .. } | RasterOp::GaussianBlur { .. } | RasterOp::SolidFill { .. } => {
             None
         }
     }
+}
+
+/// Measures the tight SVG layout bounds `[x, y, width, height]` for [`RasterOp::Text`].
+///
+/// Uses `usvg::Tree` font layout without allocating a pixel surface, falling back to
+/// deterministic proportional metrics when no system fonts are available.
+pub fn measure_text_bounds(position: [f32; 2], content: &str, font_size: f32) -> Option<[f32; 4]> {
+    if content.trim().is_empty() || !finite_slice(&[position[0], position[1], font_size]) {
+        return None;
+    }
+    let mut body = String::new();
+    write_text_svg_elements(&mut body, [0.0, 0.0], content, font_size, [0, 0, 0, 255]);
+    let svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"8192\" height=\"8192\">{body}</svg>"
+    );
+    let options = usvg::Options {
+        fontdb: system_fonts(),
+        ..Default::default()
+    };
+    if let Ok(tree) = usvg::Tree::from_data(svg.as_bytes(), &options) {
+        let bbox = tree.root().bounding_box();
+        if !tree.root().children().is_empty() && bbox.width() > 0.5 && bbox.height() > 0.5 {
+            return Some([
+                position[0] + bbox.left(),
+                position[1] + bbox.top(),
+                bbox.width(),
+                bbox.height(),
+            ]);
+        }
+    }
+    Some(fallback_text_bounds(position, content, font_size))
+}
+
+fn fallback_text_bounds(position: [f32; 2], content: &str, font_size: f32) -> [f32; 4] {
+    let size = font_size.max(8.0);
+    let mut line_count = 0usize;
+    let mut max_width = 0.0f32;
+    for line in content.split('\n') {
+        line_count += 1;
+        let line_width: f32 = line
+            .chars()
+            .filter(|&ch| is_xml10_char(ch))
+            .map(|ch| match ch {
+                'i' | 'l' | '1' | '.' | ',' | ':' | ';' | '!' | '|' | '\'' => 0.32 * size,
+                'W' | 'M' | '@' | '%' => 0.84 * size,
+                ' ' => 0.30 * size,
+                _ if ch.is_ascii() => 0.56 * size,
+                _ => 1.0 * size,
+            })
+            .sum();
+        max_width = max_width.max(line_width);
+    }
+    let width = max_width.max(size * 0.5);
+    let top = position[1] + size * 0.15;
+    let height = (line_count.max(1) as f32) * size * 1.25;
+    [position[0], top, width, height]
 }
 
 fn clamp_f32_bounds(
@@ -771,6 +885,16 @@ fn union_rect(a: PixelRect, b: PixelRect) -> PixelRect {
     let x1 = a.right().max(b.right());
     let y1 = a.bottom().max(b.bottom());
     PixelRect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+fn intersect_rect(a: PixelRect, b: PixelRect) -> Option<PixelRect> {
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = a.right().min(b.right());
+    let y1 = a.bottom().min(b.bottom());
+    let width = x1.saturating_sub(x0);
+    let height = y1.saturating_sub(y0);
+    (width > 0 && height > 0).then_some(PixelRect::new(x0, y0, width, height))
 }
 
 fn finite_slice(values: &[f32]) -> bool {
@@ -976,23 +1100,33 @@ fn append_svg_op(out: &mut String, op: &RasterOp) {
             font_size,
             color,
         } => {
-            if content.trim().is_empty() || !finite_slice(&[position[0], position[1], *font_size]) {
-                return;
-            }
-            let size = font_size.max(8.0);
-            let hex = svg_hex(*color);
-            let alpha = f32::from(color[3]) / 255.0;
-            for (line_idx, line) in content.lines().enumerate() {
-                let y = position[1] + size + (line_idx as f32) * size * 1.25;
-                let escaped = escape_xml(line);
-                let _ = write!(
-                    out,
-                    "<text x=\"{}\" y=\"{y}\" font-size=\"{size}\" font-family=\"sans-serif\" fill=\"{hex}\" fill-opacity=\"{alpha:.3}\">{escaped}</text>",
-                    position[0]
-                );
-            }
+            write_text_svg_elements(out, *position, content, *font_size, *color);
         }
         RasterOp::Mosaic { .. } | RasterOp::GaussianBlur { .. } | RasterOp::SolidFill { .. } => {}
+    }
+}
+
+fn write_text_svg_elements(
+    out: &mut String,
+    position: [f32; 2],
+    content: &str,
+    font_size: f32,
+    color: [u8; 4],
+) {
+    if content.trim().is_empty() || !finite_slice(&[position[0], position[1], font_size]) {
+        return;
+    }
+    let size = font_size.max(8.0);
+    let hex = svg_hex(color);
+    let alpha = f32::from(color[3]) / 255.0;
+    for (line_idx, line) in content.split('\n').enumerate() {
+        let y = position[1] + size + (line_idx as f32) * size * 1.25;
+        let escaped = escape_xml(line);
+        let _ = write!(
+            out,
+            "<text x=\"{}\" y=\"{y}\" font-size=\"{size}\" font-family=\"sans-serif\" fill=\"{hex}\" fill-opacity=\"{alpha:.3}\">{escaped}</text>",
+            position[0]
+        );
     }
 }
 

@@ -595,8 +595,10 @@ pub fn composite_ops_clipped(
             other => {
                 if let Some(op_box) = op_dirty_bounds(other)
                     .and_then(|bounds| clamp_f32_bounds(bounds, width, height))
-                    .and_then(|rect| clip_target(rect, clip_rect))
                 {
+                    if clip_rect.is_some_and(|clip_r| intersect_rect(op_box, clip_r).is_none()) {
+                        continue;
+                    }
                     append_svg_op(&mut svg_body, other);
                     dirty_bounds = Some(match dirty_bounds {
                         Some(existing) => union_rect(existing, op_box),
@@ -623,11 +625,11 @@ fn flush_svg_overlay(
     dirty_bounds: &mut Option<PixelRect>,
     clip_rect: Option<PixelRect>,
 ) -> Result<(), Error> {
-    let Some(raw_rect) = dirty_bounds.take() else {
+    let Some(render_rect) = dirty_bounds.take() else {
         svg_body.clear();
         return Ok(());
     };
-    let Some(rect) = clip_target(raw_rect, clip_rect) else {
+    let Some(blit_rect) = clip_target(render_rect, clip_rect) else {
         svg_body.clear();
         return Ok(());
     };
@@ -637,7 +639,12 @@ fn flush_svg_overlay(
 
     let svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"{} {} {} {}\">{svg_body}</svg>",
-        rect.width, rect.height, rect.x, rect.y, rect.width, rect.height
+        render_rect.width,
+        render_rect.height,
+        render_rect.x,
+        render_rect.y,
+        render_rect.width,
+        render_rect.height
     );
     svg_body.clear();
 
@@ -646,12 +653,13 @@ fn flush_svg_overlay(
         ..Default::default()
     };
     let tree = usvg::Tree::from_data(svg.as_bytes(), &options)?;
-    let mut pixmap = tiny_skia::Pixmap::new(rect.width, rect.height).ok_or(Error::TooLarge {
-        limit_bytes: u64::from(u32::MAX),
-        actual_bytes: u64::from(rect.width)
-            .saturating_mul(u64::from(rect.height))
-            .saturating_mul(4),
-    })?;
+    let mut pixmap =
+        tiny_skia::Pixmap::new(render_rect.width, render_rect.height).ok_or(Error::TooLarge {
+            limit_bytes: u64::from(u32::MAX),
+            actual_bytes: u64::from(render_rect.width)
+                .saturating_mul(u64::from(render_rect.height))
+                .saturating_mul(4),
+        })?;
     resvg::render(
         &tree,
         tiny_skia::Transform::identity(),
@@ -662,11 +670,15 @@ fn flush_svg_overlay(
     let canvas_w = canvas.width() as usize;
     let dst: &mut [u8] = canvas.as_mut();
     let pixels = pixmap.pixels();
-    let rw = rect.width as usize;
+    let pixmap_w = render_rect.width as usize;
+    let x_off = (blit_rect.x - render_rect.x) as usize;
+    let y_off = (blit_rect.y - render_rect.y) as usize;
+    let blit_w = blit_rect.width as usize;
 
-    for row in 0..rect.height as usize {
-        let src_row = &pixels[row * rw..(row + 1) * rw];
-        let dst_row_start = ((rect.y as usize + row) * canvas_w + rect.x as usize) * 4;
+    for row in 0..blit_rect.height as usize {
+        let src_row_start = (y_off + row) * pixmap_w + x_off;
+        let src_row = &pixels[src_row_start..src_row_start + blit_w];
+        let dst_row_start = ((blit_rect.y as usize + row) * canvas_w + blit_rect.x as usize) * 4;
         for (col, src) in src_row.iter().enumerate() {
             let sa = src.alpha();
             if sa == 0 {

@@ -405,3 +405,44 @@ fn composite_ops_clipped_matches_unclipped_inside_clip_and_preserves_outside() {
     .expect("empty clamped clip should succeed");
     assert_eq!(outside_clip.as_raw(), original.as_raw());
 }
+
+fn verify_slice_clip(base: &RgbaImage, full: &RgbaImage, ops: &[RasterOp], clip: PixelRect) {
+    let mut clipped = base.clone();
+    composite_ops_clipped(&mut clipped, ops, Some(clip)).expect("slice clip composite");
+    assert_clipped_pixels_match(full, &clipped, base, clip);
+}
+
+#[test]
+fn composite_ops_clipped_matches_unclipped_on_sliced_curves_and_text() {
+    let base = textured_canvas(200, 140);
+    let ops = vec![
+        RasterOp::Ellipse {
+            x: 20.0,
+            y: 20.0,
+            width: 80.0,
+            height: 60.0,
+            color: [220, 40, 40, 255],
+            stroke_width: 3.0,
+            fill: None,
+        },
+        RasterOp::Line {
+            start: [15.0, 95.0],
+            end: [145.0, 35.0],
+            color: [30, 160, 230, 255],
+            stroke_width: 3.5,
+        },
+        RasterOp::Text {
+            position: [50.0, 50.0],
+            content: "iiii vs WWWW\n中文多行标注".to_owned(),
+            font_size: 20.0,
+            color: [10, 10, 10, 255],
+        },
+    ];
+    let mut full = base.clone();
+    composite_ops(&mut full, &ops).expect("full vector composite");
+
+    // 1px vertical strip slicing diagonally across Line, Ellipse arc, and Text glyphs.
+    verify_slice_clip(&base, &full, &ops, PixelRect::new(63, 20, 1, 80));
+    // Sub-region slicing across curved Ellipse edge, diagonal Line, and mid-glyph Text.
+    verify_slice_clip(&base, &full, &ops, PixelRect::new(60, 45, 45, 35));
+}

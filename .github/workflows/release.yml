@@ -297,7 +297,23 @@ jobs:
         run: |
           python3 ../scripts/generate-release-manifest.py --tag "$RELEASE_TAG" --dir .
           cp ../scripts/install.sh ./install.sh
-          gh release upload "$RELEASE_TAG" --clobber -- ./*.pkg.tar.zst ./*.deb ./*.rpm ./MANIFEST ./SHA256SUMS
+          # GitHub normalizes '~' in asset names; keep package versions and CDN filenames intact.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("MANIFEST").read_text()
+          sums = Path("SHA256SUMS").read_text()
+          for line in sums.splitlines():
+              _, filename = line.split("  ", 1)
+              github_name = filename.replace("~", ".")
+              manifest = manifest.replace(filename, github_name)
+              sums = sums.replace(filename, github_name)
+          output = Path("../github-metadata")
+          output.mkdir(exist_ok=True)
+          (output / "MANIFEST").write_text(manifest)
+          (output / "SHA256SUMS").write_text(sums)
+          PY
+          gh release upload "$RELEASE_TAG" --clobber -- ./*.pkg.tar.zst ./*.deb ./*.rpm ../github-metadata/MANIFEST ../github-metadata/SHA256SUMS
       - name: Upload immutable release assets to Cloudflare R2 and flip channel
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

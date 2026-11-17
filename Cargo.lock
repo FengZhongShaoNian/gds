@@ -3351,7 +3351,7 @@ dependencies = [
 
 [[package]]
 name = "gds"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "agent-client-protocol",
  "alacritty_terminal",

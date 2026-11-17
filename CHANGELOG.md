@@ -2,6 +2,16 @@
 
 All notable changes to officially released GDS packages (**GDS Files** and **GDS Portal**) are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.5] - 2026-11-17
+
+### Changed
+
+- **GDS Files cold-start performance**: Significantly reduced startup overhead with targeted Wayland Vulkan initialization and cached Fontconfig font matching.
+
+### Fixed
+
+- Fixed fatal panics in GDS Files caused by re-entrant UI entity borrows, including table selection and navigation callbacks.
+
 ## [0.0.4] - 2026-11-15
 
 ### Fixed
@@ -71,6 +81,7 @@ All notable changes to officially released GDS packages (**GDS Files** and **GDS
   - Shared visual language supporting System (DMS, KDE Plasma, GNOME) and 6 built-in light/dark palettes, configurable surface opacity, rounded corners, interface motion controls, and English / Simplified Chinese localization.
   - Native packaging for Nix / NixOS, Fedora RPM, Debian / Ubuntu DEB, and Arch Linux.
 
+[0.0.5]: https://github.com/GanDesktop/gds/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/GanDesktop/gds/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/GanDesktop/gds/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/GanDesktop/gds/compare/v0.0.1...v0.0.2

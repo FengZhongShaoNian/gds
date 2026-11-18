@@ -1,23 +1,36 @@
-#![allow(dead_code)]
 //! Bounded, viewport-prioritized secondary metadata with tab-scoped cancellation.
 
 use std::{
     collections::{HashSet, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use gds::service::task_manager::Owner as TaskOwner;
+use tokio::sync::mpsc;
 use zgui::geom::Point;
+use zgui::prelude::*;
+use zgui::reactive::spawn_local;
 
-use super::ui::Browser;
-use crate::entities::file::directory::{self, EnrichmentNeed, Entry};
+use super::{
+    geometry::{Grid, virtual_row_height},
+    model::{Contents, Row, Tab},
+    ui::Browser,
+};
+use crate::entities::file::{
+    ViewMode,
+    columns::Column,
+    directory::{self, EnrichmentNeed, Entry},
+    sorting,
+};
 
 pub(super) enum Enrichment {
     Running {
         revision: u64,
         need: EnrichmentNeed,
         _work: TaskOwner,
+        #[allow(dead_code)]
         queue: Arc<Mutex<EnrichQueue>>,
     },
     Complete {
@@ -53,6 +66,7 @@ pub(super) struct EnrichQueue {
     backlog: VecDeque<Entry>,
     /// Paths already popped by [`Self::pop_batch`] and handed to worker tasks.
     dispatched: HashSet<PathBuf>,
+    #[allow(dead_code)]
     priority_limit: usize,
     batch_size: usize,
 }
@@ -124,6 +138,7 @@ impl EnrichQueue {
         self.priority.is_empty() && self.backlog.is_empty()
     }
 
+    #[allow(dead_code)]
     fn prioritize_viewport(&mut self, rows: &[Entry], need: EnrichmentNeed) {
         let cap = self.priority_limit.max(rows.len());
         for entry in rows.iter().rev() {
@@ -181,112 +196,467 @@ impl EnrichQueue {
     }
 }
 
-impl Browser {
-    pub(super) fn enrich_directory(&self, _id: u64) {}
+#[cfg(test)]
+mod tests;
 
-    pub(super) fn viewport_changed(&self, _position: Point<zgui::geom::CssPx, zgui::geom::Css>) {}
+enum EnrichMessage {
+    Batch {
+        updates: Vec<Entry>,
+        reorder_relevant: bool,
+    },
+    Done {
+        revision: u64,
+        need: EnrichmentNeed,
+    },
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{ffi::OsString, path::PathBuf};
+struct EnrichPlan {
+    revision: u64,
+    need: EnrichmentNeed,
+    queue: Arc<Mutex<EnrichQueue>>,
+    max_concurrent_batches: usize,
+    child_count_limit: u32,
+    coalesce_ms: u64,
+    reorder_coalesce_ms: u64,
+    coalesce_max_updates: usize,
+    sort_depends_on_metadata: bool,
+}
 
-    use super::{EnrichQueue, EnrichmentNeed, Entry, directory};
+impl Browser {
+    pub(super) fn enrich_directory(&self, id: u64) {
+        let initial_scroll = self.current_scroll_top_css(id);
+        self.start_enrichment(id, initial_scroll, false);
+    }
 
-    fn unprobed_dir_snapshot(count: usize) -> directory::DirectorySnapshot {
-        let entries: Vec<Entry> = (0..count)
-            .map(|index| {
-                let name = format!("dir-{index:04}");
-                Entry::new(
-                    PathBuf::from(format!("/tmp/{name}")),
-                    OsString::from(&name),
-                    directory::EntryKind::Directory,
-                    None,
-                    None,
-                    directory::EntryDetails::default(),
-                )
-            })
-            .collect();
-        directory::DirectorySnapshot {
-            path: PathBuf::from("/tmp"),
-            entries: entries.into(),
-            warnings: Vec::new(),
-            options: directory::ReadOptions::default(),
+    #[allow(dead_code)]
+    pub(super) fn viewport_changed(&self, position: Point<zgui::geom::CssPx, zgui::geom::Css>) {
+        let top = position.y.0.max(0.0);
+        let grid = self.grid_geometry();
+        let row_h = self.row_height();
+        let scale = self.0.list.scale().max(1.0);
+        let viewport_h = self.viewport_height_css();
+        let details_open = self.0.details.get_untracked();
+        let probe_budget = self.0.preferences.snapshot().files.probe_budget;
+        enum Action {
+            None,
+            StartViewportOnly(u64),
+            StartFull(u64),
+        }
+        let action = {
+            let mut state = self.0.state.borrow_mut();
+            let has_picker_filter = state
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.projection().narrows());
+            let active = state.active;
+            let Some(tab) = state.tabs.get_mut(active) else {
+                return;
+            };
+            tab.navigation.view_mut().scroll = top;
+            if !matches!(tab.contents, Contents::Directory) {
+                return;
+            }
+            let revision = tab.navigation.revision();
+            let visible = viewport_entries_from(tab, &grid, scale, row_h, viewport_h, top);
+            if visible.is_empty() {
+                return;
+            }
+            let (need, _) = enrichment_need_of(tab, probe_budget, details_open, has_picker_filter);
+            if need.is_empty() {
+                return;
+            }
+            match tab.enrichment.as_ref() {
+                Some(Enrichment::Running {
+                    revision: current,
+                    need: covered,
+                    queue,
+                    ..
+                }) if *current == revision && need.is_satisfied_by(*covered) => {
+                    if let Ok(mut queue) = queue.lock() {
+                        queue.prioritize_viewport(&visible, *covered);
+                    }
+                    Action::None
+                }
+                Some(Enrichment::Running { .. }) => Action::StartFull(tab.id),
+                Some(Enrichment::Complete {
+                    revision: current,
+                    need: covered,
+                }) if *current == revision && need.is_satisfied_by(*covered) => {
+                    if visible.iter().any(|entry| entry.needs_enrichment(need)) {
+                        Action::StartViewportOnly(tab.id)
+                    } else {
+                        Action::None
+                    }
+                }
+                _ => Action::StartFull(tab.id),
+            }
+        };
+        match action {
+            Action::None => {}
+            Action::StartViewportOnly(id) => self.start_enrichment(id, top, true),
+            Action::StartFull(id) => self.start_enrichment(id, top, false),
         }
     }
 
-    #[test]
-    fn prioritize_viewport_sheds_transient_scroll_items_under_bounded_budget() {
-        let snapshot = unprobed_dir_snapshot(300);
-        let need = EnrichmentNeed {
-            children: true,
-            budget: directory::ProbeBudget::Bounded(0),
-            ..Default::default()
-        };
-        let custom_limit = 64usize;
-        let mut queue = EnrichQueue::new(
-            &snapshot,
-            &[],
-            need,
-            custom_limit,
-            directory::DEFAULT_BATCH_SIZE,
-        );
-        assert!(queue.is_empty());
-
-        // Simulate rapid scrolling across 10 viewports (200 entries total).
-        for step in 0..10 {
-            let start = step * 20;
-            queue.prioritize_viewport(&snapshot.entries[start..start + 20], need);
+    fn current_scroll_top_css(&self, id: u64) -> f32 {
+        let is_active =
+            self.read(|state| state.tabs.get(state.active).is_some_and(|tab| tab.id == id));
+        if is_active {
+            let scale = self.0.list.scale().max(1.0);
+            let offset = self.0.list.scroll_offset().y.0 / scale;
+            if offset > 0.0 {
+                return offset;
+            }
         }
-
-        let mut popped = Vec::new();
-        while let Some(batch) = queue.pop_batch() {
-            assert!(batch.is_viewport);
-            popped.extend(batch.entries);
-        }
-        assert_eq!(popped.len(), custom_limit);
-        // Most recent viewport (180..200) is popped first; earliest scrolled-past items (0..20) were shed.
-        assert_eq!(popped[0].path, snapshot.entries[180].path);
-        assert!(
-            !popped
+        self.read(|state| {
+            state
+                .tabs
                 .iter()
-                .any(|entry| entry.path == snapshot.entries[0].path)
-        );
-
-        // Revisiting an earlier shed viewport later can still enqueue and probe it cleanly.
-        queue.prioritize_viewport(&snapshot.entries[0..10], need);
-        let revisited = queue.pop_batch().expect("revisited viewport batch");
-        assert_eq!(revisited.entries.len(), 10);
-        assert_eq!(revisited.entries[0].path, snapshot.entries[0].path);
+                .find(|tab| tab.id == id)
+                .map_or(0.0, |tab| tab.navigation.view().scroll.max(0.0))
+        })
     }
 
-    #[test]
-    fn prioritize_viewport_retains_overflow_in_backlog_under_full_budget() {
-        let snapshot = unprobed_dir_snapshot(200);
-        let need = EnrichmentNeed {
-            children: true,
-            budget: directory::ProbeBudget::Full,
-            ..Default::default()
+    fn viewport_height_css(&self) -> f32 {
+        let scale = self.0.list.scale().max(1.0);
+        (self.0.list.scroll_position().scrollport.height.0 / scale).max(400.0)
+    }
+
+    fn start_enrichment(&self, id: u64, scroll_top_css: f32, viewport_only: bool) {
+        let grid = self.grid_geometry();
+        let row_h = self.row_height();
+        let scale = self.0.list.scale().max(1.0);
+        let viewport_h = self.viewport_height_css();
+        let details_open = self.0.details.get_untracked();
+        let files_prefs = self.0.preferences.snapshot().files;
+        let probe_budget = files_prefs.probe_budget;
+        let prefs = files_prefs.enrichment;
+        let plan = {
+            let mut state = self.0.state.borrow_mut();
+            let has_picker_filter = state
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.projection().narrows());
+            let Some(tab) = state.tab_by_id(id) else {
+                return;
+            };
+            if !matches!(tab.contents, Contents::Directory) {
+                tab.enrichment = None;
+                return;
+            }
+            let Some(snapshot) = tab.navigation.directory_arc() else {
+                tab.enrichment = None;
+                return;
+            };
+            let revision = tab.navigation.revision();
+            let (mut need, sort_depends_on_metadata) =
+                enrichment_need_of(tab, probe_budget, details_open, has_picker_filter);
+            if viewport_only {
+                need.budget = directory::ProbeBudget::Bounded(0);
+            }
+            if need.is_empty() {
+                tab.enrichment = Some(Enrichment::Complete { revision, need });
+                return;
+            }
+            if !viewport_only
+                && let Some(covered) = tab.enrichment.as_ref().and_then(|e| e.coverage(revision))
+                && need.is_satisfied_by(covered)
+            {
+                return;
+            }
+            let priority_paths: Vec<PathBuf> =
+                viewport_entries_from(tab, &grid, scale, row_h, viewport_h, scroll_top_css)
+                    .into_iter()
+                    .map(|entry| entry.path.clone())
+                    .collect();
+            let queue = EnrichQueue::new(
+                &snapshot,
+                &priority_paths,
+                need,
+                prefs.priority_limit,
+                prefs.batch_size,
+            );
+            if queue.is_empty() {
+                tab.enrichment = Some(Enrichment::Complete { revision, need });
+                return;
+            }
+            let work = self.0.tasks.named_child("Enrich directory metadata");
+            let queue = Arc::new(Mutex::new(queue));
+            let plan = EnrichPlan {
+                revision,
+                need,
+                queue: Arc::clone(&queue),
+                max_concurrent_batches: prefs.max_concurrent_batches,
+                child_count_limit: prefs.child_count_limit,
+                coalesce_ms: prefs.coalesce_ms,
+                reorder_coalesce_ms: prefs.reorder_coalesce_ms,
+                coalesce_max_updates: prefs.coalesce_max_updates,
+                sort_depends_on_metadata,
+            };
+            tab.enrichment = Some(Enrichment::Running {
+                revision,
+                need,
+                _work: work,
+                queue,
+            });
+            plan
         };
-        let mut queue = EnrichQueue::new(
-            &snapshot,
-            &[],
-            need,
-            directory::DEFAULT_PRIORITY_LIMIT,
-            directory::DEFAULT_BATCH_SIZE,
+
+        let (work_scope, cancel) = {
+            let state = self.0.state.borrow();
+            let Some(tab) = state.tabs.iter().find(|tab| tab.id == id) else {
+                return;
+            };
+            let Some(Enrichment::Running { _work, .. }) = tab.enrichment.as_ref() else {
+                return;
+            };
+            ((**_work).clone(), _work.token())
+        };
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let worker_scope = work_scope.clone();
+        drop(
+            work_scope.spawn_named("Directory metadata enrichment", async move {
+                let max_concurrent = plan.max_concurrent_batches.max(1);
+                let child_limit = plan.child_count_limit.max(1);
+                let max_coalesce = plan.coalesce_max_updates.max(1);
+                let coalesce_wait = Duration::from_millis(if plan.sort_depends_on_metadata {
+                    plan.reorder_coalesce_ms
+                } else {
+                    plan.coalesce_ms
+                });
+
+                loop {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+                    let mut batches = Vec::with_capacity(max_concurrent);
+                    if let Ok(mut guard) = plan.queue.lock() {
+                        while batches.len() < max_concurrent {
+                            let Some(batch) = guard.pop_batch() else {
+                                break;
+                            };
+                            batches.push(batch);
+                        }
+                    }
+                    if batches.is_empty() {
+                        let _ = tx.send(EnrichMessage::Done {
+                            revision: plan.revision,
+                            need: plan.need,
+                        });
+                        return;
+                    }
+
+                    let mut handles = Vec::with_capacity(batches.len());
+                    for batch in batches {
+                        let batch_cancel = cancel.clone();
+                        let need = plan.need;
+                        let is_viewport = batch.is_viewport;
+                        let task = worker_scope.spawn_blocking_named(
+                            "Probe directory entry metadata",
+                            move || {
+                                directory::probe_batch_with_limit(
+                                    &batch.entries,
+                                    need,
+                                    child_limit,
+                                    &batch_cancel,
+                                )
+                            },
+                        );
+                        handles.push((task, is_viewport));
+                    }
+
+                    let mut merged = Vec::new();
+                    let mut had_viewport = false;
+                    for (handle, is_viewport) in handles {
+                        if cancel.is_cancelled() {
+                            return;
+                        }
+                        if let Ok(Ok(entries)) = handle.await {
+                            merged.extend(entries);
+                            had_viewport |= is_viewport;
+                        }
+                    }
+                    if !merged.is_empty()
+                        && merged.len() < max_coalesce
+                        && !had_viewport
+                        && !coalesce_wait.is_zero()
+                    {
+                        tokio::select! {
+                            () = cancel.cancelled() => return,
+                            () = tokio::time::sleep(coalesce_wait) => {}
+                        }
+                        while merged.len() < max_coalesce {
+                            let next_batch = plan
+                                .queue
+                                .lock()
+                                .ok()
+                                .and_then(|mut guard| guard.pop_batch());
+                            let Some(batch) = next_batch else {
+                                break;
+                            };
+                            let batch_cancel = cancel.clone();
+                            let need = plan.need;
+                            let extra = worker_scope
+                                .spawn_blocking_named("Probe coalesced metadata batch", move || {
+                                    directory::probe_batch_with_limit(
+                                        &batch.entries,
+                                        need,
+                                        child_limit,
+                                        &batch_cancel,
+                                    )
+                                })
+                                .await;
+                            if let Ok(Ok(entries)) = extra {
+                                merged.extend(entries);
+                            }
+                            if cancel.is_cancelled() {
+                                return;
+                            }
+                        }
+                    }
+                    if !merged.is_empty()
+                        && tx
+                            .send(EnrichMessage::Batch {
+                                updates: merged,
+                                reorder_relevant: plan.sort_depends_on_metadata,
+                            })
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+            }),
         );
 
-        for step in 0..10 {
-            let start = step * 20;
-            queue.prioritize_viewport(&snapshot.entries[start..start + 20], need);
-        }
-
-        let mut popped = Vec::new();
-        while let Some(batch) = queue.pop_batch() {
-            popped.extend(batch.entries);
-        }
-        // Every unique entry is dispatched exactly once under Full budget.
-        assert_eq!(popped.len(), 200);
-        assert_eq!(popped[0].path, snapshot.entries[180].path);
+        let weak = self.downgrade();
+        let revision = plan.revision;
+        self.0.owner.with(|| {
+            drop(spawn_local(async move {
+                while let Some(msg) = rx.recv().await {
+                    let Some(browser) = weak.upgrade() else {
+                        break;
+                    };
+                    match msg {
+                        EnrichMessage::Batch {
+                            updates,
+                            reorder_relevant,
+                        } => {
+                            let mut should_reproject = false;
+                            let mut changed_rows = false;
+                            {
+                                let mut state = browser.0.state.borrow_mut();
+                                let Some(tab) = state.tab_by_id(id) else {
+                                    break;
+                                };
+                                if !matches!(tab.contents, Contents::Directory)
+                                    || tab.navigation.revision() != revision
+                                {
+                                    break;
+                                }
+                                let merged =
+                                    tab.navigation.mutate_directory(revision, |snapshot| {
+                                        directory::merge_enriched_in_place(snapshot, &updates)
+                                    });
+                                if let Some(Some(visible_changed)) = merged {
+                                    changed_rows = visible_changed;
+                                    should_reproject = reorder_relevant || visible_changed;
+                                }
+                            }
+                            if should_reproject {
+                                browser.reproject(id);
+                            } else if changed_rows {
+                                browser.changed();
+                            }
+                        }
+                        EnrichMessage::Done { revision, need } => {
+                            let mut state = browser.0.state.borrow_mut();
+                            let Some(tab) = state.tab_by_id(id) else {
+                                break;
+                            };
+                            if matches!(
+                                tab.enrichment,
+                                Some(Enrichment::Running {
+                                    revision: current, ..
+                                }) if current == revision
+                            ) {
+                                tab.enrichment = Some(Enrichment::Complete { revision, need });
+                            }
+                            break;
+                        }
+                    }
+                }
+            }));
+        });
     }
+}
+
+fn viewport_entries_from(
+    tab: &Tab,
+    grid: &Grid,
+    scale: f32,
+    row_h: f32,
+    viewport_h: f32,
+    top_css: f32,
+) -> Vec<Entry> {
+    if tab.rows.is_empty() {
+        return Vec::new();
+    }
+    let top = top_css.max(0.0);
+    let bottom = top + viewport_h.max(1.0);
+    let range = match tab.mode {
+        ViewMode::Grid => {
+            let height = virtual_row_height(grid.row_height, scale).max(1.0);
+            let first = (top / height).floor() as usize * grid.columns;
+            let end = (bottom / height).ceil() as usize * grid.columns;
+            first.min(tab.rows.len())..end.min(tab.rows.len())
+        }
+        ViewMode::List => {
+            let row_h = row_h.max(1.0);
+            let first = (top / row_h).floor().max(0.0) as usize;
+            let last = ((bottom / row_h).ceil().max(0.0) as usize).min(tab.rows.len());
+            first.min(last)..last
+        }
+    };
+    tab.rows[range]
+        .iter()
+        .filter_map(|row| match row {
+            Row::File(entry) => Some(entry.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn enrichment_need_of(
+    tab: &Tab,
+    probe_budget: usize,
+    details_open: bool,
+    has_picker_filter: bool,
+) -> (EnrichmentNeed, bool) {
+    let children = (tab.mode == ViewMode::List && tab.columns.contains(Column::Size))
+        || tab.sort.key == sorting::Key::Size;
+    let content = (tab.mode == ViewMode::List
+        && (tab.columns.contains(Column::Type) || tab.columns.contains(Column::DetailedType)))
+        || matches!(
+            tab.sort.key,
+            sorting::Key::Type | sorting::Key::DetailedType
+        )
+        || details_open
+        || has_picker_filter;
+    let symlinks = content || (tab.mode == ViewMode::List && tab.columns.contains(Column::Type));
+    let sort_depends_on_metadata = matches!(
+        tab.sort.key,
+        sorting::Key::Type | sorting::Key::DetailedType | sorting::Key::Size
+    );
+    let need = EnrichmentNeed {
+        children,
+        content,
+        symlinks,
+        budget: if sort_depends_on_metadata || has_picker_filter {
+            directory::ProbeBudget::Full
+        } else {
+            directory::ProbeBudget::Bounded(probe_budget)
+        },
+    };
+    (need, sort_depends_on_metadata)
 }

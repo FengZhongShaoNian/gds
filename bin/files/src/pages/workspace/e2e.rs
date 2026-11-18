@@ -548,7 +548,7 @@ mod driven {
 
         let handler = app()
             .with_title("Files")
-            .with_application_id("dev.gds.Files")
+            .with_application_id("io.github.GanDesktop.GdsFiles")
             .with_size(WINDOW_WIDTH, WINDOW_HEIGHT)
             .with_renderer(Box::new(move |_surface, target| {
                 let mut renderer = CaptureRenderer::with_state(Rc::clone(&capture_for_renderer));

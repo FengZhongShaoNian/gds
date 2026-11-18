@@ -21,7 +21,7 @@ use gds::ui::terminal::{Event as TerminalEvent, Terminal, TerminalViewProps};
 use gds::ui::{IconButtonProps, IconName, IconProps};
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, Signal, on_cleanup_local, spawn_local};
-use zgui::view::{current_host, install_stylesheet};
+use zgui::view::{FrameHandle, current_host, install_stylesheet, request_frame};
 use zgui::vocab::{Key, KeyEvent, KeyLocation, Modifiers, NamedKey, PhysicalKey, Role};
 use zgui::{css, view};
 use zgui_ui::{ButtonProps, InputProps};
@@ -223,10 +223,19 @@ struct SessionEntry {
     renaming: RwSignal<bool, LocalStorage>,
     rename_draft: RwSignal<String, LocalStorage>,
     rename_ref: NodeRef,
+    pending_rename_focus: Rc<RefCell<Option<FrameHandle>>>,
     last_synced_dir: RefCell<Option<PathBuf>>,
 }
 
 impl SessionEntry {
+    fn fallback_title(&self) -> String {
+        self.started_in
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| self.started_in.display().to_string())
+    }
+
     fn display_title(&self) -> String {
         if let Some(custom) = self.custom_title.get()
             && !custom.trim().is_empty()
@@ -238,11 +247,21 @@ impl SessionEntry {
         {
             return pty_title;
         }
-        self.started_in
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| self.started_in.display().to_string())
+        self.fallback_title()
+    }
+
+    fn display_title_untracked(&self) -> String {
+        if let Some(custom) = self.custom_title.get_untracked()
+            && !custom.trim().is_empty()
+        {
+            return custom;
+        }
+        if let Some(pty_title) = self.terminal.title().get_untracked()
+            && !pty_title.trim().is_empty()
+        {
+            return pty_title;
+        }
+        self.fallback_title()
     }
 }
 
@@ -366,16 +385,31 @@ impl Browser {
         let Some(entry) = self.0.terminals.find_session(id) else {
             return;
         };
-        let current = entry.display_title();
+        let current = entry.display_title_untracked();
         entry.rename_draft.set(current);
         entry.renaming.set(true);
-        entry.rename_ref.focus();
+        if entry.rename_ref.is_bound() {
+            *entry.pending_rename_focus.borrow_mut() = None;
+            entry.rename_ref.focus();
+            return;
+        }
+        let target = entry.rename_ref;
+        let renaming = entry.renaming;
+        let handle = self.0.owner.with(|| {
+            request_frame(move |_| {
+                if renaming.get_untracked() && target.is_bound() {
+                    target.focus();
+                }
+            })
+        });
+        *entry.pending_rename_focus.borrow_mut() = Some(handle);
     }
 
     fn commit_terminal_rename(&self, id: u64, accept: bool) {
         let Some(entry) = self.0.terminals.find_session(id) else {
             return;
         };
+        *entry.pending_rename_focus.borrow_mut() = None;
         if !entry.renaming.get_untracked() {
             return;
         }
@@ -485,16 +519,8 @@ impl Browser {
             let Some(browser) = weak.upgrade() else {
                 return;
             };
-            match event {
-                TerminalEvent::Closed(Some(0)) => {
-                    browser.close_terminal_session(id);
-                }
-                TerminalEvent::Changed
-                | TerminalEvent::TitleChanged(_)
-                | TerminalEvent::Closed(_) => {
-                    browser.0.terminals.bump();
-                }
-                TerminalEvent::Bell => {}
+            if let TerminalEvent::Closed(Some(0)) = event {
+                browser.close_terminal_session(id);
             }
         }));
 
@@ -507,6 +533,7 @@ impl Browser {
             renaming: RwSignal::new_local(false),
             rename_draft: RwSignal::new_local(String::new()),
             rename_ref: NodeRef::new(),
+            pending_rename_focus: Rc::new(RefCell::new(None)),
             last_synced_dir: RefCell::new(Some(path)),
         });
 
@@ -823,10 +850,12 @@ impl Browser {
                                                                     )
                                                                 })
                                                             } else {
-                                                                let title = entry_for_title.display_title();
+                                                                let title_entry = entry_for_title.clone();
                                                                 AnyView::new(view! {
                                                                     HintTooltip(text = started_tip.clone()) {
-                                                                        NavItemLabel {{title}}
+                                                                        NavItemLabel {
+                                                                            {move || title_entry.display_title()}
+                                                                        }
                                                                     }
                                                                 })
                                                             }
@@ -891,12 +920,9 @@ impl Browser {
                             let term = entry.terminal.clone();
                             let id = entry.id;
                             let cwd_text = term.cwd().display().to_string();
-                            let error_text = term.error().get();
-                            let status_text = error_text
-                                .as_ref()
-                                .cloned()
-                                .unwrap_or_else(|| term.status_label());
-                            let has_error = error_text.is_some();
+                            let error_sig = term.error();
+                            let status_sig = term.status();
+                            let status_term = term.clone();
 
                             let b_rename = b_pane.clone();
                             let b_close = b_pane.clone();
@@ -961,8 +987,13 @@ impl Browser {
                                             text(class = "gds-files-terminal-pane__cwd") {{cwd_text}}
                                             text(
                                                 class = "gds-files-terminal-pane__status",
-                                                attr:data-error = has_error.then(|| "true".to_owned()),
-                                            ) {{status_text}}
+                                                attr:data-error = move || error_sig.get().is_some().then(|| "true".to_owned()),
+                                            ) {{move || {
+                                                let _ = status_sig.get();
+                                                error_sig
+                                                    .get()
+                                                    .unwrap_or_else(|| status_term.status_label())
+                                            }}}
                                         }
                                         row(class = "gds-files-terminal-pane__controls") {
                                             IconButton(

@@ -5,5 +5,6 @@ mod presentation;
 mod service;
 
 pub use api::load;
+#[allow(unused_imports)]
 pub use model::{FilesPreferences, Preferences, PreferencesEditor};
 pub(crate) use service::*;

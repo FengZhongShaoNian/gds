@@ -270,6 +270,7 @@ pub enum Kind {
 }
 
 impl Kind {
+    #[allow(dead_code)]
     pub fn label_id(self) -> &'static str {
         match self {
             Self::Copy => "history-copy",

@@ -11,6 +11,7 @@ mod tests;
 mod usage;
 
 pub use model::*;
-pub use network::{NetworkMountError, read_network_mounts};
+#[allow(unused_imports)]
+pub use network::read_network_mounts;
 pub(crate) use service::*;
-pub use usage::{Capacity, CapacityState};
+pub use usage::CapacityState;

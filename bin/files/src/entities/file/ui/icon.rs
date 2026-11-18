@@ -7,15 +7,11 @@
 
 use std::{path::Path, sync::OnceLock};
 
-use directories::UserDirs;
-use gds_uim::{component, el};
-use gpui_kit::IntoElement;
-use gpui_kit::{
-    assets::IconName,
-    component::{ActiveTheme, Icon},
-    prelude::*,
-    *,
-};
+use directories::{BaseDirs, UserDirs};
+use gds::ui::{IconName, IconProps};
+use zgui::prelude::*;
+use zgui::view::install_stylesheet;
+use zgui::{component, view};
 
 use crate::entities::file::directory::{
     ContentCategory, ContentType, Entry, EntryKind, LinkTarget,
@@ -23,9 +19,31 @@ use crate::entities::file::directory::{
 
 /// Size of the corner badge relative to the base icon.
 const BADGE_SIZE_FRACTION: f32 = 0.55;
-/// The badge sits on the icon's bottom-right corner, just outside it, so the
-/// target glyph stays readable.
-const BADGE_INSET: f32 = -4.;
+const FILE_ARTWORK_SHEET: &str = "gds-files-file-artwork";
+const FILE_ARTWORK_CSS: &str = r#"
+.gds-file-artwork {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.gds-file-artwork--directory {
+    color: var(--gds-primary);
+}
+
+.gds-file-artwork--file {
+    color: var(--gds-muted-foreground);
+}
+
+.gds-file-artwork__badge {
+    position: absolute;
+    bottom: -4px;
+    right: -4px;
+    display: flex;
+}
+"#;
 
 /// Icon for one entry: a base icon plus an optional corner badge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +65,7 @@ impl FileIcon {
     }
 
     /// Icon describing `path` without counting directory children or reading file headers.
+    #[allow(dead_code)]
     pub(crate) fn for_path(path: &Path) -> Self {
         let Ok(metadata) = std::fs::symlink_metadata(path) else {
             return Self::plain(IconName::FileQuestionMark);
@@ -82,21 +101,8 @@ impl FileIcon {
                 }))
     }
 
-    /// Icon tint corresponding to whether the entry resolves to a directory.
-    pub(crate) fn category_color(directory: bool, cx: &App) -> Hsla {
-        if directory {
-            cx.theme().primary
-        } else {
-            cx.theme().muted_foreground
-        }
-    }
-
-    /// Color follows the entry's category, independently of its chosen glyph.
-    pub(crate) fn color(entry: &Entry, cx: &App) -> Hsla {
-        Self::category_color(Self::is_directory(entry), cx)
-    }
-
     /// Icon for a drag that carries several entries.
+    #[allow(dead_code)]
     pub(crate) fn multiple() -> Self {
         Self::plain(IconName::Files)
     }
@@ -123,18 +129,34 @@ impl FileIcon {
         if path == dirs.home_dir() {
             return IconName::House;
         }
+        static USE_DEFAULT_NAMES: OnceLock<bool> = OnceLock::new();
+        let use_default_names = *USE_DEFAULT_NAMES.get_or_init(|| {
+            BaseDirs::new().is_some_and(|base| {
+                base.config_dir()
+                    .join("user-dirs.dirs")
+                    .try_exists()
+                    .is_ok_and(|exists| !exists)
+            })
+        });
+        let relative = path.strip_prefix(dirs.home_dir()).ok();
         [
-            (dirs.desktop_dir(), IconName::Monitor),
-            (dirs.document_dir(), IconName::FileText),
-            (dirs.download_dir(), IconName::FolderDown),
-            (dirs.picture_dir(), IconName::Images),
-            (dirs.audio_dir(), IconName::Music),
-            (dirs.video_dir(), IconName::Video),
-            (dirs.public_dir(), IconName::Users),
-            (dirs.template_dir(), IconName::LayoutTemplate),
+            (dirs.desktop_dir(), "Desktop", IconName::Monitor),
+            (dirs.document_dir(), "Documents", IconName::FileText),
+            (dirs.download_dir(), "Downloads", IconName::FolderDown),
+            (dirs.picture_dir(), "Pictures", IconName::Images),
+            (dirs.audio_dir(), "Music", IconName::Music),
+            (dirs.video_dir(), "Videos", IconName::Video),
+            (dirs.public_dir(), "Public", IconName::Users),
+            (dirs.template_dir(), "Templates", IconName::LayoutTemplate),
         ]
         .into_iter()
-        .find_map(|(directory, icon)| (directory == Some(path)).then_some(icon))
+        .find_map(|(directory, default_name, icon)| {
+            let matches = directory.map_or_else(
+                || use_default_names && relative == Some(Path::new(default_name)),
+                |directory| path == directory,
+            );
+            matches.then_some(icon)
+        })
         .unwrap_or(IconName::Folder)
     }
 
@@ -198,41 +220,43 @@ impl FileIcon {
     }
 }
 
-/// The artwork slot used by file rows, tiles and drag previews.
+/// The artwork slot used by file rows, tiles, and drag previews.
 #[component]
-#[derive(IntoElement)]
-pub(crate) struct FileArtwork {
-    #[attr]
+pub(crate) fn FileArtwork(
     icon: FileIcon,
-    #[attr]
-    size: Pixels,
-    #[attr(option, option_setter = "color_opt")]
-    color: Option<Hsla>,
-}
-
-impl Default for FileArtwork {
-    fn default() -> Self {
-        Self {
-            icon: FileIcon::plain(IconName::File),
-            size: px(gds::appearance::tokens::ICON_SIZE),
-            color: None,
+    #[prop(default = gds::appearance::tokens::ICON_SIZE)] size: f32,
+    #[prop(default = false)] directory: bool,
+    #[prop(into, optional)] class: Classes,
+) -> impl IntoView {
+    install_stylesheet(FILE_ARTWORK_SHEET, FILE_ARTWORK_CSS);
+    let badge_size = size * BADGE_SIZE_FRACTION;
+    let role_class = if directory {
+        "gds-file-artwork--directory"
+    } else {
+        "gds-file-artwork--file"
+    };
+    let badge = icon.badge().map(|badge| {
+        view! {
+            box(
+                class = "gds-file-artwork__badge",
+                style:width = format!("{badge_size}px"),
+                style:height = format!("{badge_size}px"),
+            ) {
+                Icon(name = badge, size = badge_size)
+            }
         }
-    }
-}
-
-impl RenderOnce for FileArtwork {
-    fn render(self, window: &mut Window, _: &mut App) -> impl IntoElement {
-        let color = self.color.unwrap_or_else(|| window.text_style().color);
-        let badge_size = self.size * BADGE_SIZE_FRACTION;
-        el! {
-            .div { relative; flex_shrink_0; w: $(self.size); h: $(self.size); } [
-                $(self.icon.base()).Icon::new { size: $(self.size); text_color: color; },
-                @if (let Some(badge) = self.icon.badge())
-                    .div { absolute; bottom: BADGE_INSET.px; right: BADGE_INSET.px; flex; } [
-                        badge.Icon::new { size: badge_size; text_color: color; },
-                    ],
-                @end,
-            ]
+        .into_view()
+    });
+    view! {
+        box(
+            class = "gds-file-artwork",
+            class = role_class,
+            class = class,
+            style:width = format!("{size}px"),
+            style:height = format!("{size}px"),
+        ) {
+            Icon(name = icon.base(), size = size) {}
+            {badge}
         }
     }
 }

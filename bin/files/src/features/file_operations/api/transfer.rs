@@ -191,9 +191,11 @@ impl Batch {
         Ok(batch)
     }
 
+    #[allow(dead_code)]
     pub fn paths(&self) -> &[PathBuf] {
         &self.request.paths
     }
+    #[allow(dead_code)]
     pub fn destination(&self) -> &Path {
         &self.request.destination
     }
@@ -290,6 +292,7 @@ pub struct Report {
 }
 
 impl Report {
+    #[allow(dead_code)]
     pub fn succeeded_sources(&self) -> Vec<PathBuf> {
         self.items
             .iter()
@@ -297,6 +300,7 @@ impl Report {
             .map(|item| item.source.clone())
             .collect()
     }
+    #[allow(dead_code)]
     pub fn committed_destinations(&self) -> Vec<PathBuf> {
         self.items
             .iter()

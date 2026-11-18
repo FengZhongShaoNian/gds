@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+//! Native Files widgets assembled from shared anatomy and application services.
+
 pub(crate) mod help;
-pub(crate) mod remote_browser;
 pub(crate) mod settings;

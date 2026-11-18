@@ -8,6 +8,7 @@ pub(crate) mod places;
 pub(crate) use model::address::uri::Error as AddressError;
 pub(crate) use model::address::{Location, ViewScope, VolumeIdentity};
 pub(crate) use model::view::{ColumnWidths, ViewSettings};
+#[allow(unused_imports)]
 pub(crate) use ui::{Collection, LocationTarget};
 
 pub(crate) use model::navigation;

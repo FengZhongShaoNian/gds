@@ -8,6 +8,7 @@ pub fn WorkspaceFrame(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    super::install_frame_stylesheets();
     view! {
         row(class = "gds-workspace-frame", class = class, {..attrs}) {
             {children.into_view_once()}

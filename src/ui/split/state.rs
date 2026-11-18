@@ -31,11 +31,23 @@ pub struct State {
 impl State {
     #[must_use]
     pub fn new(options: Options) -> Self {
+        let lo = options.min.max(0.0);
+        let hi = options.max.max(lo);
+        let initial = if options.initial.is_finite() {
+            options.initial.clamp(lo, hi)
+        } else {
+            lo
+        };
         Self {
-            width: RwSignal::new_local(options.initial.clamp(options.min, options.max)),
+            width: RwSignal::new_local(initial),
             collapsed: RwSignal::new_local(false),
             options,
         }
+    }
+
+    #[must_use]
+    pub fn options(self) -> Options {
+        self.options
     }
 
     #[must_use]
@@ -44,8 +56,11 @@ impl State {
     }
 
     pub fn set_width(self, width: f32) {
-        self.width
-            .set(width.clamp(self.options.min, self.options.max));
+        if !width.is_finite() {
+            return;
+        }
+        let (lo, hi) = self.effective_bounds(None);
+        self.width.set(width.clamp(lo, hi));
     }
 
     #[must_use]
@@ -55,6 +70,86 @@ impl State {
 
     pub fn set_collapsed(self, collapsed: bool) {
         self.collapsed.set(collapsed);
+    }
+
+    /// Resize toward `target` (CSS pixels), snapping to collapsed when below `collapse_below`
+    /// and clamping inside `[min, max]` and `max_available`.
+    pub fn resize_to(self, target: f32, max_available: Option<f32>) {
+        if !target.is_finite() {
+            return;
+        }
+        if let Some(threshold) = self.options.collapse_below
+            && target < threshold
+        {
+            self.collapsed.set(true);
+            return;
+        }
+        let (lo, hi) = self.effective_bounds(max_available);
+        self.collapsed.set(false);
+        self.width.set(target.clamp(lo, hi));
+    }
+
+    /// Adjust the split by `delta` CSS pixels, reopening from collapsed when `delta > 0`.
+    pub fn step_by(self, delta: f32, max_available: Option<f32>) {
+        if !delta.is_finite() {
+            return;
+        }
+        if self.collapsed.get_untracked() {
+            if delta > 0.0 {
+                let target = self
+                    .options
+                    .collapse_below
+                    .map_or(self.options.min, |t| t.max(self.options.min))
+                    .max(delta);
+                self.resize_to(target, max_available);
+            }
+            return;
+        }
+        self.resize_to(self.width.get_untracked() + delta, max_available);
+    }
+
+    /// Snap to the smallest uncollapsed pane size.
+    pub fn snap_min(self, max_available: Option<f32>) {
+        let (lo, _) = self.effective_bounds(max_available);
+        self.collapsed.set(false);
+        self.width.set(lo);
+    }
+
+    /// Snap to the largest uncollapsed pane size within `max_available`.
+    pub fn snap_max(self, max_available: Option<f32>) {
+        let (_, hi) = self.effective_bounds(max_available);
+        self.collapsed.set(false);
+        self.width.set(hi);
+    }
+
+    /// Toggle the collapsed state while preserving the preferred uncollapsed size.
+    pub fn toggle_collapsed(self) {
+        self.collapsed.update(|c| *c = !*c);
+    }
+
+    /// Effective committed size (`0.0` when collapsed, otherwise the current clamped size).
+    #[must_use]
+    pub fn commit_size(self) -> f32 {
+        if self.collapsed.get_untracked() {
+            0.0
+        } else {
+            self.width.get_untracked()
+        }
+    }
+
+    fn effective_bounds(self, max_available: Option<f32>) -> (f32, f32) {
+        let lo = self.options.min.max(0.0);
+        let hi = self.options.max.max(lo);
+        if let Some(avail) = max_available
+            && avail.is_finite()
+            && avail > 0.0
+        {
+            let eff_lo = lo.min(avail);
+            let eff_hi = hi.min(avail).max(eff_lo);
+            (eff_lo, eff_hi)
+        } else {
+            (lo, hi)
+        }
     }
 }
 

@@ -7,6 +7,7 @@ pub fn NavItemHeader(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    super::install_navigation_stylesheets();
     view! {
         row(class = "gds-nav-item__header", class = class, {..attrs}) {
             {children.into_view_once()}

@@ -7,6 +7,7 @@ pub fn SideBarHeader(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    super::install_sidebar_stylesheets();
     view! {
         column(class = "gds-sidebar__header", class = class, {..attrs}) {
             {children.into_view_once()}

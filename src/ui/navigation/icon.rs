@@ -31,7 +31,7 @@ pub fn WithPin(
     icon: AnyView,
     #[prop(into, default = Signal::stored_local(false))] pinned: Signal<bool, LocalStorage>,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::install_navigation_stylesheets();
     view! {
         box(class = "gds-pinned-icon") {
             {icon}

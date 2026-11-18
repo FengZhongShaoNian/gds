@@ -8,9 +8,14 @@ pub fn Footer(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::install_frame_stylesheets();
     view! {
-        row(class = "gds-footer", class = class, {..attrs}) {
+        row(
+            class = "gds-footer",
+            style:height = format!("{}px", super::FOOTER_HEIGHT),
+            class = class,
+            {..attrs}
+        ) {
             {children.into_view_once()}
         }
     }

@@ -7,6 +7,7 @@ pub fn PageActions(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    super::super::install_page_stylesheets();
     view! {
         row(class = "gds-page-actions", class = class, {..attrs}) {
             {children.into_view_once()}

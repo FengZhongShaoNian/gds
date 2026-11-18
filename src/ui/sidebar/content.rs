@@ -7,9 +7,10 @@ pub fn SideBarContent(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    super::install_sidebar_stylesheets();
     view! {
         scroll(class = "gds-sidebar__content", class = class, {..attrs}) {
-            column {{children.into_view_once()}}
+            column(class = "gds-sidebar__content-inner") {{children.into_view_once()}}
         }
     }
 }

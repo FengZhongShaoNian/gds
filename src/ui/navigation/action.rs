@@ -14,11 +14,13 @@ pub fn HoverAction(
     #[prop(into, default = Signal::stored_local(false))] revealed: Signal<bool, LocalStorage>,
     #[prop(into, optional)] class: Classes,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::install_navigation_stylesheets();
+    let has_action = action.is_some();
     view! {
         box(
             class = "gds-hover-slot",
             attr:data-revealed = move || revealed.get().then(|| "true".to_owned()),
+            attr:data-has-action = has_action.then(|| "true".to_owned()),
             class = class
         ) {
             box(class = "gds-hover-slot__status") {{status}}
@@ -43,6 +45,7 @@ pub fn CornerButton(
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
 ) -> impl IntoView {
+    super::install_navigation_stylesheets();
     let no_drag = zgui::prelude::try_use_window().map(|w| w.no_drag_handler());
     view! {
         IconButton(
@@ -57,6 +60,9 @@ pub fn CornerButton(
                 if let Some(ref handler) = no_drag {
                     handler(ev);
                 }
+            },
+            on:click = |ev: &mut zgui::view::EventCx<'_, zgui::view::events::Click>| {
+                ev.stop_propagation();
             },
             {..attrs}
         )
@@ -86,12 +92,19 @@ pub fn CornerAction(
     #[prop(into, default = Signal::stored_local(false))] revealed: Signal<bool, LocalStorage>,
     button: AnyView,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::install_navigation_stylesheets();
+    let no_drag = zgui::prelude::try_use_window().map(|w| w.no_drag_handler());
     view! {
         box(
             class = "gds-corner-action",
             attr:data-revealed = move || revealed.get().then(|| "true".to_owned()),
-            on:pointer_down = |ev: &mut zgui::view::EventCx<'_, zgui::view::events::PointerDown>| {
+            on:pointer_down = move |ev: &mut zgui::view::EventCx<'_, zgui::view::events::PointerDown>| {
+                ev.stop_propagation();
+                if let Some(ref handler) = no_drag {
+                    handler(ev);
+                }
+            },
+            on:click = |ev: &mut zgui::view::EventCx<'_, zgui::view::events::Click>| {
                 ev.stop_propagation();
             }
         ) {

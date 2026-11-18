@@ -8,9 +8,14 @@ pub fn Toolbar(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::install_frame_stylesheets();
     view! {
-        row(class = "gds-toolbar", class = class, {..attrs}) {
+        row(
+            class = "gds-toolbar",
+            style:height = format!("{}px", super::TOOLBAR_HEIGHT),
+            class = class,
+            {..attrs}
+        ) {
             {children.into_view_once()}
         }
     }

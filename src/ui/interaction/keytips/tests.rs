@@ -1,122 +1,209 @@
-use zgui::geom::{CssPx, Point, Rect, Size};
-use zgui::reactive::{Mounted, RwSignal, UnsyncCallback, install, prelude::*};
-use zgui::vocab::{Key, KeyCode, KeyEvent, Modifiers, NamedKey, PhysicalKey};
+use zgui::geom::{Css, CssPx, Point, Rect, Size};
+use zgui::reactive::{Mounted, RwSignal, Signal, install, prelude::*};
+use zgui::vocab::{Key, Modifiers, NamedKey};
 
 use super::{
-    AltHoldEffect, AltHoldState, KeytipBinding, KeytipHost, KeytipRegistry, place_badges,
-    step_chord_match,
+    EDGE_INSET, EDGE_MARGIN, HintPlacement, KeytipHost, KeytipRegistry, LabelSlot,
+    allocate_dialog_scope_id, held_after_key_down, held_after_key_up, place_labels,
+    push_modal_scope, rects_intersect, remove_modal_scope, scope_allows,
 };
-use crate::ui::shortcut::HeldModifier;
+use crate::ui::shortcut::{HeldModifier, Shortcut};
+
+fn window_content() -> Rect<CssPx, Css> {
+    Rect::new(
+        Point::new(CssPx(20.0), CssPx(20.0)),
+        Size::new(CssPx(1240.0), CssPx(780.0)),
+    )
+}
+
+fn slot(anchor: Rect<CssPx, Css>, width: f32, height: f32, placement: HintPlacement) -> LabelSlot {
+    LabelSlot {
+        anchor,
+        size: Size::new(CssPx(width), CssPx(height)),
+        placement,
+    }
+}
+
+fn icon_button(x: f32, y: f32) -> Rect<CssPx, Css> {
+    Rect::new(
+        Point::new(CssPx(x), CssPx(y)),
+        Size::new(CssPx(32.0), CssPx(32.0)),
+    )
+}
+
+fn label_rects(slots: &[LabelSlot], content: Rect<CssPx, Css>) -> Vec<Rect<CssPx, Css>> {
+    place_labels(slots, content)
+        .into_iter()
+        .zip(slots)
+        .map(|(origin, s)| Rect::new(origin, s.size))
+        .collect()
+}
+
+fn assert_clear_and_inside(rects: &[Rect<CssPx, Css>], content: Rect<CssPx, Css>) {
+    let c_left = content.origin.x.0;
+    let c_top = content.origin.y.0;
+    let c_right = c_left + content.size.width.0;
+    let c_bottom = c_top + content.size.height.0;
+
+    for (idx, rect) in rects.iter().enumerate() {
+        let r_left = rect.origin.x.0;
+        let r_top = rect.origin.y.0;
+        let r_right = r_left + rect.size.width.0;
+        let r_bottom = r_top + rect.size.height.0;
+        assert!(
+            r_left >= c_left + EDGE_MARGIN
+                && r_right <= c_right - EDGE_MARGIN
+                && r_top >= c_top + EDGE_MARGIN
+                && r_bottom <= c_bottom - EDGE_MARGIN,
+            "label {idx} at {rect:?} left content {content:?}"
+        );
+        for other in &rects[idx + 1..] {
+            assert!(
+                !rects_intersect(*rect, *other),
+                "label {idx} at {rect:?} overlaps {other:?}"
+            );
+        }
+    }
+}
 
 #[test]
-fn keytip_registry_tracks_active_state_and_entries() {
+fn passive_ctrl_and_alt_hold_state_updates_immediately_on_press_and_release() {
+    // Pressing Ctrl alone (even when backend sends modifiers = NONE on KeyDown) arms Ctrl immediately.
+    assert_eq!(
+        held_after_key_down(&Key::Named(NamedKey::Control), Modifiers::NONE),
+        Some(HeldModifier::Ctrl)
+    );
+    // Holding Shift alongside Ctrl or Alt stays in the same modifier group.
+    assert_eq!(
+        held_after_key_down(&Key::Named(NamedKey::Shift), Modifiers::CONTROL),
+        Some(HeldModifier::Ctrl)
+    );
+    assert_eq!(
+        held_after_key_down(&Key::character("X"), Modifiers::ALT | Modifiers::SHIFT),
+        Some(HeldModifier::Alt)
+    );
+    // Ctrl+Alt and AltGraph suppress hints immediately.
+    assert_eq!(
+        held_after_key_down(&Key::Named(NamedKey::Alt), Modifiers::CONTROL),
+        None
+    );
+    assert_eq!(
+        held_after_key_down(&Key::Named(NamedKey::AltGraph), Modifiers::NONE),
+        None
+    );
+    // Releasing Ctrl while Shift remains held clears keytips immediately.
+    assert_eq!(
+        held_after_key_up(
+            &Key::Named(NamedKey::Control),
+            Modifiers::CONTROL | Modifiers::SHIFT
+        ),
+        None
+    );
+    // Releasing Shift while Alt remains held keeps Alt active.
+    assert_eq!(
+        held_after_key_up(
+            &Key::Named(NamedKey::Shift),
+            Modifiers::ALT | Modifiers::SHIFT
+        ),
+        Some(HeldModifier::Alt)
+    );
+}
+
+#[test]
+fn registry_and_modal_dialog_scope_suppress_workspace_hints() {
     install().ok();
     let scope = Mounted::new();
     scope.with(|| {
         let active = RwSignal::new_local(false);
         let _host = KeytipHost(Some(active), zgui::view::Children::from_view(()));
         let reg = KeytipRegistry::current().expect("keytip registry installed");
-        assert!(!reg.active().get_untracked());
-        reg.set_active(true);
-        assert!(reg.active().get_untracked());
-        reg.register(
-            "F",
+        assert_eq!(reg.held().get_untracked(), None);
+
+        reg.set_held(Some(HeldModifier::Ctrl));
+        assert_eq!(reg.held().get_untracked(), Some(HeldModifier::Ctrl));
+        assert!(active.get_untracked());
+
+        reg.stage(
             zgui::prelude::NodeRef::new(),
-            UnsyncCallback::new(|()| {}),
+            Shortcut::parse("Ctrl+R").expect("Ctrl+R"),
+            HintPlacement::Corner,
+            Signal::stored_local(true),
         );
+
+        assert!(scope_allows(&[], None));
+        let modal_id = allocate_dialog_scope_id();
+        push_modal_scope(modal_id);
+        assert!(!reg.is_scope_active(None));
+        assert!(reg.is_scope_active(Some(modal_id)));
+        remove_modal_scope(modal_id);
+        assert!(reg.is_scope_active(None));
+
+        reg.release();
+        assert_eq!(reg.held().get_untracked(), None);
+        assert!(!active.get_untracked());
     });
     scope.unmount();
 }
 
 #[test]
-fn alt_hold_ignores_altgr_and_shortcut_chords() {
-    let mut state = AltHoldState::default();
-    let alt_down = KeyEvent::named(NamedKey::Alt, PhysicalKey::Code(KeyCode::AltLeft));
+fn corner_trailing_trailing_before_and_bottom_leading_placements_avoid_collisions() {
+    let content = window_content();
 
-    // Ctrl+Alt (AltGr on international keyboards) must not arm keytips.
-    assert_eq!(
-        HeldModifier::from_modifiers(Modifiers::CONTROL | Modifiers::ALT),
-        HeldModifier::None
-    );
-    assert_eq!(
-        state.on_key_down(&alt_down, Modifiers::CONTROL | Modifiers::ALT, false),
-        AltHoldEffect::None
-    );
-    assert!(!state.on_timer_fired());
-
-    // Pure Alt press arms the 140ms hold timer.
-    assert_eq!(
-        state.on_key_down(&alt_down, Modifiers::ALT, false),
-        AltHoldEffect::ArmTimer
+    // 1. Corner inside 32x32 icon button.
+    let btn = icon_button(1064.0, 71.0);
+    let corner_rects = label_rects(&[slot(btn, 20.0, 16.0, HintPlacement::Corner)], content);
+    assert_clear_and_inside(&corner_rects, content);
+    assert!(
+        (corner_rects[0].origin.y.0 - (btn.origin.y.0 + EDGE_INSET)).abs() <= 1.0
+            && ((corner_rects[0].origin.x.0 + corner_rects[0].size.width.0)
+                - (btn.origin.x.0 + btn.size.width.0 - EDGE_INSET))
+                .abs()
+                <= 1.0
     );
 
-    // Pressing another key before timeout cancels keytip activation.
-    let key_n = KeyEvent::character("n");
-    assert_eq!(
-        state.on_key_down(&key_n, Modifiers::ALT, false),
-        AltHoldEffect::CancelTimer
+    // 2. Trailing + TrailingBefore(reserved) + Corner close button on same row.
+    let row = Rect::new(
+        Point::new(CssPx(10.0), CssPx(65.0)),
+        Size::new(CssPx(202.0), CssPx(44.0)),
     );
-    assert!(!state.on_timer_fired());
-
-    // Holding Alt until the timer fires activates keytips.
-    assert_eq!(
-        state.on_key_down(&alt_down, Modifiers::ALT, false),
-        AltHoldEffect::ArmTimer
+    let close = Rect::new(
+        Point::new(CssPx(172.0), CssPx(71.0)),
+        Size::new(CssPx(32.0), CssPx(32.0)),
     );
-    assert!(state.on_timer_fired());
-
-    // Pressing Alt again while active toggles keytips off.
-    assert_eq!(
-        state.on_key_down(&alt_down, Modifiers::ALT, true),
-        AltHoldEffect::Deactivate
+    let reserve = (row.origin.x.0 + row.size.width.0) - close.origin.x.0;
+    let row_rects = label_rects(
+        &[
+            slot(close, 20.0, 16.0, HintPlacement::Corner),
+            slot(row, 48.0, 16.0, HintPlacement::TrailingBefore(reserve)),
+            slot(row, 24.0, 16.0, HintPlacement::TrailingBefore(reserve)),
+        ],
+        content,
     );
-}
+    assert_clear_and_inside(&row_rects, content);
+    assert!(!rects_intersect(row_rects[1], close));
+    assert!(!rects_intersect(row_rects[2], close));
 
-#[test]
-fn place_badges_nudges_overlapping_targets_without_overlap() {
-    let target_a = Rect::new(
-        Point::new(CssPx(40.0), CssPx(40.0)),
-        Size::new(CssPx(28.0), CssPx(24.0)),
+    // 3. BottomLeadingCorner on collapsed row.
+    let compact = Rect::new(
+        Point::new(CssPx(24.0), CssPx(120.0)),
+        Size::new(CssPx(38.0), CssPx(44.0)),
     );
-    let target_b = target_a;
-    let viewport = Size::new(CssPx(320.0), CssPx(240.0));
+    let bottom_rects = label_rects(
+        &[slot(
+            compact,
+            18.0,
+            16.0,
+            HintPlacement::BottomLeadingCorner,
+        )],
+        content,
+    );
+    assert_clear_and_inside(&bottom_rects, content);
+    assert!(rects_intersect(bottom_rects[0], compact));
 
-    let positions = place_badges(&[(target_a, 24.0), (target_b, 24.0)], Some(viewport));
-    assert_eq!(positions.len(), 2);
-    assert_ne!(positions[0], positions[1]);
-    assert!(positions[1].x.0 >= positions[0].x.0 + 24.0 || positions[1].y.0 > positions[0].y.0);
-}
-
-#[test]
-fn step_chord_match_handles_prefix_and_exact_activation() {
-    install().ok();
-    let scope = Mounted::new();
-    scope.with(|| {
-        let bindings = vec![
-            KeytipBinding {
-                chord: "F",
-                target: zgui::prelude::NodeRef::new(),
-                on_activate: UnsyncCallback::new(|()| {}),
-            },
-            KeytipBinding {
-                chord: "G D",
-                target: zgui::prelude::NodeRef::new(),
-                on_activate: UnsyncCallback::new(|()| {}),
-            },
-        ];
-
-        assert!(matches!(
-            step_chord_match(&bindings, "", &Key::character("g")),
-            super::ChordMatch::Prefix(prefix) if prefix == "G"
-        ));
-        assert!(matches!(
-            step_chord_match(&bindings, "G", &Key::character("d")),
-            super::ChordMatch::Activated(binding) if binding.chord == "G D"
-        ));
-        assert!(matches!(
-            step_chord_match(&bindings, "", &Key::character("z")),
-            super::ChordMatch::Cancelled
-        ));
-    });
-    scope.unmount();
+    // 4. Dense overlapping targets never overlap or leave content.
+    let dense: Vec<LabelSlot> = (0..18)
+        .map(|_| slot(icon_button(300.0, 200.0), 38.0, 16.0, HintPlacement::Corner))
+        .collect();
+    let dense_rects = label_rects(&dense, content);
+    assert_clear_and_inside(&dense_rects, content);
 }

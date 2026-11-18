@@ -2,7 +2,7 @@ use zgui::vocab::{Key, KeyEvent, Modifiers};
 
 use crate::ui::shortcut::Shortcut;
 
-/// Keyboard confirmation/cancellation commands routed to active dialogs.
+/// Keyboard confirmation/cancellation commands routed to active modal dialogs (`shortcuts.md` §1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DialogCommand {
     Confirm,
@@ -22,13 +22,19 @@ impl DialogCommand {
         }
     }
 
-    /// Default mnemonic [`Shortcut`] bound to this dialog command.
+    /// Default mnemonic [`Shortcut`] bound to this dialog command (`Alt+A` / `Alt+C`).
     #[must_use]
     pub fn default_stroke(self) -> Shortcut {
         match self {
             Self::Confirm => Shortcut::new(Key::character("a"), Modifiers::ALT),
             Self::Cancel => Shortcut::new(Key::character("c"), Modifiers::ALT),
         }
+    }
+
+    /// Alias for [`Self::default_stroke`].
+    #[must_use]
+    pub fn shortcut(self) -> Shortcut {
+        self.default_stroke()
     }
 
     /// Returns `true` when `key` and `modifiers` match this command's default stroke.
@@ -41,5 +47,11 @@ impl DialogCommand {
     #[must_use]
     pub fn matches_event(self, event: &KeyEvent, modifiers: Modifiers) -> bool {
         self.default_stroke().matches_event(event, modifiers)
+    }
+}
+
+impl From<DialogCommand> for Shortcut {
+    fn from(command: DialogCommand) -> Self {
+        command.default_stroke()
     }
 }

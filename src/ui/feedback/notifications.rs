@@ -1,4 +1,4 @@
-//! Suite-wide expanded toast notifications emitting `Role::Alert` (AT-SPI `'notification'`).
+//! Suite-wide expanded toast notifications emitting AT-SPI `'notification'` (`Role::Alert`).
 
 mod interaction;
 pub mod surface;
@@ -14,21 +14,24 @@ use std::time::Duration;
 pub use interaction::{close_all, close_current, focus, is_focused};
 use zgui::prelude::*;
 use zgui::reactive::{
-    LocalStorage, RenderEffect, RwSignal, on_cleanup_local, provide_local_context,
+    LocalStorage, RenderEffect, RwSignal, Signal, on_cleanup_local, provide_local_context,
     use_local_context,
 };
+use zgui::view::time::Timers;
 use zgui::view::{
-    ListenerGuard, OverlayLayer, PortalProps, ShowProps, TimeoutHandle, current_host, events,
-    set_timeout,
+    HostHandle, ListenerGuard, OverlayLayer, PortalProps, ShowProps, TimeoutHandle, current_host,
+    events,
 };
-use zgui::vocab::{Key, Live, Modifiers, NamedKey};
+use zgui::vocab::{FocusCause, Key, Live, Modifiers, NamedKey, Role};
 use zgui::{component, css, view};
 
 use crate::app::Gds;
-use crate::appearance::tokens::{NOTIFICATION_INSET, NOTIFICATION_TOP_GAP, TOOLBAR_HEIGHT};
+use crate::appearance::tokens::NOTIFICATION_INSET;
 use crate::ui::actions::{ActionDispatcher, Command};
+use crate::ui::keytips::{HintPlacement, has_active_modal_scope, stage_shortcut};
 
-pub const MAX_CONTENT_HEIGHT: f32 = 240.;
+pub const TOP_OFFSET: f32 = 42.0;
+pub const MAX_CONTENT_HEIGHT: f32 = 240.0;
 pub const DETAIL_LIMIT: usize = 4;
 pub const AUTO_DISMISS_DELAY: Duration = Duration::from_secs(5);
 
@@ -40,11 +43,16 @@ const HOST_SHEET: &str = css!(
 
     .gds-notification-column {
         position: fixed;
+        top: 42px;
+        right: 12px;
         display: flex;
         flex-direction: column;
         gap: 8px;
         width: 360px;
         max-width: calc(100vw - 24px);
+        max-height: calc(100vh - 72px);
+        overflow-x: hidden;
+        overflow-y: auto;
         pointer-events: auto;
     }
     "#
@@ -74,18 +82,28 @@ impl Level {
     #[must_use]
     pub const fn a11y_live(self) -> Live {
         match self {
-            Self::Error => Live::Assertive,
-            Self::Info | Self::Success | Self::Warning => Live::Polite,
+            Self::Error | Self::Warning => Live::Assertive,
+            Self::Info | Self::Success => Live::Polite,
         }
     }
 
     #[must_use]
+    pub const fn content_role(self) -> Role {
+        match self {
+            Self::Error | Self::Warning => Role::Alert,
+            Self::Info | Self::Success => Role::Status,
+        }
+    }
+
+    /// Info, Success, and Warning autohide after [`AUTO_DISMISS_DELAY`]; only `Error` stays
+    /// mounted until explicitly dismissed (`main:notifications.rs:1360`).
+    #[must_use]
     pub const fn default_autohide(self) -> bool {
-        matches!(self, Self::Info | Self::Success)
+        !matches!(self, Self::Error)
     }
 }
 
-/// Structured notification payload with summary and optional expandable items.
+/// Structured notification payload with summary and optional detail lines.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Report {
     pub level: Level,
@@ -117,7 +135,7 @@ impl Report {
 
     /// Appends multiple detail lines.
     #[must_use]
-    pub fn details(mut self, details: Vec<String>) -> Self {
+    pub fn details(mut self, details: impl IntoIterator<Item = String>) -> Self {
         self.details.extend(details);
         self
     }
@@ -141,7 +159,7 @@ impl Report {
         report(self);
     }
 
-    /// Formats summary and detail lines as plain text for clipboard copying.
+    /// Formats summary and all untruncated detail lines as plain text for clipboard copying.
     #[must_use]
     pub fn copy_text(&self) -> String {
         if self.details.is_empty() {
@@ -156,7 +174,7 @@ impl Report {
     }
 }
 
-/// Convenience builder summarizing multi-item file or background operations.
+/// Reusable status toast slot and batch builder for background operations (`main:notifications.rs`).
 #[derive(Clone, Debug, Default)]
 pub struct Operation {
     summary: String,
@@ -166,6 +184,20 @@ pub struct Operation {
 }
 
 impl Operation {
+    /// Announces long-running background work in the shared [`Operation`] replacement slot without
+    /// auto-dismissing while in flight.
+    pub fn start(message: impl Into<String>) {
+        Report::new(Level::Info, message)
+            .replacing::<Self>()
+            .autohide(false)
+            .show();
+    }
+
+    /// Replaces the in-flight [`Operation`] progress toast with its final outcome `report`.
+    pub fn finish(report: Report) {
+        report.replacing::<Self>().show();
+    }
+
     /// Starts a batch operation report summary.
     #[must_use]
     pub fn new(level: Level, summary: impl Into<String>) -> Self {
@@ -191,8 +223,7 @@ impl Operation {
         self
     }
 
-    /// Converts this operation summary into a [`Report`], appending a localized overflow count when
-    /// details exceed [`DETAIL_LIMIT`].
+    /// Converts this operation summary into a [`Report`].
     #[must_use]
     pub fn into_report(self) -> Report {
         let mut report = Report::new(self.level, self.summary).details(self.details);
@@ -201,7 +232,14 @@ impl Operation {
     }
 }
 
-/// Formats the localized `"And N more items"` overflow label for truncated detail lists.
+/// Returns the visible slice (`<= DETAIL_LIMIT`) and remaining overflow count of `details`.
+#[must_use]
+pub(crate) fn visible_details(details: &[String]) -> (&[String], usize) {
+    let shown = details.len().min(DETAIL_LIMIT);
+    (&details[..shown], details.len() - shown)
+}
+
+/// Formats the static localized `"And N more items"` overflow line for truncated detail lists.
 #[must_use]
 pub(crate) fn more_items_label(remaining: usize) -> String {
     Gds::try_current().map_or_else(
@@ -227,6 +265,8 @@ struct QueueRuntime {
     slot_ids: HashMap<TypeId, u64>,
     card_refs: HashMap<u64, NodeRef>,
     host_ref: Option<NodeRef>,
+    host_handle: Option<HostHandle>,
+    timers_api: Option<Timers>,
     previous_focus: Option<NodeId>,
 }
 
@@ -235,8 +275,8 @@ pub(crate) struct NotificationQueue {
     items: RwSignal<Vec<Notification>, LocalStorage>,
     next_id: RwSignal<u64, LocalStorage>,
     focused: RwSignal<bool, LocalStorage>,
+    focus_visible: RwSignal<bool, LocalStorage>,
     selected_id: RwSignal<Option<u64>, LocalStorage>,
-    expanded_ids: RwSignal<BTreeSet<u64>, LocalStorage>,
     hovered_ids: RwSignal<BTreeSet<u64>, LocalStorage>,
     runtime: RwSignal<Option<Rc<RefCell<QueueRuntime>>>, LocalStorage>,
 }
@@ -252,8 +292,8 @@ impl NotificationQueue {
             items: RwSignal::new_local(Vec::new()),
             next_id: RwSignal::new_local(1),
             focused: RwSignal::new_local(false),
+            focus_visible: RwSignal::new_local(false),
             selected_id: RwSignal::new_local(None),
-            expanded_ids: RwSignal::new_local(BTreeSet::new()),
             hovered_ids: RwSignal::new_local(BTreeSet::new()),
             runtime: RwSignal::new_local(Some(rt)),
         }
@@ -264,7 +304,9 @@ impl NotificationQueue {
     }
 
     pub(crate) fn active() -> Self {
-        if let Some(queue) = use_local_context::<Self>() {
+        if zgui::reactive::is_ui_thread()
+            && let Some(queue) = use_local_context::<Self>()
+        {
             return queue;
         }
         FALLBACK_QUEUE.with(|slot| {
@@ -279,8 +321,27 @@ impl NotificationQueue {
 
     fn register_host_ref(self, node_ref: NodeRef) {
         if let Some(rt) = self.runtime_rc() {
-            rt.borrow_mut().host_ref = Some(node_ref);
+            let mut rt_mut = rt.borrow_mut();
+            rt_mut.host_ref = Some(node_ref);
+            rt_mut.host_handle = current_host();
+            rt_mut.timers_api = Timers::current();
         }
+    }
+
+    fn host_handle(self) -> Option<HostHandle> {
+        self.runtime_rc()
+            .and_then(|rt| rt.borrow().host_handle.clone())
+            .or_else(|| zgui::reactive::is_ui_thread().then(current_host).flatten())
+    }
+
+    fn timers_api(self) -> Option<Timers> {
+        self.runtime_rc()
+            .and_then(|rt| rt.borrow().timers_api.clone())
+            .or_else(|| {
+                zgui::reactive::is_ui_thread()
+                    .then(Timers::current)
+                    .flatten()
+            })
     }
 
     pub(crate) fn register_card_ref(self, id: u64, node_ref: NodeRef) {
@@ -290,6 +351,33 @@ impl NotificationQueue {
     }
 
     pub(crate) fn push(self, report: Report) {
+        match report.level {
+            Level::Error => {
+                tracing::error!(
+                    target: "gds::ui::notifications",
+                    details = ?report.details,
+                    "{}",
+                    report.summary
+                );
+            }
+            Level::Warning => {
+                tracing::warn!(
+                    target: "gds::ui::notifications",
+                    details = ?report.details,
+                    "{}",
+                    report.summary
+                );
+            }
+            Level::Info | Level::Success => {
+                tracing::info!(
+                    target: "gds::ui::notifications",
+                    details = ?report.details,
+                    "{}",
+                    report.summary
+                );
+            }
+        }
+
         let slot = report.slot;
         let autohide = report
             .autohide_override
@@ -348,11 +436,15 @@ impl NotificationQueue {
         let mut next_focus_target: Option<(u64, NodeRef)> = None;
         let mut restore_node: Option<NodeId> = None;
 
+        let prev_index = self
+            .items
+            .get_untracked()
+            .iter()
+            .position(|item| item.id == id)
+            .unwrap_or(0);
+
         self.items.update(|items| {
             items.retain(|item| item.id != id);
-        });
-        self.expanded_ids.update(|set| {
-            set.remove(&id);
         });
         self.hovered_ids.update(|set| {
             set.remove(&id);
@@ -360,7 +452,11 @@ impl NotificationQueue {
 
         let remaining = self.items.get_untracked();
         if self.selected_id.get_untracked() == Some(id) {
-            let next_id = remaining.first().map(|item| item.id);
+            let next_id = if remaining.is_empty() {
+                None
+            } else {
+                Some(remaining[prev_index.min(remaining.len() - 1)].id)
+            };
             self.selected_id.set(next_id);
         }
 
@@ -381,9 +477,10 @@ impl NotificationQueue {
         if remaining.is_empty() {
             let was_focused = self.focused.get_untracked();
             self.focused.set(false);
+            self.focus_visible.set(false);
             if was_focused
                 && let Some(prev) = restore_node
-                && let Some(host) = current_host()
+                && let Some(host) = self.host_handle()
             {
                 host.focus(prev);
             }
@@ -408,14 +505,14 @@ impl NotificationQueue {
 
         let was_focused = self.focused.get_untracked();
         self.items.update(Vec::clear);
-        self.expanded_ids.update(BTreeSet::clear);
         self.hovered_ids.update(BTreeSet::clear);
         self.selected_id.set(None);
         self.focused.set(false);
+        self.focus_visible.set(false);
 
         if was_focused
             && let Some(prev) = restore_node
-            && let Some(host) = current_host()
+            && let Some(host) = self.host_handle()
         {
             host.focus(prev);
         }
@@ -429,20 +526,26 @@ impl NotificationQueue {
         self.focused
     }
 
+    pub(crate) fn focus_visible(self) -> RwSignal<bool, LocalStorage> {
+        self.focus_visible
+    }
+
     pub(crate) fn selected_id(self) -> RwSignal<Option<u64>, LocalStorage> {
         self.selected_id
     }
 
-    pub(crate) fn is_expanded(self, id: u64) -> bool {
-        self.expanded_ids.get().contains(&id)
-    }
-
-    pub(crate) fn toggle_expanded(self, id: u64) {
-        self.expanded_ids.update(|set| {
-            if !set.remove(&id) {
-                set.insert(id);
-            }
-        });
+    /// Returns the ID that `Alt+X` would currently dismiss (selected card when focused, or newest
+    /// card when unfocused).
+    pub(crate) fn target_id(self) -> Option<u64> {
+        let items = self.items.get();
+        if self.focused.get() {
+            self.selected_id
+                .get()
+                .filter(|id| items.iter().any(|item| item.id == *id))
+                .or_else(|| items.first().map(|item| item.id))
+        } else {
+            items.first().map(|item| item.id)
+        }
     }
 
     pub(crate) fn set_hovered(self, id: u64, hovered: bool) {
@@ -460,11 +563,21 @@ impl NotificationQueue {
         }
     }
 
-    pub(crate) fn mark_card_focused(self, id: u64) {
+    pub(crate) fn mark_card_focused(self, id: u64, cause: FocusCause) {
         self.capture_previous_focus();
         self.selected_id.set(Some(id));
         self.focused.set(true);
+        if cause == FocusCause::Pointer {
+            self.focus_visible.set(false);
+        } else if cause.shows_ring() {
+            self.focus_visible.set(true);
+        }
         self.pause_all_timers();
+    }
+
+    pub(crate) fn mark_pointer_press(self, id: u64) {
+        self.selected_id.set(Some(id));
+        self.focus_visible.set(false);
     }
 
     pub(crate) fn clear_focus(self, restore_focus: bool) {
@@ -473,10 +586,11 @@ impl NotificationQueue {
             restore_node = rt.borrow_mut().previous_focus.take();
         }
         self.focused.set(false);
+        self.focus_visible.set(false);
         self.resume_unhovered_timers();
         if restore_focus
             && let Some(prev) = restore_node
-            && let Some(host) = current_host()
+            && let Some(host) = self.host_handle()
         {
             host.focus(prev);
         }
@@ -485,17 +599,18 @@ impl NotificationQueue {
     pub(crate) fn focus_notification(self, id: u64) {
         self.selected_id.set(Some(id));
         self.focused.set(true);
+        self.focus_visible.set(true);
         self.pause_all_timers();
         let card = self
             .runtime_rc()
-            .and_then(|rt| rt.borrow().card_refs.get(&id).cloned());
+            .and_then(|rt| rt.borrow().card_refs.get(&id).copied());
         if let Some(card_ref) = card {
             card_ref.focus();
         }
     }
 
     pub(crate) fn capture_previous_focus(self) {
-        let Some(host) = current_host() else {
+        let Some(host) = self.host_handle() else {
             return;
         };
         let Some(active) = host.focused().get_untracked() else {
@@ -543,9 +658,9 @@ impl NotificationQueue {
     }
 
     fn schedule_autohide_if_eligible(self, id: u64) {
-        if current_host().is_none() {
+        let Some(timers_api) = self.timers_api() else {
             return;
-        }
+        };
         if self.focused.get_untracked() || self.hovered_ids.get_untracked().contains(&id) {
             return;
         }
@@ -560,7 +675,7 @@ impl NotificationQueue {
         }
 
         self.cancel_timer(id);
-        let handle = set_timeout(AUTO_DISMISS_DELAY, move || {
+        let handle = timers_api.set_timeout(AUTO_DISMISS_DELAY, move || {
             if self.focused.get_untracked() || self.hovered_ids.get_untracked().contains(&id) {
                 return;
             }
@@ -582,20 +697,23 @@ impl NotificationQueue {
 }
 
 fn handle_window_shortcut(queue: NotificationQueue, ev: &mut EventCx<'_, events::KeyDown>) {
+    if has_active_modal_scope() {
+        return;
+    }
     let dispatcher = ActionDispatcher::commands();
     match dispatcher.match_event(ev, ev.modifiers) {
         Some(Command::FocusNotifications) if !queue.items().get_untracked().is_empty() => {
-            interaction::focus();
+            interaction::focus_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
         Some(Command::CloseNotification) if !queue.items().get_untracked().is_empty() => {
-            interaction::close_current();
+            interaction::close_current_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
         Some(Command::CloseAllNotifications) if !queue.items().get_untracked().is_empty() => {
-            interaction::close_all();
+            interaction::close_all_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
@@ -610,22 +728,22 @@ fn handle_stack_key_down(queue: NotificationQueue, ev: &mut EventCx<'_, events::
     let modifiers = ev.modifiers.held();
     match &ev.key {
         Key::Named(NamedKey::ArrowDown) if modifiers.is_empty() => {
-            interaction::select_next();
+            interaction::select_next_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
         Key::Named(NamedKey::ArrowUp) if modifiers.is_empty() => {
-            interaction::select_prev();
+            interaction::select_prev_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
         Key::Named(NamedKey::Home) if modifiers.is_empty() => {
-            interaction::select_first();
+            interaction::select_first_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
         Key::Named(NamedKey::End) if modifiers.is_empty() => {
-            interaction::select_last();
+            interaction::select_last_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
@@ -635,7 +753,7 @@ fn handle_stack_key_down(queue: NotificationQueue, ev: &mut EventCx<'_, events::
             ev.stop_propagation();
         }
         Key::Named(NamedKey::Delete) if modifiers.is_empty() => {
-            interaction::close_current();
+            interaction::close_current_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
@@ -643,7 +761,7 @@ fn handle_stack_key_down(queue: NotificationQueue, ev: &mut EventCx<'_, events::
             if (modifiers == Modifiers::PRIMARY || modifiers == Modifiers::CONTROL)
                 && ch.as_str().eq_ignore_ascii_case("c") =>
         {
-            interaction::copy_selected();
+            interaction::copy_selected_in(queue);
             ev.prevent_default();
             ev.stop_propagation();
         }
@@ -651,7 +769,8 @@ fn handle_stack_key_down(queue: NotificationQueue, ev: &mut EventCx<'_, events::
     }
 }
 
-/// Mounts the per-window notification portal stack (`Role::Alert` -> AT-SPI `'notification'`).
+/// Mounts the per-window notification portal stack (`top: 42px; right: 12px`, `Role::Alert` ->
+/// AT-SPI `'notification'`, `Alt+N` toggle, `Alt+X` / `Alt+Shift+X` dismiss).
 #[component]
 pub fn NotificationHost(children: Children) -> impl IntoView {
     if current_host().is_some() {
@@ -661,11 +780,28 @@ pub fn NotificationHost(children: Children) -> impl IntoView {
 
     let queue = NotificationQueue::new();
     provide_local_context(queue);
+    FALLBACK_QUEUE.with(|slot| {
+        *slot.borrow_mut() = Some(queue);
+    });
     let items = queue.items();
 
     let host_ref = NodeRef::new();
     let column_ref = NodeRef::new();
     queue.register_host_ref(column_ref);
+
+    let has_items = Signal::derive_local(move || !items.get().is_empty());
+    stage_shortcut(
+        column_ref,
+        Command::FocusNotifications,
+        HintPlacement::Corner,
+        has_items,
+    );
+    stage_shortcut(
+        column_ref,
+        Command::CloseAllNotifications,
+        HintPlacement::BottomLeadingCorner,
+        has_items,
+    );
 
     let root_guard: Rc<RefCell<Option<ListenerGuard>>> = Rc::new(RefCell::new(None));
     let watch = {
@@ -717,7 +853,7 @@ pub fn NotificationHost(children: Children) -> impl IntoView {
                     column(
                         node_ref = column_ref,
                         class = "gds-notification-column",
-                        style:top = Some(format!("{}px", TOOLBAR_HEIGHT + NOTIFICATION_TOP_GAP)),
+                        style:top = Some(format!("{TOP_OFFSET}px")),
                         style:right = Some(format!("{NOTIFICATION_INSET}px")),
                         on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
                             handle_stack_key_down(queue, ev);

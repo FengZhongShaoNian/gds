@@ -10,8 +10,9 @@ use super::{
 };
 use crate::ui::Shortcut;
 use crate::ui::about::Application;
+use crate::ui::actions::Command;
 use crate::ui::icon::IconName;
-use crate::ui::keytips::KeytipRegistry;
+use crate::ui::keytips::{KeytipHostProps, KeytipRegistry};
 
 #[test]
 fn button_variants_reexport_zgui_ui_types() {
@@ -96,7 +97,7 @@ fn button_attrs_expose_loading_busy_and_keyboard_shortcut() {
 }
 
 #[test]
-fn button_keytip_respects_disabled_state_and_invokes_activation() {
+fn button_command_and_shortcut_enabled_wire_cleanly() {
     install().ok();
     let scope = Mounted::new();
     scope.with(|| {
@@ -114,26 +115,31 @@ fn button_keytip_respects_disabled_state_and_invokes_activation() {
         }
 
         let _views = view! {
-            column {
-                Button(
-                    loading = false,
-                    active = true,
-                    tooltip = "Save",
-                    shortcut = Shortcut::parse("Ctrl+S").expect("valid shortcut"),
-                    keytip = "K",
-                    on_activate = UnsyncCallback::new(move |()| {}),
-                ) { "Save" }
-                IconButton(
-                    icon = IconName::Pin,
-                    hover_icon = IconName::Check,
-                    label = "Pin item",
-                    size = ButtonSize::IconSm,
-                )
-                ApplicationMenuButton(
-                    label = "Main menu",
-                    application = Some(Application::cargo("gds-files")),
-                    shortcut = Shortcut::parse("Alt+F").expect("valid Alt+F shortcut"),
-                )
+            KeytipHost {
+                column {
+                    Button(
+                        icon = IconName::Check,
+                        loading = false,
+                        active = true,
+                        tooltip = "Save",
+                        shortcut = Shortcut::parse("Ctrl+S").expect("valid shortcut"),
+                    ) { "Save" }
+                    Button(
+                        command = Command::FocusNotifications,
+                    ) { "Notifications" }
+                    IconButton(
+                        icon = IconName::Close,
+                        label = "Close tab",
+                        shortcut = Shortcut::parse("Ctrl+W").expect("Ctrl+W"),
+                        shortcut_enabled = false,
+                        size = ButtonSize::IconSm,
+                    )
+                    ApplicationMenuButton(
+                        label = "Main menu",
+                        application = Some(Application::cargo("gds-files")),
+                        shortcut = Shortcut::parse("Alt+M").expect("valid Alt+M shortcut"),
+                    )
+                }
             }
         };
     });
@@ -141,15 +147,19 @@ fn button_keytip_respects_disabled_state_and_invokes_activation() {
 }
 
 #[test]
-fn headless_buttons_click_install_styles_and_preserve_push_vs_toggle_roles() {
+fn headless_buttons_verify_36px_32px_inline_keytip_and_push_vs_toggle_roles() {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use zgui::geom::Point;
     use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
     use zgui::runtime::AppError;
-    use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Timestamp};
+    use zgui::vocab::{
+        KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, PointerAction,
+        PointerButton, PointerEvent, Timestamp,
+    };
     use zgui_platform_headless::Harness;
 
     #[derive(Debug, Default)]
@@ -201,16 +211,19 @@ fn headless_buttons_click_install_styles_and_preserve_push_vs_toggle_roles() {
     let loading_clicks = Rc::new(Cell::new(0usize));
     let push_ref_slot: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
     let loading_ref_slot: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
+    let icon_ref_slot: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
 
     let push_clicks_view = Rc::clone(&push_clicks);
     let loading_clicks_view = Rc::clone(&loading_clicks);
     let push_slot_view = Rc::clone(&push_ref_slot);
     let loading_slot_view = Rc::clone(&loading_ref_slot);
+    let icon_slot_view = Rc::clone(&icon_ref_slot);
 
     let push_clicks_check = Rc::clone(&push_clicks);
     let loading_clicks_check = Rc::clone(&loading_clicks);
     let push_slot_check = Rc::clone(&push_ref_slot);
     let loading_slot_check = Rc::clone(&loading_ref_slot);
+    let icon_slot_check = Rc::clone(&icon_ref_slot);
 
     let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
         let mut harness = Harness::new(handler);
@@ -219,6 +232,70 @@ fn headless_buttons_click_install_styles_and_preserve_push_vs_toggle_roles() {
             surface.set_a11y_listener(true);
         }
         harness.settle(4);
+
+        // Verify 36px standard Button height and 32x32px IconButton target size.
+        let push_node = push_slot_check.borrow().expect("push node");
+        let push_bounds = push_node.window_bounds().expect("push bounds");
+        let scale = push_node.scale().max(1.0);
+        assert_eq!(
+            (push_bounds.size.height.0 / scale).round(),
+            36.0,
+            "standard ButtonSize::Md height must be 36px"
+        );
+        let initial_width = push_bounds.size.width.0 / scale;
+
+        let icon_node = icon_slot_check.borrow().expect("icon node");
+        let icon_bounds = icon_node.window_bounds().expect("icon bounds");
+        assert_eq!(
+            (icon_bounds.size.width.0 / scale).round(),
+            32.0,
+            "IconButton width must be 32px"
+        );
+        assert_eq!(
+            (icon_bounds.size.height.0 / scale).round(),
+            32.0,
+            "IconButton height must be 32px"
+        );
+
+        // Holding Ctrl animates the inline keytip suffix wider over 140ms, and releasing Ctrl
+        // returns width back to `initial_width`.
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Pressed,
+            event: KeyEvent::named(NamedKey::Control, PhysicalKey::Code(KeyCode::ControlLeft)),
+            modifiers: Modifiers::CONTROL,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.run_for(Duration::from_millis(160), Duration::from_millis(16));
+        let expanded_width = push_node
+            .window_bounds()
+            .expect("expanded bounds")
+            .size
+            .width
+            .0
+            / scale;
+        assert!(
+            expanded_width > initial_width,
+            "holding Ctrl must expand inline button keytip suffix ({expanded_width} > {initial_width})"
+        );
+
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Released,
+            event: KeyEvent::named(NamedKey::Control, PhysicalKey::Code(KeyCode::ControlLeft)),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::from_origin(Duration::from_millis(160)),
+        });
+        harness.run_for(Duration::from_millis(160), Duration::from_millis(16));
+        let restored_width = push_node
+            .window_bounds()
+            .expect("restored bounds")
+            .size
+            .width
+            .0
+            / scale;
+        assert!(
+            (restored_width - initial_width).abs() <= 0.5,
+            "releasing Ctrl must collapse inline suffix back to initial width ({restored_width} vs {initial_width})"
+        );
 
         let click_node = |harness: &mut Harness<Box<dyn AppHandler>>,
                           slot: &RefCell<Option<NodeRef>>| {
@@ -317,28 +394,34 @@ fn headless_buttons_click_install_styles_and_preserve_push_vs_toggle_roles() {
         .run_on(driver, move || {
             let push_ref = NodeRef::new();
             let loading_ref = NodeRef::new();
+            let icon_ref = NodeRef::new();
             *push_slot_view.borrow_mut() = Some(push_ref);
             *loading_slot_view.borrow_mut() = Some(loading_ref);
+            *icon_slot_view.borrow_mut() = Some(icon_ref);
             let on_push_clicks = Rc::clone(&push_clicks_view);
             let on_loading_clicks = Rc::clone(&loading_clicks_view);
 
             view! {
-                column {
-                    Button(
-                        node_ref = push_ref,
-                        on:click = move |_| on_push_clicks.set(on_push_clicks.get() + 1),
-                    ) { "Run" }
-                    Button(
-                        node_ref = loading_ref,
-                        loading = true,
-                        on:click = move |_| on_loading_clicks.set(on_loading_clicks.get() + 1),
-                    ) { "Saving" }
-                    IconButton(
-                        icon = IconName::Pin,
-                        label = "Toggle pin",
-                        toggled = true,
-                    )
-                    ApplicationMenuButton(label = "Menu")
+                KeytipHost {
+                    column(style:align-items = "flex-start") {
+                        Button(
+                            node_ref = push_ref,
+                            shortcut = Shortcut::parse("Ctrl+R").expect("Ctrl+R"),
+                            on:click = move |_| on_push_clicks.set(on_push_clicks.get() + 1),
+                        ) { "Run" }
+                        Button(
+                            node_ref = loading_ref,
+                            loading = true,
+                            on:click = move |_| on_loading_clicks.set(on_loading_clicks.get() + 1),
+                        ) { "Saving" }
+                        IconButton(
+                            node_ref = icon_ref,
+                            icon = IconName::Pin,
+                            label = "Toggle pin",
+                            toggled = true,
+                        )
+                        ApplicationMenuButton(label = "Menu")
+                    }
                 }
             }
         })

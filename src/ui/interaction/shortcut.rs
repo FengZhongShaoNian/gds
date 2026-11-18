@@ -5,68 +5,68 @@ mod hint;
 mod keycap;
 
 pub use badge::{ShortcutBadge, ShortcutBadgeProps};
+pub(crate) use hint::install_shortcut_hint_stylesheet;
 pub use hint::{ShortcutHint, ShortcutHintProps, command_tooltip, shortcut_tooltip};
 
 use zgui::vocab::{Key, KeyEvent, Modifiers};
 
 use crate::ui::actions::Command;
 
-/// Held modifier hint state used by keytip/shortcut chrome.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+/// The modifier group a press reveals keytip labels for (`shortcuts.md` §3).
+///
+/// Holding `Shift` alongside `Ctrl` or `Alt` (`Ctrl+Shift+N`, `Alt+Shift+X`) stays in that group,
+/// while `Ctrl+Alt` (such as `AltGr`), `Meta`/`Super`, or `Shift` alone selects neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HeldModifier {
-    #[default]
-    None,
+    Ctrl,
     Alt,
-    Control,
-    Shift,
-    Meta,
 }
 
 impl HeldModifier {
-    /// Returns the single held modifier represented by `modifiers`, or [`HeldModifier::None`] when
-    /// none or multiple modifiers are held (for example `Ctrl+Alt` / AltGr).
+    /// Returns the active modifier group for `modifiers`, if exactly one of `Ctrl` or `Alt` is
+    /// held without `Meta`/`Super`.
     #[must_use]
-    pub const fn from_modifiers(modifiers: Modifiers) -> Self {
-        match modifiers.held().bits() {
-            x if x == Modifiers::ALT.bits() => Self::Alt,
-            x if x == Modifiers::CONTROL.bits() => Self::Control,
-            x if x == Modifiers::SHIFT.bits() => Self::Shift,
-            x if x == Modifiers::META.bits() => Self::Meta,
-            _ => Self::None,
+    pub const fn from_modifiers(modifiers: Modifiers) -> Option<Self> {
+        let held = modifiers.held();
+        if held.meta() {
+            return None;
+        }
+        match (held.control(), held.alt()) {
+            (true, false) => Some(Self::Ctrl),
+            (false, true) => Some(Self::Alt),
+            _ => None,
         }
     }
 
-    /// Returns the [`Modifiers`] bit for this held modifier.
+    /// Returns the primary [`Modifiers`] bit for this modifier group.
     #[must_use]
     pub const fn as_modifier(self) -> Modifiers {
         match self {
-            Self::None => Modifiers::NONE,
+            Self::Ctrl => Modifiers::CONTROL,
             Self::Alt => Modifiers::ALT,
-            Self::Control => Modifiers::CONTROL,
-            Self::Shift => Modifiers::SHIFT,
-            Self::Meta => Modifiers::META,
         }
     }
 
-    /// Returns `true` when `modifiers` has this exact single held modifier active.
+    /// Returns `true` when `modifiers` belongs to this held modifier group (allowing `Shift`,
+    /// rejecting `Ctrl+Alt` and `Meta`).
     #[must_use]
     pub const fn matches(self, modifiers: Modifiers) -> bool {
-        modifiers.held().bits() == self.as_modifier().bits()
+        let held = modifiers.held();
+        if held.meta() || (held.control() && held.alt()) {
+            return false;
+        }
+        match self {
+            Self::Ctrl => held.control(),
+            Self::Alt => held.alt(),
+        }
     }
 
-    /// Returns a human-readable label for this modifier, if held.
+    /// Returns the canonical display label for this modifier group.
     #[must_use]
-    pub const fn label(self) -> Option<&'static str> {
+    pub const fn label(self) -> &'static str {
         match self {
-            Self::None => None,
-            Self::Alt => Some("Alt"),
-            Self::Control => Some("Ctrl"),
-            Self::Shift => Some("Shift"),
-            Self::Meta => Some(if cfg!(target_os = "macos") {
-                "Cmd"
-            } else {
-                "Super"
-            }),
+            Self::Ctrl => "Ctrl",
+            Self::Alt => "Alt",
         }
     }
 }
@@ -148,7 +148,7 @@ impl Shortcut {
         !(held.control() || held.alt() || held.meta())
     }
 
-    /// Returns the individual keycap strings to display for this shortcut.
+    /// Returns the individual keycap strings to display for this shortcut (`Ctrl → Alt → Shift → Key`).
     #[must_use]
     pub fn display_tokens(&self) -> Vec<String> {
         let mut tokens = keycap::display_modifiers(self.modifiers);
@@ -156,7 +156,27 @@ impl Shortcut {
         tokens
     }
 
-    /// Formats this shortcut as a joined keycap string such as `"Alt+Shift+C"`.
+    /// Returns the keycap tokens with `held` omitted (`Ctrl+Shift+Tab` under `Ctrl` -> `["Shift", "Tab"]`).
+    #[must_use]
+    pub fn display_tokens_omitting(&self, held: Option<HeldModifier>) -> Vec<String> {
+        let mut tokens = keycap::display_modifiers_omitting(self.modifiers, held);
+        tokens.push(keycap::display_key(&self.key));
+        tokens
+    }
+
+    /// Returns the compact hold-to-reveal suffix string when this shortcut belongs to `held`
+    /// (`Ctrl+R` -> `Some("R")`, `Ctrl+Shift+Tab` -> `Some("Shift+Tab")`, `Alt+A` -> `Some("A")`,
+    /// `F2` -> `None`).
+    #[must_use]
+    pub fn compact_label(&self, held: HeldModifier) -> Option<String> {
+        if !held.matches(self.modifiers) {
+            return None;
+        }
+        let tokens = self.display_tokens_omitting(Some(held));
+        (!tokens.is_empty()).then(|| tokens.join("+"))
+    }
+
+    /// Formats this shortcut as a joined keycap string such as `"Alt+Shift+X"`.
     #[must_use]
     pub fn label(&self) -> String {
         self.display_tokens().join("+")
@@ -202,7 +222,7 @@ impl KeyChord {
         }
     }
 
-    /// Parses a whitespace-separated sequence of shortcuts such as `"Alt+N C"` or `"g d"`.
+    /// Parses a whitespace-separated sequence of shortcuts such as `"Alt+N X"` or `"g d"`.
     #[must_use]
     pub fn parse(spec: &str) -> Option<Self> {
         let mut strokes = Vec::new();
@@ -308,16 +328,18 @@ fn keys_match(expected: &Key, actual: &Key) -> bool {
 mod tests {
     use zgui::vocab::{Key, Modifiers, NamedKey};
 
-    use super::{HeldModifier, KeyChord, Shortcut};
+    use super::{HeldModifier, KeyChord, Shortcut, ShortcutBadge};
 
     #[test]
     fn shortcut_parses_modifiers_named_keys_and_matches_space() {
         let copy = Shortcut::parse("Ctrl+Shift+C").expect("Ctrl+Shift+C");
         assert!(copy.matches(&Key::character("c"), Modifiers::CONTROL | Modifiers::SHIFT));
         assert!(!copy.matches(&Key::character("c"), Modifiers::CONTROL));
+        assert_eq!(copy.display_tokens(), vec!["Ctrl", "Shift", "C"]);
 
-        let dash = Shortcut::parse("ctrl-alt-r").expect("ctrl-alt-r");
-        assert!(dash.matches(&Key::character("R"), Modifiers::CONTROL | Modifiers::ALT));
+        let dash = Shortcut::parse("alt-shift-x").expect("alt-shift-x");
+        assert!(dash.matches(&Key::character("X"), Modifiers::ALT | Modifiers::SHIFT));
+        assert_eq!(dash.display_tokens(), vec!["Alt", "Shift", "X"]);
 
         let space = Shortcut::parse("Space").expect("Space");
         assert!(space.matches(&Key::Named(NamedKey::Space), Modifiers::NONE));
@@ -325,19 +347,68 @@ mod tests {
     }
 
     #[test]
-    fn held_modifier_and_key_chord_behave_consistently() {
+    fn held_modifier_retains_shift_and_rejects_mixed_or_meta() {
+        assert_eq!(
+            HeldModifier::from_modifiers(Modifiers::CONTROL),
+            Some(HeldModifier::Ctrl)
+        );
         assert_eq!(
             HeldModifier::from_modifiers(Modifiers::ALT),
-            HeldModifier::Alt
+            Some(HeldModifier::Alt)
+        );
+        assert_eq!(
+            HeldModifier::from_modifiers(Modifiers::CONTROL | Modifiers::SHIFT),
+            Some(HeldModifier::Ctrl)
+        );
+        assert_eq!(
+            HeldModifier::from_modifiers(Modifiers::ALT | Modifiers::SHIFT),
+            Some(HeldModifier::Alt)
         );
         assert_eq!(
             HeldModifier::from_modifiers(Modifiers::CONTROL | Modifiers::ALT),
-            HeldModifier::None
+            None
         );
+        assert_eq!(HeldModifier::from_modifiers(Modifiers::META), None);
+        assert_eq!(HeldModifier::from_modifiers(Modifiers::SHIFT), None);
+        assert_eq!(HeldModifier::from_modifiers(Modifiers::NONE), None);
 
         let chord = KeyChord::parse("Alt+N Esc").expect("two-stroke chord");
         assert_eq!(chord.strokes.len(), 2);
         assert_eq!(chord.label(), "Alt+N Esc");
         assert_eq!(chord.hint("Focus"), "Focus · Alt+N Esc");
+    }
+
+    #[test]
+    fn compact_labels_strip_held_modifier_and_gesture_badges_keep_tokens() {
+        let ctrl_r = Shortcut::parse("Ctrl+R").expect("Ctrl+R");
+        let ctrl_shift_tab = Shortcut::parse("Ctrl+Shift+Tab").expect("Ctrl+Shift+Tab");
+        let alt_a = Shortcut::parse("Alt+A").expect("Alt+A");
+        let alt_shift_x = Shortcut::parse("Alt+Shift+X").expect("Alt+Shift+X");
+        let f2 = Shortcut::parse("F2").expect("F2");
+
+        assert_eq!(
+            ShortcutBadge::path_label(&ctrl_r, HeldModifier::Ctrl).as_deref(),
+            Some("R")
+        );
+        assert_eq!(ShortcutBadge::path_label(&ctrl_r, HeldModifier::Alt), None);
+        assert_eq!(
+            ShortcutBadge::path_label(&ctrl_shift_tab, HeldModifier::Ctrl).as_deref(),
+            Some("Shift+Tab")
+        );
+        assert_eq!(
+            ShortcutBadge::path_label(&alt_a, HeldModifier::Alt).as_deref(),
+            Some("A")
+        );
+        assert_eq!(
+            ShortcutBadge::path_label(&alt_shift_x, HeldModifier::Alt).as_deref(),
+            Some("Shift+X")
+        );
+        assert_eq!(ShortcutBadge::path_label(&f2, HeldModifier::Ctrl), None);
+
+        let single_gesture = ShortcutBadge::gesture("Middle-click");
+        assert_eq!(single_gesture.labels(), ["Middle-click"]);
+
+        let chord_gesture = ShortcutBadge::gesture(["Ctrl", "Click"]);
+        assert_eq!(chord_gesture.labels(), ["Ctrl", "Click"]);
     }
 }

@@ -1,8 +1,8 @@
-//! Declarative and model-driven popup / context menus wrapping `zgui-ui`.
+//! Declarative and model-driven popup / context menus wrapping `zgui-ui` (`shortcuts.md` §3).
 
 use zgui::geom::{Css, CssPx, Point};
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, UnsyncCallback};
+use zgui::reactive::{LocalStorage, StoredValue, UnsyncCallback};
 use zgui::view::current_host;
 use zgui::vocab::{Key, NamedKey};
 use zgui::{component, css, view};
@@ -14,32 +14,72 @@ use zgui_ui::{
 };
 use zgui_ui_primitives::{Binding, Placement};
 
-use crate::ui::Shortcut;
 use crate::ui::icon::{IconName, IconProps};
+use crate::ui::{Shortcut, ShortcutBadgeProps};
 
-/// Minimum width (in CSS px) of a popup or context menu surface.
-pub const MIN_WIDTH: f32 = 160.0;
-/// Maximum width (in CSS px) of a popup or context menu surface.
-pub const MAX_WIDTH: f32 = 340.0;
-/// Maximum height (in CSS px) of a scrollable popup or context menu surface.
-pub const MAX_HEIGHT: f32 = 440.0;
+/// Preferred default width (in CSS px) of a popup or context menu surface.
+pub const WIDTH: f32 = 320.0;
+/// Minimum width (in CSS px) of a popup or context menu surface (`main:menu.rs`).
+pub const MIN_WIDTH: f32 = 220.0;
+/// Maximum width (in CSS px) of a popup or context menu surface (`main:menu.rs`).
+pub const MAX_WIDTH: f32 = 500.0;
+/// Maximum height (in CSS px) of a scrollable popup or context menu surface (`main:menu.rs`).
+pub const MAX_HEIGHT: f32 = 360.0;
+/// Horizontal gap (in CSS px) between an item label and its trailing [`ShortcutBadge`].
+pub const SHORTCUT_GAP: f32 = 24.0;
 
 const SHEET: &str = css!(
     r#"
     .gds-menu-content {
-        min-width: 160px;
-        max-width: 340px;
-        max-height: 440px;
+        --zui-surface-fill: var(--gds-panel);
+        --zui-surface-ink: var(--gds-panel-foreground);
+        --zui-surface-border: 1px solid var(--gds-border);
+        --zui-surface-radius: 8px;
+        background-color: var(--gds-panel);
+        color: var(--gds-panel-foreground);
+        border: 1px solid var(--gds-border);
+        border-radius: 8px;
+        min-width: 220px;
+        max-width: 500px;
+        max-height: 360px;
+        overflow-x: hidden;
         overflow-y: auto;
+        font-family: var(--gds-font-sans);
+        font-size: var(--gds-font-size-small, 14px);
+    }
+
+    .gds-menu-content .zui-menu__item,
+    .gds-menu-content .zui-menu__label {
+        font-size: var(--gds-font-size-small, 14px);
+    }
+
+    .gds-menu-content .zui-menu__item:not(.zui-menu__item--destructive):hover,
+    .gds-menu-content .zui-menu__item:not(.zui-menu__item--destructive):focus,
+    .gds-menu-content .zui-menu__item:not(.zui-menu__item--destructive)[data-state="open"] {
+        background-color: var(--gds-hover);
+        color: inherit;
     }
 
     .gds-menu-host {
         display: contents;
     }
 
+    .gds-menu-item-body {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        flex: 1 1 auto;
+        width: 100%;
+        min-width: 0;
+        gap: 24px;
+        font-size: var(--gds-font-size-small, 14px);
+    }
+
     .gds-menu-item-row {
         display: inline-flex;
         align-items: center;
+        flex: 1 1 auto;
         gap: 8px;
         min-width: 0;
     }
@@ -48,6 +88,14 @@ const SHEET: &str = css!(
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        font-size: var(--gds-font-size-small, 14px);
+    }
+
+    .gds-menu-item-shortcut {
+        display: inline-flex;
+        align-items: center;
+        flex-shrink: 0;
+        margin-left: auto;
     }
     "#
 );
@@ -171,7 +219,11 @@ fn has_leading_column(entries: &[MenuEntry]) -> bool {
     })
 }
 
-fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
+/// Renders a slice of [`MenuEntry`] values into `zgui-ui` menu items with `22px` trailing
+/// [`ShortcutBadge`] keycaps (`24px` gap, `14px` text) and AT-SPI shortcut metadata.
+#[must_use]
+pub fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
+    install_menu_stylesheet();
     let align_column = has_leading_column(&entries);
     entries
         .into_iter()
@@ -184,19 +236,34 @@ fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
                 destructive,
                 on_select,
             } => {
-                let shortcut_str = shortcut.map(|s| s.label());
                 let inset = align_column && icon.is_none();
+                let mut item_attrs = Attrs::new();
+                if let Some(ref key) = shortcut {
+                    let hint = zgui::vocab::SharedString::from(key.label());
+                    item_attrs =
+                        item_attrs.a11y_from(A11yBinding::unspecified().keyboard_shortcut(hint));
+                }
                 AnyView::new(view! {
                     MenuItem(
                         disabled = disabled,
                         destructive = destructive,
                         inset = inset,
-                        shortcut = shortcut_str,
-                        on_select = on_select
+                        on_select = on_select,
+                        {..item_attrs}
                     ) {
-                        row(class = "gds-menu-item-row") {
-                            {icon.map(|name| view! { Icon(name = name) }.into_view())}
-                            text(class = "gds-menu-item-label") {{label}}
+                        row(class = "gds-menu-item-body") {
+                            row(class = "gds-menu-item-row") {
+                                {icon.map(|name| view! { Icon(name = name) }.into_view())}
+                                text(class = "gds-menu-item-label") {{label}}
+                            }
+                            {shortcut.map(|key| {
+                                view! {
+                                    box(class = "gds-menu-item-shortcut", a11y:hidden = true) {
+                                        ShortcutBadge(shortcut = key)
+                                    }
+                                }
+                                .into_view()
+                            })}
                         }
                     }
                 })
@@ -221,6 +288,7 @@ fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
                 entries,
             } => {
                 let inset = align_column && icon.is_none();
+                let sub_entries = StoredValue::new_local(entries);
                 AnyView::new(view! {
                     MenuSub {
                         MenuSubTrigger(inset = inset) {
@@ -230,7 +298,7 @@ fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
                             }
                         }
                         MenuSubContent(class = "gds-menu-content") {
-                            {render_entries(entries.clone())}
+                            {sub_entries.with_value(|list| render_entries(list.clone()))}
                         }
                     }
                 })
@@ -243,7 +311,7 @@ fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
         .collect()
 }
 
-fn install_menu_stylesheet() {
+pub(crate) fn install_menu_stylesheet() {
     if current_host().is_some() {
         zgui::view::install_stylesheet("gds-ui-menu", SHEET);
     }
@@ -350,11 +418,20 @@ pub fn ContextMenuHost(
 mod tests {
     use zgui::reactive::{Mounted, UnsyncCallback, install};
 
-    use super::{MenuEntry, MenuModel, has_leading_column, popup_in};
+    use super::{
+        MAX_HEIGHT, MAX_WIDTH, MIN_WIDTH, MenuEntry, MenuModel, SHORTCUT_GAP, has_leading_column,
+        popup_in, render_entries,
+    };
+    use crate::ui::Shortcut;
     use crate::ui::icon::IconName;
 
     #[test]
-    fn menu_model_tracks_leading_column_alignment() {
+    fn menu_dimensions_and_entry_rendering_match_spec() {
+        assert_eq!(MIN_WIDTH, 220.0);
+        assert_eq!(MAX_WIDTH, 500.0);
+        assert_eq!(MAX_HEIGHT, 360.0);
+        assert_eq!(SHORTCUT_GAP, 24.0);
+
         install().ok();
         let scope = Mounted::new();
         scope.with(|| {
@@ -362,7 +439,7 @@ mod tests {
             plain.item(
                 "Rename",
                 None,
-                None,
+                Shortcut::parse("F2"),
                 false,
                 false,
                 UnsyncCallback::new(|()| {}),
@@ -371,9 +448,9 @@ mod tests {
 
             let mut mixed = popup_in(MenuModel::new());
             mixed.item(
-                "Copy",
-                Some(IconName::Copy),
-                None,
+                "New tab",
+                Some(IconName::Plus),
+                Shortcut::parse("Ctrl+N"),
                 false,
                 false,
                 UnsyncCallback::new(|()| {}),
@@ -382,12 +459,14 @@ mod tests {
             mixed.item(
                 "Paste",
                 None,
-                None,
+                Shortcut::parse("Ctrl+V"),
                 false,
                 false,
                 UnsyncCallback::new(|()| {}),
             );
             assert!(has_leading_column(&mixed.entries));
+            let rendered = render_entries(mixed.entries);
+            assert_eq!(rendered.len(), 3);
         });
         scope.unmount();
     }

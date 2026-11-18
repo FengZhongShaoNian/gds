@@ -1,4 +1,47 @@
+use zgui::prelude::*;
 use zgui::vocab::{Key, Modifiers, NamedKey};
+use zgui::{component, css, view};
+
+use super::HeldModifier;
+
+pub(super) const SHEET: &str = css!(
+    r#"
+    .gds-keycap {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 22px;
+        min-width: 22px;
+        padding: 0 6px;
+        border-radius: 4px;
+        border: 1px solid var(--gds-border);
+        background: var(--gds-surface);
+        color: var(--gds-muted-foreground);
+        font-family: var(--gds-font-sans);
+        font-size: calc(12px * var(--gds-font-scale, 1));
+        font-weight: 400;
+        line-height: 1;
+        white-space: nowrap;
+        flex-shrink: 0;
+        user-select: none;
+    }
+    "#
+);
+
+pub(super) fn install_keycap_stylesheet() {
+    if zgui::view::current_host().is_some() {
+        zgui::view::install_stylesheet("gds-ui-keycap", SHEET);
+    }
+}
+
+/// First-party GDS `22px` physical keycap pill (`shortcuts.md` §3).
+#[component]
+pub(super) fn Keycap(label: String) -> impl IntoView {
+    install_keycap_stylesheet();
+    view! {
+        text(class = "gds-keycap") {{label}}
+    }
+}
 
 /// Formats a single [`Key`] into its user-facing keycap label.
 pub(super) fn display_key(key: &Key) -> String {
@@ -7,6 +50,7 @@ pub(super) fn display_key(key: &Key) -> String {
             NamedKey::Escape => "Esc".to_owned(),
             NamedKey::Enter => "Enter".to_owned(),
             NamedKey::Space => "Space".to_owned(),
+            NamedKey::Tab => "Tab".to_owned(),
             NamedKey::Backspace => "Backspace".to_owned(),
             NamedKey::Delete => "Del".to_owned(),
             NamedKey::PageUp => "PgUp".to_owned(),
@@ -41,13 +85,17 @@ pub(super) fn display_key(key: &Key) -> String {
     }
 }
 
-/// Formats modifier keys in canonical cross-platform display order.
-pub(super) fn display_modifiers(modifiers: Modifiers) -> Vec<String> {
+/// Formats modifier keys in canonical `Ctrl → Alt → Shift → Super/Cmd` display order,
+/// omitting `held` when rendering compact modifier-hold badges.
+pub(super) fn display_modifiers_omitting(
+    modifiers: Modifiers,
+    held: Option<HeldModifier>,
+) -> Vec<String> {
     let mut tokens = Vec::new();
-    if modifiers.control() {
+    if modifiers.control() && held != Some(HeldModifier::Ctrl) {
         tokens.push("Ctrl".to_owned());
     }
-    if modifiers.alt() {
+    if modifiers.alt() && held != Some(HeldModifier::Alt) {
         tokens.push("Alt".to_owned());
     }
     if modifiers.shift() {
@@ -61,6 +109,11 @@ pub(super) fn display_modifiers(modifiers: Modifiers) -> Vec<String> {
         });
     }
     tokens
+}
+
+/// Formats modifier keys in canonical cross-platform display order.
+pub(super) fn display_modifiers(modifiers: Modifiers) -> Vec<String> {
+    display_modifiers_omitting(modifiers, None)
 }
 
 pub(super) fn is_space_key(key: &Key) -> bool {

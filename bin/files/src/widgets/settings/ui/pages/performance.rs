@@ -1,10 +1,10 @@
 use gds::i18n;
+use gds::ui::button::{ButtonProps, ButtonSize, ButtonVariant};
 use gds::ui::settings::SettingResetProps;
 use gds::ui::{IconButtonProps, IconName, IconProps};
 use zgui::prelude::*;
 use zgui::view;
 use zgui::view::install_stylesheet;
-use zgui_ui::{ButtonProps, ButtonSize, ButtonVariant};
 
 use crate::entities::preferences::FilesPreferences;
 
@@ -55,6 +55,14 @@ const PERFORMANCE_CSS: &str = r#"
 
 .gds-settings-perf__desc {
     color: var(--gds-muted-foreground);
+    white-space: normal;
+}
+
+.gds-settings-perf__action {
+    display: flex;
+    align-items: center;
+    align-self: center;
+    flex-shrink: 0;
 }
 "#;
 
@@ -335,8 +343,10 @@ impl super::super::View {
         let disabled = Signal::derive_local(move || !unlocked.get());
         let editor = self.subform(
             |p| PerformanceForm::from(&p.files),
-            |p, v| {
-                v.apply_to(&mut p.files);
+            move |p, v| {
+                if unlocked.get_untracked() {
+                    v.apply_to(&mut p.files);
+                }
             },
         );
         let form_view = editor.disabled(disabled).view();
@@ -362,43 +372,45 @@ impl super::super::View {
                         text(class = "gds-settings-perf__title") {{move || i18n::text("settings-performance-notice-title")}}
                         text(class = "gds-settings-perf__desc") {{move || i18n::text("settings-performance-notice")}}
                     }
-                    {move || {
-                        let reset_view = reset.clone();
-                        if unlocked.get() {
-                            let modified = preferences.with(|p| {
-                                PerformanceForm::from(&p.files) != PerformanceForm::default()
-                            });
-                            AnyView::new(view! {
-                                SettingReset {
-                                    {modified.then(|| view! {
-                                        IconButton(
-                                            icon = IconName::RotateCcw,
-                                            label = Signal::derive_local(|| i18n::text("form-reset")),
-                                            attr:data-testid = "settings-performance-reset",
-                                            on:click = move |_| {
-                                                reset_view.apply(|p| {
-                                                    PerformanceForm::default().apply_to(&mut p.files);
-                                                });
-                                                focus.focus();
-                                            },
-                                        )
-                                    }.into_view())}
-                                }
-                            })
-                        } else {
-                            AnyView::new(view! {
-                                Button(
-                                    variant = ButtonVariant::Default,
-                                    size = ButtonSize::Sm,
-                                    attr:data-testid = "settings-performance-unlock",
-                                    on:click = move |_| {
-                                        unlocked.set(true);
-                                        focus.focus();
-                                    },
-                                ) {{move || i18n::text("settings-performance-unlock")}}
-                            })
-                        }
-                    }}
+                    box(class = "gds-settings-perf__action") {
+                        {move || {
+                            let reset_view = reset.clone();
+                            if unlocked.get() {
+                                let modified = preferences.with(|p| {
+                                    PerformanceForm::from(&p.files) != PerformanceForm::default()
+                                });
+                                AnyView::new(view! {
+                                    SettingReset {
+                                        {modified.then(|| view! {
+                                            IconButton(
+                                                icon = IconName::RotateCcw,
+                                                label = Signal::derive_local(|| i18n::text("form-reset")),
+                                                attr:data-testid = "settings-performance-reset",
+                                                on:click = move |_| {
+                                                    reset_view.apply(|p| {
+                                                        PerformanceForm::default().apply_to(&mut p.files);
+                                                    });
+                                                    focus.focus();
+                                                },
+                                            )
+                                        }.into_view())}
+                                    }
+                                })
+                            } else {
+                                AnyView::new(view! {
+                                    Button(
+                                        variant = ButtonVariant::Default,
+                                        size = ButtonSize::Sm,
+                                        attr:data-testid = "settings-performance-unlock",
+                                        on:click = move |_| {
+                                            unlocked.set(true);
+                                            focus.focus();
+                                        },
+                                    ) {{move || i18n::text("settings-performance-unlock")}}
+                                })
+                            }
+                        }}
+                    }
                 }
                 {form_view}
             }

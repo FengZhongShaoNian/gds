@@ -5,10 +5,10 @@ use gds::ui::Shortcut;
 use gds::ui::dialog::DialogCommand;
 use gds::ui::help::{HelpPageProps, ShortcutHeadingProps, ShortcutRowProps, ShortcutSectionProps};
 use zgui::prelude::*;
-use zgui::vocab::{Key, Modifiers, NamedKey};
+use zgui::vocab::{Key, Modifiers};
 use zgui::{component, view};
 
-use crate::shared::ui::actions::Command;
+use crate::shared::ui::actions::{Command, ordinal_shortcut};
 
 const SECTIONS: &[(&str, &[Command])] = &[
     (
@@ -112,19 +112,6 @@ const SECTIONS: &[(&str, &[Command])] = &[
     ),
 ];
 
-fn dialog_row(command: DialogCommand) -> (&'static str, Shortcut) {
-    match command {
-        DialogCommand::Confirm => (
-            "dialog-confirm",
-            Shortcut::new(Key::Named(NamedKey::Enter), Modifiers::NONE),
-        ),
-        DialogCommand::Cancel => (
-            "close",
-            Shortcut::new(Key::Named(NamedKey::Escape), Modifiers::NONE),
-        ),
-    }
-}
-
 /// Renders the complete keyboard shortcut reference page for GDS Files.
 #[component]
 pub(crate) fn FilesHelp() -> impl IntoView {
@@ -144,11 +131,13 @@ pub(crate) fn FilesHelp() -> impl IntoView {
                 })
                 .collect::<Vec<_>>();
             let extra_tabs = (title == "help-tabs").then(|| {
+                let first_tab = ordinal_shortcut(0).expect("first tab binding");
+                let last_tab = ordinal_shortcut(8).expect("ninth tab binding");
                 view! {
                     ShortcutRow(
                         label = Signal::derive_local(|| i18n::text("help-select-tab")),
-                        shortcut = Shortcut::new(Key::character("1"), Modifiers::CONTROL),
-                        range_end = Shortcut::new(Key::character("9"), Modifiers::CONTROL),
+                        shortcut = first_tab,
+                        range_end = last_tab,
                     )
                 }
                 .into_view()
@@ -183,14 +172,13 @@ pub(crate) fn FilesHelp() -> impl IntoView {
         })
         .collect::<Vec<_>>();
 
-    let dialog_rows = [DialogCommand::Confirm, DialogCommand::Cancel]
+    let dialog_rows = DialogCommand::ALL
         .into_iter()
         .map(|command| {
-            let (label_id, shortcut) = dialog_row(command);
             view! {
                 ShortcutRow(
-                    label = Signal::derive_local(move || i18n::text(label_id)),
-                    shortcut = shortcut,
+                    label = Signal::derive_local(move || i18n::text(command.label_id())),
+                    shortcut = command.shortcut(),
                 )
             }
             .into_view()
@@ -205,5 +193,52 @@ pub(crate) fn FilesHelp() -> impl IntoView {
                 {dialog_rows}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gds::ui::dialog::DialogCommand;
+    use zgui::reactive::{Mounted, install};
+    use zgui::vocab::{Key, Modifiers};
+
+    use super::{FilesHelpProps, SECTIONS};
+    use crate::shared::ui::actions::Command;
+
+    #[test]
+    fn files_help_renders_all_sections_and_uses_dialog_command_mnemonics() {
+        assert_eq!(SECTIONS.len(), 12);
+        assert_eq!(
+            DialogCommand::ALL.map(|cmd| (cmd.label_id(), cmd.shortcut())),
+            [
+                (
+                    "dialog-confirm",
+                    gds::ui::Shortcut::new(Key::character("a"), Modifiers::ALT),
+                ),
+                (
+                    "dialog-cancel",
+                    gds::ui::Shortcut::new(Key::character("c"), Modifiers::ALT),
+                ),
+            ]
+        );
+        assert!(
+            SECTIONS
+                .iter()
+                .any(|&(title, cmds)| title == "help-notifications"
+                    && cmds
+                        == [
+                            Command::FocusNotifications,
+                            Command::CloseNotification,
+                            Command::CloseAllNotifications,
+                        ])
+        );
+
+        let _ = install();
+        let scope = Mounted::new();
+        scope.with(|| {
+            let _gds = gds::app::Gds::install(gds::service::task_manager::Scope::default());
+            let _view = zgui::view! { FilesHelp() };
+        });
+        scope.unmount();
     }
 }

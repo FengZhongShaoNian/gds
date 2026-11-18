@@ -1,21 +1,30 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     ffi::{OsStr, OsString},
     path::Path,
     rc::Rc,
 };
 
+use gds::ui::feedback::dialog::{
+    DialogActionsProps, DialogDecision, DialogFooterProps, DialogHeaderProps, DialogTitleProps,
+    handle_dialog_key_down,
+};
+use gds::ui::{IconName, IconProps};
 use zgui::prelude::*;
-use zgui::reactive::{RenderEffect, RwSignal, Signal, on_cleanup_local};
+use zgui::reactive::{RenderEffect, RwSignal, Signal, UnsyncCallback, on_cleanup_local};
 use zgui::view::install_stylesheet;
 use zgui::vocab::{ImeEvent, Key, NamedKey, Role};
 use zgui::{css, view};
-use zgui_ui::{
-    ButtonProps, ButtonVariant, DialogFooterProps, DialogHeaderProps, DialogTitleProps, InputProps,
-};
+use zgui_ui::InputProps;
 
 use super::ui::Browser;
-use crate::{features::file_operations::names, shared::i18n};
+use crate::{
+    features::file_operations::{names, rename},
+    shared::i18n,
+};
+
+pub(super) type PromptDecisionHandler =
+    Rc<RefCell<Option<(Rc<Cell<bool>>, UnsyncCallback<DialogDecision>)>>>;
 
 const NAME_FORM_SHEET: &str = "gds-files-name-form";
 const NAME_FORM_CSS: &str = css!(
@@ -28,14 +37,32 @@ const NAME_FORM_CSS: &str = css!(
         max-width: 440px;
     }
 
+    .gds-files-name-form[data-conflict="true"] {
+        width: 100%;
+        max-width: 100%;
+    }
+
+    .gds-files-name-form__title-row {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        min-width: 0px;
+    }
+
+    .gds-files-name-form__title-icon {
+        flex-shrink: 0;
+        color: var(--gds-foreground);
+    }
+
     .gds-files-name-form__message {
-        margin: 0;
+        margin: 0px;
         color: var(--gds-muted-foreground);
         font-size: 13px;
     }
 
     .gds-files-name-form__error {
-        margin: 0;
+        margin: 0px;
         color: var(--gds-error);
         font-size: 12px;
     }
@@ -75,16 +102,43 @@ impl NameForm {
         }
     }
 
-    fn checked_name(&self, value: &str) -> Result<OsString, &'static str> {
-        if self.non_utf8 && value == self.display {
-            names::validate(&self.initial).map_err(|error| error.label_id())?;
-            return Ok(self.initial.clone());
-        }
-        names::validate(OsStr::new(value)).map_err(|error| error.label_id())?;
-        Ok(OsString::from(value))
+    pub(super) const fn is_conflict(&self) -> bool {
+        matches!(self.purpose, NamePurpose::Conflict)
     }
 
-    fn message_key(&self) -> Option<&'static str> {
+    fn checked_name(&self, value: &str) -> Result<OsString, &'static str> {
+        let candidate = if self.non_utf8 && value == self.display {
+            self.initial.clone()
+        } else {
+            OsString::from(value)
+        };
+        if self.purpose == NamePurpose::Rename {
+            rename::validate_name(&candidate, &self.initial).map_err(|error| error.label_id())?;
+            return Ok(candidate);
+        }
+        names::validate(OsStr::new(&candidate)).map_err(|error| error.label_id())?;
+        Ok(candidate)
+    }
+
+    const fn header_icon(&self) -> Option<IconName> {
+        match self.purpose {
+            NamePurpose::NewFolder => Some(IconName::FolderPlus),
+            NamePurpose::Rename => Some(IconName::TextCursor),
+            NamePurpose::Conflict => Some(IconName::ClipboardPaste),
+            NamePurpose::Generic => None,
+        }
+    }
+
+    const fn primary_icon(&self) -> IconName {
+        match self.purpose {
+            NamePurpose::NewFolder => IconName::FolderPlus,
+            NamePurpose::Rename => IconName::Pencil,
+            NamePurpose::Conflict => IconName::ClipboardPaste,
+            NamePurpose::Generic => IconName::Check,
+        }
+    }
+
+    const fn message_key(&self) -> Option<&'static str> {
         match self.purpose {
             NamePurpose::NewFolder => Some("new-folder-message"),
             NamePurpose::Rename => Some("rename-message"),
@@ -93,7 +147,7 @@ impl NameForm {
         }
     }
 
-    fn placeholder_key(&self) -> Option<&'static str> {
+    const fn placeholder_key(&self) -> Option<&'static str> {
         match self.purpose {
             NamePurpose::NewFolder => Some("new-folder-placeholder"),
             NamePurpose::Rename => Some("rename-placeholder"),
@@ -102,11 +156,21 @@ impl NameForm {
         }
     }
 
-    fn confirm_key(&self) -> &'static str {
+    const fn confirm_key(&self) -> &'static str {
         match self.purpose {
             NamePurpose::NewFolder => "new-folder-confirm",
             NamePurpose::Rename => "rename-confirm",
-            NamePurpose::Conflict | NamePurpose::Generic => "dialog-confirm",
+            NamePurpose::Conflict => "paste-files",
+            NamePurpose::Generic => "dialog-confirm",
+        }
+    }
+
+    const fn cancel_key(&self) -> &'static str {
+        match self.purpose {
+            NamePurpose::NewFolder | NamePurpose::Rename | NamePurpose::Conflict => {
+                "operation-cancel"
+            }
+            NamePurpose::Generic => "dialog-cancel",
         }
     }
 
@@ -115,6 +179,7 @@ impl NameForm {
         browser: &Browser,
         generation: u64,
         submit: Rc<dyn Fn(OsString)>,
+        decision_slot: &PromptDecisionHandler,
     ) -> AnyView {
         if zgui::view::current_host().is_some() {
             install_stylesheet(NAME_FORM_SHEET, NAME_FORM_CSS);
@@ -149,15 +214,20 @@ impl NameForm {
         on_cleanup_local(move || drop(clear_error_effect));
 
         let title = self.title.clone();
+        let header_icon = self.header_icon();
+        let primary_icon = self.primary_icon();
+        let is_conflict = self.is_conflict();
+        let confirm_key = self.confirm_key();
+        let cancel_key = self.cancel_key();
         let message = self.message_key().map(i18n::text);
         let placeholder = self.placeholder_key().map(i18n::text);
-        let confirm_label = i18n::text(self.confirm_key());
-        let cancel_label = i18n::text("dialog-cancel");
+        let confirm_label = Signal::derive_local(move || i18n::text(confirm_key));
+        let cancel_label = Signal::derive_local(move || i18n::text(cancel_key));
         let invalid = Signal::derive_local(move || error.with(Option::is_some));
 
         let form = Rc::new(self);
         let browser_submit = browser.clone();
-        let submit_form = form.clone();
+        let submit_form = form;
         let submit_settled = Rc::clone(&settled);
         let submit_action = Rc::new(move || {
             if submit_settled.get()
@@ -203,31 +273,73 @@ impl NameForm {
             browser_cancel.cancel_prompt();
         });
 
-        let key_submit = submit_action.clone();
-        let key_cancel = cancel_action.clone();
-        let key_composing = composing.clone();
-        let start_composing = composing.clone();
-        let preedit_composing = composing.clone();
-        let commit_composing = composing.clone();
-        let end_composing = composing.clone();
+        let decision_submit = Rc::clone(&submit_action);
+        let decision_cancel = Rc::clone(&cancel_action);
+        let decision_composing = Rc::clone(&composing);
+        let decision_cb = UnsyncCallback::new(move |decision: DialogDecision| {
+            if decision_composing.get() {
+                return;
+            }
+            match decision {
+                DialogDecision::Confirm => decision_submit(),
+                DialogDecision::Cancel | DialogDecision::Dismiss => decision_cancel(),
+            }
+        });
+
+        *decision_slot.borrow_mut() = Some((Rc::clone(&composing), decision_cb));
+        {
+            let cleanup_slot = Rc::clone(decision_slot);
+            on_cleanup_local(move || {
+                *cleanup_slot.borrow_mut() = None;
+            });
+        }
+
+        let key_submit = submit_action;
+        let key_cancel = Rc::clone(&cancel_action);
+        let key_composing = Rc::clone(&composing);
+        let start_composing = Rc::clone(&composing);
+        let preedit_composing = Rc::clone(&composing);
+        let commit_composing = Rc::clone(&composing);
+        let end_composing = Rc::clone(&composing);
         let blur_composing = composing;
 
-        let dialog_cancel = cancel_action.clone();
-        let dialog_composing = blur_composing.clone();
+        let dialog_cancel = cancel_action;
+        let dialog_composing = Rc::clone(&blur_composing);
 
         AnyView::new(view! {
             column(
                 class = "gds-files-name-form",
+                attr:data-conflict = is_conflict.then(|| "true".to_owned()),
                 on:key_down = move |event| {
-                    if !dialog_composing.get() && event.key == Key::Named(NamedKey::Escape) {
+                    if dialog_composing.get() {
+                        return;
+                    }
+                    if event.key == Key::Named(NamedKey::Escape) {
                         event.prevent_default();
                         event.stop_propagation();
                         dialog_cancel();
+                        return;
                     }
+                    handle_dialog_key_down(false, decision_cb, event);
                 },
             ) {
                 DialogHeader {
-                    DialogTitle { {title} }
+                    {if let Some(icon) = header_icon {
+                        AnyView::new(view! {
+                            row(class = "gds-files-name-form__title-row") {
+                                Icon(
+                                    name = icon,
+                                    size = 18.0,
+                                    class = "gds-files-name-form__title-icon",
+                                )
+                                DialogTitle { {title} }
+                            }
+                        })
+                    } else {
+                        AnyView::new(view! {
+                            DialogTitle { {title} }
+                        })
+                    }}
                 }
                 {message.map(|text| view! {
                     text(class = "gds-files-name-form__message") { {text} }
@@ -264,6 +376,8 @@ impl NameForm {
                             event.prevent_default();
                             event.stop_propagation();
                             key_cancel();
+                        } else {
+                            handle_dialog_key_down(false, decision_cb, event);
                         }
                     },
                 ) {}
@@ -276,20 +390,12 @@ impl NameForm {
                     }
                 })}
                 DialogFooter {
-                    row(class = "gds-dialog-actions") {
-                        Button(
-                            variant = ButtonVariant::Outline,
-                            on:click = move |_| cancel_action(),
-                        ) {
-                            {cancel_label.clone()}
-                        }
-                        Button(
-                            variant = ButtonVariant::Default,
-                            on:click = move |_| submit_action(),
-                        ) {
-                            {confirm_label.clone()}
-                        }
-                    }
+                    DialogActions(
+                        primary_label = confirm_label,
+                        primary_icon = primary_icon,
+                        cancel_label = cancel_label,
+                        on_decision = decision_cb,
+                    )
                 }
             }
         })
@@ -308,4 +414,50 @@ fn initial_selection_end(purpose: NamePurpose, display: &str) -> usize {
         return stem.len();
     }
     display.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use super::{NameForm, NamePurpose};
+
+    #[test]
+    fn purpose_icons_labels_and_rename_validation_match_gpui_parity() {
+        let new_folder = NameForm::new(
+            NamePurpose::NewFolder,
+            "New Folder".into(),
+            OsString::from("New Folder"),
+        );
+        assert_eq!(new_folder.confirm_key(), "new-folder-confirm");
+        assert_eq!(new_folder.cancel_key(), "operation-cancel");
+        assert!(!new_folder.is_conflict());
+        assert!(new_folder.checked_name("New Folder").is_ok());
+
+        let rename_form = NameForm::new(
+            NamePurpose::Rename,
+            "Rename".into(),
+            OsString::from("report.txt"),
+        );
+        assert_eq!(rename_form.confirm_key(), "rename-confirm");
+        assert_eq!(rename_form.cancel_key(), "operation-cancel");
+        assert_eq!(rename_form.selection_end, "report".len());
+        assert_eq!(
+            rename_form.checked_name("report.txt"),
+            Err("rename-error-unchanged")
+        );
+        assert_eq!(
+            rename_form.checked_name("summary.txt"),
+            Ok(OsString::from("summary.txt"))
+        );
+
+        let conflict = NameForm::new(
+            NamePurpose::Conflict,
+            "Name Conflict".into(),
+            OsString::from("report (2).txt"),
+        );
+        assert!(conflict.is_conflict());
+        assert_eq!(conflict.confirm_key(), "paste-files");
+        assert_eq!(conflict.cancel_key(), "operation-cancel");
+    }
 }

@@ -9,12 +9,16 @@ use std::{
     time::Duration,
 };
 
-use gds::ui::drag::{DragCardProps, DragOverlayState, drop_hit_test, drop_target_attrs};
+use gds::appearance::tokens::ICON_SIZE;
+use gds::ui::{
+    IconName, IconProps,
+    drag::{DRAG_THRESHOLD, DragCardProps, DragOverlayState, drop_hit_test, drop_target_attrs},
+};
 use zgui::prelude::*;
-use zgui::reactive::{Signal, UnsyncCallback, on_cleanup_local};
-use zgui::view;
-use zgui::view::{EventCx, TimeoutHandle, Timers};
-use zgui::vocab::PointerButton;
+use zgui::reactive::{RenderEffect, Signal, UnsyncCallback, on_cleanup_local};
+use zgui::view::{EventCx, ListenerGuard, ListenerOptions, TimeoutHandle, Timers, events};
+use zgui::vocab::{Key, NamedKey, PointerButton};
+use zgui::{css, view};
 
 use super::{
     geometry::Grid,
@@ -22,20 +26,68 @@ use super::{
     ui::Browser,
 };
 use crate::{
-    entities::file::directory::Entry,
+    entities::file::{
+        directory::{Entry, EntryKind},
+        ui::FileIcon,
+    },
     features::file_operations::{paste::PasteJob, transfer},
     shared::{i18n, lib::selection::Selection},
 };
 
+const PREVIEW_VISIBLE_ITEMS: usize = 3;
+const SPRING_LOAD_DELAY: Duration = Duration::from_millis(600);
+const DRAG_PREVIEW_SHEET: &str = "gds-files-drag-preview";
+const DRAG_PREVIEW_CSS: &str = css!(
+    r#"
+    .gds-files-drag-item {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        min-width: 0px;
+    }
+
+    .gds-files-drag-item__icon {
+        flex-shrink: 0;
+        color: var(--gds-muted-foreground);
+    }
+
+    .gds-files-drag-header__icon {
+        flex-shrink: 0;
+        color: var(--gds-primary);
+    }
+
+    .gds-files-drag-item__name {
+        flex: 1 1 0%;
+        min-width: 0px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .gds-files-drag-row-host {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        min-width: 0px;
+    }
+    "#
+);
+
 #[derive(Clone, Debug)]
 struct DragItem {
     path: PathBuf,
+    name: String,
+    icon: FileIcon,
 }
 
 impl DragItem {
     fn new(entry: &Entry) -> Self {
         Self {
             path: entry.path.clone(),
+            name: entry.display_name.clone(),
+            icon: FileIcon::for_entry(entry),
         }
     }
 }
@@ -101,8 +153,12 @@ impl FileDrag {
         }
     }
 
-    pub(super) fn is_source(_path: &Path) -> bool {
-        false
+    pub(super) fn is_source(path: &Path) -> bool {
+        ACTIVE_DRAG_SOURCES.with(|slot| {
+            slot.borrow()
+                .values()
+                .any(|sources| !sources.is_empty() && sources.contains(path))
+        })
     }
 
     pub(super) fn paths(&self) -> Vec<PathBuf> {
@@ -120,6 +176,18 @@ impl FileDrag {
         match &self.payload {
             DragPayload::Single(_) => 1,
             DragPayload::Selection(inner) => inner.entries().len(),
+        }
+    }
+
+    fn preview_items(&self) -> Vec<DragItem> {
+        match &self.payload {
+            DragPayload::Single(entry) => vec![DragItem::new(entry)],
+            DragPayload::Selection(inner) => inner
+                .entries()
+                .iter()
+                .take(PREVIEW_VISIBLE_ITEMS)
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -165,9 +233,6 @@ impl DragSnapshot {
             .is_some_and(|inner| inner.entries.get().is_some())
     }
 }
-
-const DRAG_THRESHOLD: f32 = 6.0;
-const SPRING_LOAD_DELAY: Duration = Duration::from_millis(600);
 
 #[derive(Clone)]
 enum WindowDragPayload {
@@ -278,12 +343,23 @@ impl DragCoordinator {
         self.tabs.borrow_mut().retain(|item| item.token != token);
     }
 
-    fn hit_target(&self, pos: (f32, f32)) -> Option<RegisteredTarget> {
+    fn hit_target_excluding(
+        &self,
+        pos: (f32, f32),
+        excluded_sources: &HashSet<PathBuf>,
+    ) -> Option<RegisteredTarget> {
         self.targets
             .borrow()
             .iter()
             .rev()
-            .find(|item| drop_hit_test(&item.node, pos))
+            .find(|item| {
+                if let TargetKind::Folder(dest) = &item.kind
+                    && excluded_sources.contains(dest)
+                {
+                    return false;
+                }
+                drop_hit_test(&item.node, pos)
+            })
             .cloned()
     }
 
@@ -309,7 +385,25 @@ impl DragCoordinator {
 thread_local! {
     static COORDINATORS: RefCell<HashMap<usize, Rc<DragCoordinator>>> = RefCell::new(HashMap::new());
     static CLEANUP_REGISTERED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static ACTIVE_DRAG_SOURCES: RefCell<HashMap<usize, HashSet<PathBuf>>> = RefCell::new(HashMap::new());
     static ROW_PRESSED_WINDOW: Cell<usize> = const { Cell::new(0) };
+}
+
+fn set_active_drag_sources(browser: &Browser, paths: Vec<PathBuf>) {
+    let window_key = Rc::as_ptr(&browser.0) as usize;
+    let set: HashSet<PathBuf> = paths.iter().cloned().collect();
+    ACTIVE_DRAG_SOURCES.with(|slot| {
+        slot.borrow_mut().insert(window_key, set);
+    });
+    browser.set_drag_sources(paths);
+}
+
+fn clear_active_drag_sources(browser: &Browser) {
+    let window_key = Rc::as_ptr(&browser.0) as usize;
+    ACTIVE_DRAG_SOURCES.with(|slot| {
+        slot.borrow_mut().remove(&window_key);
+    });
+    browser.clear_drag_sources();
 }
 
 pub(super) fn mark_row_pointer_down(browser: &Browser) {
@@ -327,25 +421,62 @@ pub(super) fn take_row_pointer_down(browser: &Browser) -> bool {
 
 fn coordinator_for(browser: &Browser) -> Rc<DragCoordinator> {
     let window_key = Rc::as_ptr(&browser.0) as usize;
-    let needs_cleanup = CLEANUP_REGISTERED.with(|slot| slot.borrow_mut().insert(window_key));
-    if needs_cleanup {
-        browser.0.owner.with(|| {
-            on_cleanup_local(move || {
-                COORDINATORS.with(|slot| {
-                    slot.borrow_mut().remove(&window_key);
-                });
-                CLEANUP_REGISTERED.with(|slot| {
-                    slot.borrow_mut().remove(&window_key);
-                });
-            });
-        });
-    }
     if let Some(coord) = COORDINATORS.with(|slot| slot.borrow().get(&window_key).cloned()) {
         return coord;
     }
     // DragCoordinator allocates RwSignal overlay state; anchor it to the window owner so
     // unmounting the first list/row branch does not dispose signals cached per window.
     let coord = browser.0.owner.with(|| Rc::new(DragCoordinator::new()));
+    let needs_cleanup = CLEANUP_REGISTERED.with(|slot| slot.borrow_mut().insert(window_key));
+    if needs_cleanup {
+        let root_node = browser.0.root_focus;
+        let weak = browser.downgrade();
+        let esc_coord = Rc::clone(&coord);
+        browser.0.owner.with(|| {
+            let key_guard: Rc<RefCell<Option<ListenerGuard>>> = Rc::new(RefCell::new(None));
+            let key_guard_watch = Rc::clone(&key_guard);
+            let attach_fx = RenderEffect::new(move |_| {
+                if root_node.get().is_none() || key_guard_watch.borrow().is_some() {
+                    return;
+                }
+                let weak_inner = weak.clone();
+                let coord_inner = Rc::clone(&esc_coord);
+                let guard = root_node.listen(
+                    events::KEY_DOWN,
+                    ListenerOptions::CAPTURE,
+                    move |ev: &mut EventCx<'_, events::KeyDown>| {
+                        if ev.key != Key::Named(NamedKey::Escape) {
+                            return;
+                        }
+                        if coord_inner.overlay.payload().get_untracked().is_none() {
+                            return;
+                        }
+                        coord_inner.cancel_all();
+                        if let Some(browser) = weak_inner.upgrade() {
+                            clear_active_drag_sources(&browser);
+                        }
+                        ev.prevent_default();
+                        ev.stop_propagation();
+                    },
+                );
+                *key_guard_watch.borrow_mut() = guard;
+            });
+
+            on_cleanup_local(move || {
+                drop(attach_fx);
+                drop(key_guard.borrow_mut().take());
+                COORDINATORS.with(|slot| {
+                    slot.borrow_mut().remove(&window_key);
+                });
+                CLEANUP_REGISTERED.with(|slot| {
+                    slot.borrow_mut().remove(&window_key);
+                });
+                ACTIVE_DRAG_SOURCES.with(|slot| {
+                    slot.borrow_mut().remove(&window_key);
+                });
+            });
+        });
+    }
     COORDINATORS.with(|slot| {
         Rc::clone(
             slot.borrow_mut()
@@ -357,6 +488,9 @@ fn coordinator_for(browser: &Browser) -> Rc<DragCoordinator> {
 
 impl Browser {
     pub(super) fn background_drop_target(&self, view: AnyView) -> AnyView {
+        if zgui::view::current_host().is_some() {
+            zgui::view::install_stylesheet(DRAG_PREVIEW_SHEET, DRAG_PREVIEW_CSS);
+        }
         let coord = coordinator_for(self);
         let overlay = coord.overlay;
         let browser = self.clone();
@@ -386,35 +520,84 @@ impl Browser {
             box(class = "gds-files-drop-background", {..drop_attrs}) {
                 {view}
                 {move || overlay.payload().get().map(|payload| {
-                    let (header, detail) = match payload {
+                    match payload {
                         WindowDragPayload::Files(drag) => {
                             let count = drag.count();
-                            let title = if count == 1 {
-                                drag.paths()
-                                    .first()
-                                    .and_then(|path| path.file_name())
-                                    .map(|name| name.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|| gds::i18n::count("selection-count", count))
+                            let items = drag.preview_items();
+                            let copy_hint = copy_mode.get().then(|| i18n::text("copy-files"));
+                            if count <= 1 {
+                                let (icon, label) = items
+                                    .into_iter()
+                                    .next()
+                                    .map(|item| (item.icon.base(), item.name))
+                                    .unwrap_or_else(|| (IconName::File, gds::i18n::count("item-count", 1)));
+                                AnyView::new(view! {
+                                    DragCard(position = overlay.position()) {
+                                        column(class = "gds-drag-card__content") {
+                                            row(class = "gds-files-drag-item") {
+                                                Icon(name = icon, size = ICON_SIZE, class = "gds-files-drag-item__icon")
+                                                text(class = "gds-files-drag-item__name") {{label}}
+                                            }
+                                        }
+                                        {copy_hint.map(|hint| view! {
+                                            row(class = "gds-drag-card__footer") {{hint}}
+                                        })}
+                                    }
+                                })
                             } else {
-                                gds::i18n::count("selection-count", count)
-                            };
-                            let action = if copy_mode.get() {
-                                i18n::text("copy-files")
-                            } else {
-                                String::new()
-                            };
-                            (title, action)
+                                let remaining = count.saturating_sub(PREVIEW_VISIBLE_ITEMS);
+                                let footer_text = if remaining > 0 {
+                                    Some(gds::i18n::count("operation-more-items", remaining))
+                                } else {
+                                    copy_hint
+                                };
+                                let rows = items
+                                    .into_iter()
+                                    .map(|item| {
+                                        view! {
+                                            row(class = "gds-files-drag-item") {
+                                                Icon(
+                                                    name = item.icon.base(),
+                                                    size = ICON_SIZE,
+                                                    class = "gds-files-drag-item__icon",
+                                                )
+                                                text(class = "gds-files-drag-item__name") {{item.name}}
+                                            }
+                                        }
+                                        .into_view()
+                                    })
+                                    .collect::<Vec<_>>();
+                                AnyView::new(view! {
+                                    DragCard(position = overlay.position()) {
+                                        row(class = "gds-drag-card__header") {
+                                            Icon(
+                                                name = FileIcon::multiple().base(),
+                                                size = ICON_SIZE,
+                                                class = "gds-files-drag-header__icon",
+                                            )
+                                            text(class = "gds-files-drag-item__name") {
+                                                {gds::i18n::count("item-count", count)}
+                                            }
+                                        }
+                                        column(class = "gds-drag-card__content") {{rows}}
+                                        {footer_text.map(|more| view! {
+                                            row(class = "gds-drag-card__footer") {{more}}
+                                        })}
+                                    }
+                                })
+                            }
                         }
-                        WindowDragPayload::Tab { title, .. } => (title, String::new()),
-                    };
-                    AnyView::new(view! {
-                        DragCard(position = overlay.position()) {
-                            row(class = "gds-drag-card__header") { {header} }
-                            {(!detail.is_empty()).then(|| view! {
-                                column(class = "gds-drag-card__content") { {detail} }
-                            })}
-                        }
-                    })
+                        WindowDragPayload::Tab { title, .. } => AnyView::new(view! {
+                            DragCard(position = overlay.position()) {
+                                column(class = "gds-drag-card__content") {
+                                    row(class = "gds-files-drag-item") {
+                                        Icon(name = IconName::Folder, size = ICON_SIZE, class = "gds-files-drag-item__icon")
+                                        text(class = "gds-files-drag-item__name") {{title}}
+                                    }
+                                }
+                            }
+                        }),
+                    }
                 })}
             }
         })
@@ -578,7 +761,38 @@ impl Browser {
         let Row::File(entry) = row else {
             return view;
         };
+        if zgui::view::current_host().is_some() {
+            zgui::view::install_stylesheet(DRAG_PREVIEW_SHEET, DRAG_PREVIEW_CSS);
+        }
         let coord = coordinator_for(self);
+        let node = NodeRef::new();
+
+        let dir_attrs = if entry.kind == EntryKind::Directory {
+            let dest = entry.path.clone();
+            let target_key = format!("row-dir:{}", dest.display());
+            let target_token =
+                coord.register_target(target_key.clone(), node, TargetKind::Folder(dest.clone()));
+            let cleanup_coord = Rc::clone(&coord);
+            on_cleanup_local(move || {
+                cleanup_coord.unregister_target(target_token);
+            });
+            let overlay = coord.overlay;
+            let internal_active = Signal::derive_local(move || {
+                overlay.hovered_target().get().as_deref() == Some(&target_key)
+            });
+            let drop_browser = self.clone();
+            let on_external_drop =
+                UnsyncCallback::new(move |(paths, _pos): (Vec<PathBuf>, (f32, f32))| {
+                    if !paths.is_empty() {
+                        let job = PasteJob::new(dest.clone(), transfer::Mode::Copy, paths);
+                        drop_browser.inspect_paste(job, false, true, None);
+                    }
+                });
+            drop_target_attrs(internal_active, Some(on_external_drop))
+        } else {
+            Attrs::new()
+        };
+
         let row_entry = entry.clone();
         let press_browser = self.clone();
         let press_coord = Rc::clone(&coord);
@@ -586,10 +800,14 @@ impl Browser {
         let move_coord = Rc::clone(&coord);
         let up_browser = self.clone();
         let up_coord = Rc::clone(&coord);
+        let cancel_browser = self.clone();
         let cancel_coord = Rc::clone(&coord);
 
         AnyView::new(view! {
             box(
+                class = "gds-files-drag-row-host",
+                node_ref = node,
+                {..dir_attrs},
                 on:pointer_down = move |ev| {
                     if ev.button != Some(PointerButton::Primary) {
                         return;
@@ -621,12 +839,7 @@ impl Browser {
                         *move_coord.armed.borrow_mut() = None;
                         let drag = materialize_file_drag(&move_browser, tab_id, &entry);
                         if let Some(drag) = drag {
-                            let outbound_supported = move_browser
-                                .0
-                                .window
-                                .as_ref()
-                                .is_some_and(|w| w.capabilities().drag_source);
-                            let _ = outbound_supported;
+                            set_active_drag_sources(&move_browser, drag.paths());
                             ev.capture_pointer();
                             move_coord.overlay.begin(WindowDragPayload::Files(drag), pos.0, pos.1);
                         }
@@ -656,8 +869,11 @@ impl Browser {
                     ev.release_pointer();
                     up_coord.clear_spring();
                     let pos = (ev.position.x.0, ev.position.y.0);
-                    let target = up_coord.hit_target(pos);
-                    if let Some(WindowDragPayload::Files(drag)) = up_coord.overlay.end()
+                    let excluded = up_browser.drag_sources().get_untracked();
+                    let target = up_coord.hit_target_excluding(pos, &excluded);
+                    let ended = up_coord.overlay.end();
+                    clear_active_drag_sources(&up_browser);
+                    if let Some(WindowDragPayload::Files(drag)) = ended
                         && let Some(target) = target
                     {
                         let destination = match target.kind {
@@ -678,9 +894,12 @@ impl Browser {
                                 transfer::Mode::Move
                             };
                             let paths = drag.paths();
+                            let invalid_self_target = paths
+                                .iter()
+                                .any(|src| destination == *src || destination.starts_with(src));
                             let same_dir = mode == transfer::Mode::Move
                                 && paths.iter().all(|p| p.parent() == Some(destination.as_path()));
-                            if !paths.is_empty() && !same_dir {
+                            if !paths.is_empty() && !same_dir && !invalid_self_target {
                                 let job = PasteJob::new(destination, mode, paths);
                                 up_browser.inspect_paste(job, false, true, None);
                             }
@@ -690,6 +909,7 @@ impl Browser {
                 },
                 on:pointer_cancel = move |ev| {
                     ev.release_pointer();
+                    clear_active_drag_sources(&cancel_browser);
                     cancel_coord.cancel_all();
                 },
             ) {
@@ -719,13 +939,14 @@ impl Browser {
 }
 
 fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
-    let dx = b.0 - a.0;
-    let dy = b.1 - a.1;
-    (dx * dx + dy * dy).sqrt()
+    (b.0 - a.0).hypot(b.1 - a.1)
 }
 
 fn materialize_file_drag(browser: &Browser, tab_id: u64, entry: &Entry) -> Option<FileDrag> {
     browser.read_untracked(|state| {
+        if state.picker.is_some() {
+            return None;
+        }
         let tab = state.tabs.iter().find(|tab| tab.id == tab_id)?;
         if !matches!(tab.contents, Contents::Directory | Contents::Tags { .. }) {
             return None;
@@ -754,7 +975,8 @@ fn materialize_file_drag(browser: &Browser, tab_id: u64, entry: &Entry) -> Optio
 }
 
 fn update_file_drag_hover(browser: &Browser, coord: &Rc<DragCoordinator>, pos: (f32, f32)) {
-    let target = coord.hit_target(pos);
+    let excluded = browser.drag_sources().get_untracked();
+    let target = coord.hit_target_excluding(pos, &excluded);
     let next_key = target.as_ref().map(|t| t.key.clone());
     let prev_key = coord.overlay.hovered_target().get_untracked();
     if next_key == prev_key {
@@ -809,9 +1031,13 @@ fn update_file_drag_hover(browser: &Browser, coord: &Rc<DragCoordinator>, pos: (
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc};
+    use std::{
+        collections::HashSet,
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
 
-    use super::{DragSnapshot, Entry, FileDrag};
+    use super::{ACTIVE_DRAG_SOURCES, DragSnapshot, Entry, FileDrag};
     use crate::{
         entities::file::directory::{EntryDetails, EntryKind},
         shared::lib::selection::Selection,
@@ -859,5 +1085,25 @@ mod tests {
         assert_eq!(selected_drags[0].paths(), expected_selected);
         assert!(snapshot.is_materialized());
         assert_eq!(selected_drags[15].count(), 1_000);
+    }
+
+    #[test]
+    fn active_drag_sources_track_and_clear_ghosted_paths() {
+        let alpha = PathBuf::from("/tmp/drag-source-alpha.txt");
+        let beta = PathBuf::from("/tmp/drag-source-beta.txt");
+        let key = 0xfeed_usize;
+
+        assert!(!FileDrag::is_source(&alpha));
+        ACTIVE_DRAG_SOURCES.with(|slot| {
+            slot.borrow_mut()
+                .insert(key, HashSet::from([alpha.clone()]));
+        });
+        assert!(FileDrag::is_source(Path::new("/tmp/drag-source-alpha.txt")));
+        assert!(!FileDrag::is_source(&beta));
+
+        ACTIVE_DRAG_SOURCES.with(|slot| {
+            slot.borrow_mut().remove(&key);
+        });
+        assert!(!FileDrag::is_source(&alpha));
     }
 }

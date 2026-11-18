@@ -2,12 +2,14 @@
 
 mod network;
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 use gds::service::remote;
 use gds::ui::button::{ButtonSize, ButtonVariant};
 use gds::ui::capacity::CapacityBarProps;
-use gds::ui::feedback::tooltip::HintTooltipProps;
+use gds::ui::feedback::tooltip::{HintTooltipProps, wrap_tokens};
 use gds::ui::page::PageNoticeProps;
 use gds::ui::time::Timestamp;
 use gds::ui::{IconButtonProps, IconName, IconProps};
@@ -15,7 +17,7 @@ use gds::{i18n, t};
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, Signal};
 use zgui::view::{current_host, install_stylesheet};
-use zgui::vocab::{Modifiers, Role, SharedString};
+use zgui::vocab::{Role, SharedString};
 use zgui::{css, view};
 use zgui_ui::{
     ButtonProps, DropdownMenuContentProps, DropdownMenuProps, DropdownMenuTriggerProps,
@@ -25,10 +27,11 @@ use zgui_ui_primitives::Binding;
 
 use crate::entities::file::{
     columns::Column,
+    directory::{ContentCategory, ContentType, EntryKind},
     sorting::Direction,
-    ui::{EntryPresentation, UNKNOWN_VALUE},
+    ui::{EntryPresentation, FileIcon, UNKNOWN_VALUE},
 };
-use crate::entities::location::{Location, volumes};
+use crate::entities::location::{Location, scheme::TagAddress, volumes};
 
 use super::{
     model::{Contents, Row},
@@ -94,40 +97,96 @@ const SURFACES_CSS: &str = css!(
     .gds-files-collection-header {
         display: flex;
         flex-direction: row;
+        flex: none;
         align-items: center;
-        height: 32px;
+        height: 30px;
         border-bottom: 1px solid var(--gds-border);
-        background: var(--gds-surface);
     }
 
     .gds-files-collection-header__cell {
         display: flex;
         flex-direction: row;
         align-items: center;
-        gap: 4px;
         min-width: 0;
         flex-shrink: 0;
-        padding: 0 6px;
-        font-size: var(--gds-font-size-xs, 12px);
-        font-weight: 600;
-        color: var(--gds-muted-foreground);
+        height: 100%;
+    }
+
+    .gds-files-collection-header__static {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        flex: 1 1 0%;
+        min-width: 0;
+        height: 100%;
+        padding: 0 12px;
+    }
+
+    .gds-files-collection-header__static[data-name-col="true"] {
+        padding-left: 40px;
+    }
+
+    .gds-files-collection-header__static[data-align="end"] {
+        justify-content: flex-end;
+        text-align: right;
     }
 
     .gds-files-collection-header__button {
         display: flex;
         flex-direction: row;
         align-items: center;
-        justify-content: flex-start;
+        flex: 1 1 0%;
+        min-width: 0;
+        height: 100%;
         gap: 4px;
-        width: 100%;
-        height: 26px;
-        padding: 0 4px;
-        font-size: var(--gds-font-size-xs, 12px);
-        font-weight: 600;
+        padding: 0 8px 0 12px;
+        cursor: pointer;
+    }
+
+    .gds-files-collection-header__button[data-name-col="true"] {
+        padding-left: 40px;
+    }
+
+    .gds-files-collection-header__button[data-align="end"] {
+        justify-content: flex-end;
+        text-align: right;
+    }
+
+    .gds-files-collection-header__button:hover {
+        background-color: var(--gds-hover);
+    }
+
+    .gds-files-collection-header__label {
+        min-width: 0;
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--gds-muted-foreground);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .gds-files-collection-header__button:not([data-align="end"]) .gds-files-collection-header__label,
+    .gds-files-collection-header__static:not([data-align="end"]) .gds-files-collection-header__label {
+        flex: 1 1 0%;
+    }
+
+    .gds-files-collection-header__button[data-active="true"] .gds-files-collection-header__label {
+        color: var(--gds-foreground);
+    }
+
+    .gds-files-collection-header__sort {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        width: 12px;
+        height: 18px;
+        flex-shrink: 0;
         color: var(--gds-muted-foreground);
     }
 
-    .gds-files-collection-header__button[data-active="true"] {
+    .gds-files-collection-header__sort[data-active="true"] {
         color: var(--gds-foreground);
     }
 
@@ -135,19 +194,68 @@ const SURFACES_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         min-width: 0;
         flex-shrink: 0;
-        padding: 0 6px;
+        height: 100%;
+        padding: 0 12px;
         overflow: hidden;
+    }
+
+    .gds-files-collection-cell--meta {
+        font-size: 12px;
+        color: var(--gds-muted-foreground);
     }
 
     .gds-files-collection-cell--split {
         justify-content: space-between;
     }
 
-    .gds-files-collection-cell__text {
-        font-size: var(--gds-font-size-sm, 14px);
+    .gds-files-collection-cell[data-align="end"] {
+        justify-content: flex-end;
+        text-align: right;
+    }
+
+    .gds-files-collection-cell[data-hidden-entry="true"] {
+        opacity: 0.65;
+    }
+
+    .gds-files-row-content[data-selected="true"] .gds-files-collection-cell[data-hidden-entry="true"] {
+        opacity: 1;
+    }
+
+    .gds-files-collection-artwork {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        overflow: visible;
+        color: var(--gds-muted-foreground);
+    }
+
+    .gds-files-collection-artwork[data-directory="true"] {
+        color: var(--gds-primary);
+    }
+
+    .gds-files-collection-artwork[data-selected="true"] {
+        color: var(--gds-selection-foreground);
+    }
+
+    .gds-files-collection-artwork__badge {
+        position: absolute;
+        right: -1px;
+        bottom: -1px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+    }
+
+    .gds-files-collection-cell__name {
+        font-size: 13px;
         color: var(--gds-foreground);
         overflow: hidden;
         text-overflow: ellipsis;
@@ -156,12 +264,36 @@ const SURFACES_CSS: &str = css!(
         flex: 1 1 0%;
     }
 
-    .gds-files-collection-cell__text[data-muted="true"] {
+    .gds-files-row-content[data-selected="true"] .gds-files-collection-cell__name {
+        color: var(--gds-selection-foreground);
+    }
+
+    .gds-files-collection-cell__text {
+        font-size: 12px;
         color: var(--gds-muted-foreground);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+        width: 100%;
+    }
+
+    .gds-files-collection-cell__text[data-align="end"] {
+        text-align: right;
+    }
+
+    .gds-files-collection-cell__text[data-emphasis="true"] {
+        color: var(--gds-foreground);
+    }
+
+    .gds-files-row-content[data-selected="true"] .gds-files-collection-cell--meta,
+    .gds-files-row-content[data-selected="true"] .gds-files-collection-cell__text,
+    .gds-files-row-content[data-selected="true"] .gds-files-collection-cell__badge {
+        color: var(--gds-selection-foreground);
     }
 
     .gds-files-collection-cell__badge {
-        font-size: var(--gds-font-size-xs, 12px);
+        font-size: 11px;
         color: var(--gds-muted-foreground);
         flex-shrink: 0;
     }
@@ -251,11 +383,55 @@ impl CollectionBodyState {
     }
 }
 
+fn location_table_columns(viewport: f32, compact: bool) -> Vec<(&'static str, f32)> {
+    let modified_w = if compact { 140.0 } else { 160.0 };
+    let type_w = if compact { 96.0 } else { 110.0 };
+    let size_w = if compact { 88.0 } else { 100.0 };
+    let loc_min = if compact { 180.0 } else { 240.0 };
+    let fixed = modified_w + type_w + size_w;
+    let remaining = (viewport - fixed).max(180.0 + loc_min);
+    let name_w = (remaining * 0.45).max(180.0);
+    let loc_w = (viewport - fixed - name_w).max(loc_min);
+    vec![
+        ("name", name_w),
+        ("modified", modified_w),
+        ("type", type_w),
+        ("size", size_w),
+        ("place-location", loc_w),
+    ]
+}
+
+fn collection_artwork(
+    base: IconName,
+    badge: Option<IconName>,
+    is_directory: bool,
+    selected: Signal<bool, LocalStorage>,
+) -> AnyView {
+    let badge_view = badge.map(|badge_icon| {
+        view! {
+            box(class = "gds-files-collection-artwork__badge") {
+                Icon(name = badge_icon, size = 10.0)
+            }
+        }
+        .into_view()
+    });
+    AnyView::new(view! {
+        box(
+            class = "gds-files-collection-artwork",
+            attr:data-directory = is_directory.then(|| "true".to_owned()),
+            attr:data-selected = move || selected.get().then(|| "true".to_owned()),
+        ) {
+            Icon(name = base, size = 18.0) {}
+            {badge_view}
+        }
+    })
+}
+
 fn collection_name_label(label: String, selected: Signal<bool, LocalStorage>) -> AnyView {
     let a11y_value = SharedString::from(label.clone());
     AnyView::new(view! {
         text(
-            class = "gds-files-collection-cell__text",
+            class = "gds-files-collection-cell__name",
             a11y:role = Role::Label,
             a11y:value = a11y_value,
             a11y:selected = move || selected.get(),
@@ -263,16 +439,56 @@ fn collection_name_label(label: String, selected: Signal<bool, LocalStorage>) ->
     })
 }
 
-fn plain_text_cell(
+fn name_cell_view(
+    artwork: AnyView,
+    label: String,
+    tooltip: Option<String>,
+    hidden: bool,
+    selected: Signal<bool, LocalStorage>,
+    width: Option<f32>,
+) -> AnyView {
+    let tip = tooltip.unwrap_or_else(|| wrap_tokens(&label));
+    let name_label = collection_name_label(label, selected);
+    let inner = match width {
+        Some(w) => AnyView::new(view! {
+            row(
+                class = "gds-files-collection-cell",
+                attr:data-hidden-entry = hidden.then(|| "true".to_owned()),
+                style:width = format!("{w:.1}px"),
+            ) {
+                {artwork}
+                {name_label}
+            }
+        }),
+        None => AnyView::new(view! {
+            row(
+                class = "gds-files-collection-cell",
+                attr:data-hidden-entry = hidden.then(|| "true".to_owned()),
+            ) {
+                {artwork}
+                {name_label}
+            }
+        }),
+    };
+    AnyView::new(view! {
+        HintTooltip(text = tip) {
+            {inner}
+        }
+    })
+}
+
+fn meta_text_cell(
     text: String,
-    muted: bool,
+    right_aligned: bool,
+    emphasis: bool,
     tooltip: Option<String>,
     width: Option<f32>,
 ) -> AnyView {
     let label = view! {
         text(
             class = "gds-files-collection-cell__text",
-            attr:data-muted = muted.then(|| "true".to_owned()),
+            attr:data-align = right_aligned.then(|| "end".to_owned()),
+            attr:data-emphasis = emphasis.then(|| "true".to_owned()),
         ) {{text}}
     };
     let inner = match tooltip {
@@ -283,26 +499,153 @@ fn plain_text_cell(
         }),
         None => AnyView::new(label),
     };
+    let align_attr = right_aligned.then(|| "end".to_owned());
     match width {
         Some(w) => AnyView::new(view! {
-            row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
+            row(
+                class = "gds-files-collection-cell gds-files-collection-cell--meta",
+                attr:data-align = align_attr,
+                style:width = format!("{w:.1}px"),
+            ) {
                 {inner}
             }
         }),
         None => AnyView::new(view! {
-            row(class = "gds-files-collection-cell") {
+            row(
+                class = "gds-files-collection-cell gds-files-collection-cell--meta",
+                attr:data-align = align_attr,
+            ) {
                 {inner}
             }
         }),
     }
 }
 
-fn remote_entry_icon(kind: remote::EntryKind) -> IconName {
-    match kind {
-        remote::EntryKind::Directory => IconName::Folder,
-        remote::EntryKind::SymbolicLink => IconName::Link,
-        remote::EntryKind::File => IconName::File,
-        remote::EntryKind::Other => IconName::FileQuestionMark,
+fn timestamp_cell(value: Option<SystemTime>, width: Option<f32>) -> AnyView {
+    let ts_view = view! { {Timestamp::new(value)} };
+    match width {
+        Some(w) => AnyView::new(view! {
+            row(
+                class = "gds-files-collection-cell gds-files-collection-cell--meta",
+                style:width = format!("{w:.1}px"),
+            ) {
+                {ts_view}
+            }
+        }),
+        None => AnyView::new(view! {
+            row(class = "gds-files-collection-cell gds-files-collection-cell--meta") {
+                {ts_view}
+            }
+        }),
+    }
+}
+
+fn category_icon_name(category: Option<ContentCategory>) -> IconName {
+    match category {
+        Some(ContentCategory::Text) => IconName::FileText,
+        Some(ContentCategory::Code) => IconName::FileCode,
+        Some(ContentCategory::Document) => IconName::FileType,
+        Some(ContentCategory::Image) => IconName::FileImage,
+        Some(ContentCategory::Audio) => IconName::FileMusic,
+        Some(ContentCategory::Video) => IconName::FileVideoCamera,
+        Some(ContentCategory::Archive) => IconName::FileArchive,
+        Some(ContentCategory::Executable) => IconName::FileTerminal,
+        Some(ContentCategory::Font) => IconName::Type,
+        Some(ContentCategory::Binary) | None => IconName::File,
+    }
+}
+
+fn category_type_label(category: ContentCategory) -> String {
+    let id = match category {
+        ContentCategory::Text => "content-text",
+        ContentCategory::Code => "content-code",
+        ContentCategory::Document => "content-document",
+        ContentCategory::Image => "content-image",
+        ContentCategory::Audio => "content-audio",
+        ContentCategory::Video => "content-video",
+        ContentCategory::Archive => "content-archive",
+        ContentCategory::Executable => "content-executable",
+        ContentCategory::Font => "content-font",
+        ContentCategory::Binary => "content-binary",
+    };
+    i18n::text(id)
+}
+
+fn remote_entry_artwork(entry: &remote::Entry) -> (IconName, Option<IconName>, bool) {
+    match entry.kind {
+        remote::EntryKind::Directory => (IconName::Folder, None, true),
+        remote::EntryKind::File => {
+            let category =
+                ContentType::from_filename(OsStr::new(&entry.name)).map(|ct| ct.category);
+            (category_icon_name(category), None, false)
+        }
+        remote::EntryKind::SymbolicLink => {
+            if let Some(ct) = ContentType::from_filename(OsStr::new(&entry.name)) {
+                (
+                    category_icon_name(Some(ct.category)),
+                    Some(IconName::Link),
+                    false,
+                )
+            } else {
+                (IconName::Link, None, false)
+            }
+        }
+        remote::EntryKind::Other => (IconName::FileQuestionMark, None, false),
+    }
+}
+
+fn remote_entry_type_label(entry: &remote::Entry) -> String {
+    match entry.kind {
+        remote::EntryKind::Directory => i18n::text("kind-directory"),
+        remote::EntryKind::File => ContentType::from_filename(OsStr::new(&entry.name)).map_or_else(
+            || i18n::text("kind-file"),
+            |ct| category_type_label(ct.category),
+        ),
+        remote::EntryKind::SymbolicLink => i18n::text("kind-link"),
+        remote::EntryKind::Other => i18n::text("kind-other"),
+    }
+}
+
+fn fallback_place_type_label(location: &Location) -> String {
+    match location {
+        Location::Directory(_) | Location::Volume { .. } | Location::Remote(_) => {
+            i18n::text("kind-directory")
+        }
+        Location::Tags(_) => i18n::text("tags-title"),
+        Location::Network => i18n::text("network"),
+        Location::Trash => i18n::text("trash"),
+        Location::Volumes => i18n::text("volumes"),
+        Location::Recent | Location::Favorites => i18n::text("locations"),
+    }
+}
+
+fn trash_entry_artwork(
+    entry: &crate::features::file_operations::recycle::Entry,
+) -> (IconName, Option<IconName>, bool) {
+    match entry.kind {
+        EntryKind::Directory => (IconName::Folder, None, true),
+        EntryKind::SymbolicLink => (IconName::Link, None, false),
+        EntryKind::File => {
+            let category = ContentType::from_filename(&entry.name).map(|ct| ct.category);
+            (category_icon_name(category), None, false)
+        }
+        EntryKind::Other | EntryKind::Unknown => (IconName::File, None, false),
+    }
+}
+
+fn volume_device_icon(volume: &volumes::Volume, snapshot: &volumes::Snapshot) -> IconName {
+    if volume.locked {
+        return IconName::Lock;
+    }
+    match volume
+        .drive
+        .as_deref()
+        .and_then(|id| snapshot.drive(id))
+        .map(|drive| drive.kind)
+    {
+        Some(volumes::DeviceKind::Usb) => IconName::Usb,
+        Some(volumes::DeviceKind::Optical) => IconName::Disc,
+        _ => IconName::HardDrive,
     }
 }
 
@@ -375,7 +718,7 @@ fn volume_capacity_cell(
 }
 
 fn volume_mount_point_cell(browser: &Browser, volume: &volumes::Volume, width: f32) -> AnyView {
-    let busy = browser.0.volumes.is_busy(&volume.id);
+    let busy = browser.device_is_busy(&volume.id);
     let action_button = if volume.mountable && volume.mount_points.is_empty() {
         let b = browser.clone();
         let id = volume.id.clone();
@@ -387,7 +730,7 @@ fn volume_mount_point_cell(browser: &Browser, volume: &volumes::Volume, width: f
                 on:pointer_down = move |ev| ev.stop_propagation(),
                 on:click = move |ev| {
                     ev.stop_propagation();
-                    b.change_volume(volumes::DeviceAction::Mount(id.clone()));
+                    b.request_device_action(volumes::DeviceAction::Mount(id.clone()));
                 },
             )
         }))
@@ -402,7 +745,7 @@ fn volume_mount_point_cell(browser: &Browser, volume: &volumes::Volume, width: f
                 on:pointer_down = move |ev| ev.stop_propagation(),
                 on:click = move |ev| {
                     ev.stop_propagation();
-                    b.change_volume(volumes::DeviceAction::Unmount(id.clone()));
+                    b.request_device_action(volumes::DeviceAction::Unmount(id.clone()));
                 },
             )
         }))
@@ -417,14 +760,17 @@ fn volume_mount_point_cell(browser: &Browser, volume: &volumes::Volume, width: f
             i18n::text("device-not-mounted")
         };
         AnyView::new(view! {
-            text(class = "gds-files-collection-cell__text", attr:data-muted = "true") {{text}}
+            text(class = "gds-files-collection-cell__text") {{text}}
         })
     } else if volume.mount_points.len() == 1 {
         let path_text = volume.mount_points[0].display().to_string();
         let tooltip = path_text.clone();
         AnyView::new(view! {
             HintTooltip(text = tooltip) {
-                text(class = "gds-files-collection-cell__text") {{path_text}}
+                text(
+                    class = "gds-files-collection-cell__text",
+                    attr:data-emphasis = "true",
+                ) {{path_text}}
             }
         })
     } else {
@@ -543,23 +889,33 @@ impl Browser {
             }));
         }
 
-        if contents_kind == 2
-            && has_rows
-            && let Some(error) = self.0.volumes.error()
-        {
-            let b = self.clone();
-            return Some(AnyView::new(view! {
-                PageNotice(class = "gds-files-collection-notice gds-files-collection-notice--error") {
-                    row(class = "gds-files-collection-notice__lead") {
-                        Icon(name = IconName::CircleAlert)
-                        text(class = "gds-files-collection-notice__text") {{error}}
+        if contents_kind == 2 && has_rows {
+            if let Some(error) = self.0.volumes.error() {
+                let b = self.clone();
+                return Some(AnyView::new(view! {
+                    PageNotice(class = "gds-files-collection-notice gds-files-collection-notice--error") {
+                        row(class = "gds-files-collection-notice__lead") {
+                            Icon(name = IconName::CircleAlert)
+                            text(class = "gds-files-collection-notice__text") {{error}}
+                        }
+                        Button(
+                            variant = ButtonVariant::Outline,
+                            on:click = move |_| b.refresh(),
+                        ) {{i18n::text("retry")}}
                     }
-                    Button(
-                        variant = ButtonVariant::Outline,
-                        on:click = move |_| b.refresh(),
-                    ) {{i18n::text("retry")}}
-                }
-            }));
+                }));
+            }
+            if self.0.volumes.discovering() {
+                let discovering_label = i18n::text("device-discovering");
+                return Some(AnyView::new(view! {
+                    PageNotice(class = "gds-files-collection-notice") {
+                        row(class = "gds-files-collection-notice__lead") {
+                            Spinner(label = discovering_label.clone())
+                            text(class = "gds-files-collection-notice__text") {{discovering_label}}
+                        }
+                    }
+                }));
+            }
         }
 
         None
@@ -688,10 +1044,14 @@ impl Browser {
     }
 
     pub(super) fn collection_empty_label(&self) -> Option<&'static str> {
+        let filtered = !self.0.filter.with(String::is_empty);
         self.read(|state| {
             let tab = state.tab();
             if !tab.rows.is_empty() {
                 return None;
+            }
+            if filtered {
+                return Some("empty-filter");
             }
             match &tab.contents {
                 Contents::Places(_) | Contents::Tags { .. } => Some("empty-collection"),
@@ -713,16 +1073,15 @@ impl Browser {
         self.read(|state| {
             let tab = state.tab();
             match &tab.contents {
-                Contents::Places(_) => {
-                    let loc_w = if compact { 200.0 } else { 280.0 };
-                    let name_w = (viewport - loc_w).max(180.0);
-                    Some(vec![("name", name_w), ("place-location", loc_w)])
-                }
+                Contents::Places(_) => Some(location_table_columns(viewport, compact)),
                 Contents::Trash(_) => {
-                    let orig_w = if compact { 170.0 } else { 240.0 };
-                    let deleted_w = if compact { 140.0 } else { 170.0 };
-                    let size_w = 96.0;
-                    let name_w = (viewport - orig_w - deleted_w - size_w).max(180.0);
+                    let orig_min = if compact { 170.0 } else { 240.0 };
+                    let deleted_w = if compact { 140.0 } else { 160.0 };
+                    let size_w = if compact { 96.0 } else { 120.0 };
+                    let fixed = deleted_w + size_w;
+                    let remaining = (viewport - fixed).max(200.0 + orig_min);
+                    let name_w = (remaining * 0.46).max(200.0);
+                    let orig_w = (viewport - fixed - name_w).max(orig_min);
                     Some(vec![
                         ("name", name_w),
                         ("recycle-original-location", orig_w),
@@ -731,21 +1090,23 @@ impl Browser {
                     ])
                 }
                 Contents::Tags { .. } => {
-                    // Pure tag catalogues never show file metadata columns (testing.md).
+                    // Pure tag catalogues never show file metadata columns (testing.md:73).
                     let has_files = tab.rows.iter().any(|row| matches!(row, Row::File(_)));
                     if has_files {
-                        None
+                        Some(location_table_columns(viewport, compact))
                     } else {
                         Some(vec![("name", viewport)])
                     }
                 }
                 Contents::Remote { .. } => {
                     let modified_w = if compact { 140.0 } else { 170.0 };
-                    let size_w = 96.0;
-                    let name_w = (viewport - modified_w - size_w).max(180.0);
+                    let type_w = if compact { 100.0 } else { 120.0 };
+                    let size_w = if compact { 90.0 } else { 110.0 };
+                    let name_w = (viewport - modified_w - type_w - size_w).max(200.0);
                     Some(vec![
                         ("name", name_w),
                         ("modified", modified_w),
+                        ("type", type_w),
                         ("size", size_w),
                     ])
                 }
@@ -777,36 +1138,70 @@ impl Browser {
 
         let cells: Vec<AnyView> = columns
             .into_iter()
-            .map(|(label_id, width)| {
+            .enumerate()
+            .map(|(idx, (label_id, width))| {
+                let is_name_col = idx == 0;
+                let is_right_aligned = label_id == "size";
+                let label = i18n::text(label_id);
                 let column = Column::from_id(label_id).filter(|col| sortable.contains(col));
+
                 if let Some(col) = column {
                     let active = sort.key == col;
+                    let ascending = sort.direction == Direction::Ascending;
                     let b = self.clone();
-                    let indicator = active.then(|| {
-                        let icon = match sort.direction {
-                            Direction::Ascending => IconName::ArrowUp,
-                            Direction::Descending => IconName::ArrowDown,
-                        };
-                        view! { Icon(name = icon) }.into_view()
-                    });
+                    let a11y_label = SharedString::from(label.clone());
                     AnyView::new(view! {
-                        row(class = "gds-files-collection-header__cell", style:width = format!("{width:.1}px")) {
-                            Button(
-                                variant = ButtonVariant::Ghost,
-                                size = ButtonSize::Sm,
+                        row(
+                            class = "gds-files-collection-header__cell",
+                            style:width = format!("{width:.1}px"),
+                        ) {
+                            control(
                                 class = "gds-files-collection-header__button",
+                                attr:data-name-col = is_name_col.then(|| "true".to_owned()),
+                                attr:data-align = is_right_aligned.then(|| "end".to_owned()),
                                 attr:data-active = active.then(|| "true".to_owned()),
+                                tabindex = Focus::Sequential,
+                                a11y:role = Role::Button,
+                                a11y:label = a11y_label,
                                 on:click = move |_| b.column_sort(col),
                             ) {
-                                text {{i18n::text(label_id)}}
-                                {indicator}
+                                text(class = "gds-files-collection-header__label") {{label}}
+                                column(
+                                    class = "gds-files-collection-header__sort",
+                                    attr:data-active = active.then(|| "true".to_owned()),
+                                ) {
+                                    {{if active {
+                                        let icon = if ascending {
+                                            IconName::ChevronUp
+                                        } else {
+                                            IconName::ChevronDown
+                                        };
+                                        AnyView::new(view! { Icon(name = icon, size = 12.0) })
+                                    } else {
+                                        AnyView::new(view! {
+                                            column(style:align-items = "center", style:justify-content = "center") {
+                                                Icon(name = IconName::ChevronUp, size = 8.0) {}
+                                                Icon(name = IconName::ChevronDown, size = 8.0) {}
+                                            }
+                                        })
+                                    }}}
+                                }
                             }
                         }
                     })
                 } else {
                     AnyView::new(view! {
-                        row(class = "gds-files-collection-header__cell", style:width = format!("{width:.1}px")) {
-                            text {{i18n::text(label_id)}}
+                        row(
+                            class = "gds-files-collection-header__cell",
+                            style:width = format!("{width:.1}px"),
+                        ) {
+                            row(
+                                class = "gds-files-collection-header__static",
+                                attr:data-name-col = is_name_col.then(|| "true".to_owned()),
+                                attr:data-align = is_right_aligned.then(|| "end".to_owned()),
+                            ) {
+                                text(class = "gds-files-collection-header__label") {{label}}
+                            }
                         }
                     })
                 }
@@ -826,227 +1221,225 @@ impl Browser {
         selected: Binding<bool>,
     ) -> Option<Vec<AnyView>> {
         install_surfaces_stylesheet();
-        let columns = self.collection_columns();
-        let col_widths: Vec<f32> = columns
-            .as_ref()
-            .map(|cols| cols.iter().map(|(_, w)| *w).collect())
-            .unwrap_or_default();
+        let columns = self.collection_columns()?;
+        let col_widths: Vec<f32> = columns.iter().map(|(_, w)| *w).collect();
         let width_at = |idx: usize| col_widths.get(idx).copied();
-
-        let sel_f32 = Signal::derive_local(move || {
-            if selected.get().unwrap_or(false) {
-                1.0
-            } else {
-                0.0
-            }
-        });
         let sel_bool = Signal::derive_local(move || selected.get().unwrap_or(false));
 
         match row {
-            Row::File(_) => None,
-            Row::Place(location) => {
-                let artwork = self.row_artwork_with_selection(row, 18.0, sel_f32);
-                let name_label = collection_name_label(location.label(), sel_bool);
-                let address = location.display_address();
-                let name_w = width_at(0);
-                let name_cell = match name_w {
-                    Some(w) => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
-                            {artwork}
-                            {name_label}
-                        }
-                    }),
-                    None => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell") {
-                            {artwork}
-                            {name_label}
-                        }
-                    }),
-                };
+            Row::File(entry) => {
+                let icon = FileIcon::for_entry(entry);
+                let artwork = collection_artwork(
+                    icon.base(),
+                    icon.badge(),
+                    FileIcon::is_directory(entry),
+                    sel_bool,
+                );
+                let address = entry.path.display().to_string();
+                let name_cell = name_cell_view(
+                    artwork,
+                    entry.display_name.clone(),
+                    Some(address.clone()),
+                    entry.display_name.starts_with('.'),
+                    sel_bool,
+                    width_at(0),
+                );
                 Some(vec![
                     name_cell,
-                    plain_text_cell(address.clone(), true, Some(address), width_at(1)),
+                    timestamp_cell(entry.modified, width_at(1)),
+                    meta_text_cell(
+                        EntryPresentation::type_label(entry),
+                        false,
+                        false,
+                        None,
+                        width_at(2),
+                    ),
+                    meta_text_cell(
+                        EntryPresentation::size_label(entry),
+                        true,
+                        false,
+                        None,
+                        width_at(3),
+                    ),
+                    meta_text_cell(address.clone(), false, false, Some(address), width_at(4)),
+                ])
+            }
+            Row::Place(location) => {
+                let entry = self.place_entry(location);
+                let address = location.display_address();
+                let (name, artwork, modified, kind_label, size_label, hidden) = match &entry {
+                    Some(entry) => {
+                        let icon = FileIcon::for_entry(entry);
+                        let label = if matches!(
+                            location,
+                            Location::Volume { relative, .. } if relative.is_empty()
+                        ) {
+                            self.location_title(location)
+                        } else if entry.display_name.is_empty() {
+                            location.label()
+                        } else {
+                            entry.display_name.clone()
+                        };
+                        let art = collection_artwork(
+                            icon.base(),
+                            icon.badge(),
+                            FileIcon::is_directory(entry),
+                            sel_bool,
+                        );
+                        (
+                            label.clone(),
+                            art,
+                            entry.modified,
+                            EntryPresentation::type_label(entry),
+                            EntryPresentation::size_label(entry),
+                            label.starts_with('.'),
+                        )
+                    }
+                    None => {
+                        let is_dir =
+                            matches!(location, Location::Directory(_) | Location::Volume { .. });
+                        let art = collection_artwork(location.icon(), None, is_dir, sel_bool);
+                        let label = self.location_title(location);
+                        (
+                            label,
+                            art,
+                            None,
+                            fallback_place_type_label(location),
+                            UNKNOWN_VALUE.to_owned(),
+                            false,
+                        )
+                    }
+                };
+
+                let name_cell = name_cell_view(
+                    artwork,
+                    name,
+                    Some(address.clone()),
+                    hidden,
+                    sel_bool,
+                    width_at(0),
+                );
+                Some(vec![
+                    name_cell,
+                    timestamp_cell(modified, width_at(1)),
+                    meta_text_cell(kind_label, false, false, None, width_at(2)),
+                    meta_text_cell(size_label, true, false, None, width_at(3)),
+                    meta_text_cell(address.clone(), false, false, Some(address), width_at(4)),
                 ])
             }
             Row::Trash(entry) => {
-                let artwork = self.row_artwork_with_selection(row, 18.0, sel_f32);
-                let name_label =
-                    collection_name_label(entry.name.to_string_lossy().into_owned(), sel_bool);
-                let key = row.key();
-                let b = self.clone();
-                let restore_button = AnyView::new(view! {
-                    IconButton(
-                        icon = IconName::ArchiveRestore,
-                        label = i18n::text("recycle-restore"),
-                        on:pointer_down = move |ev| ev.stop_propagation(),
-                        on:click = move |ev| {
-                            ev.stop_propagation();
-                            let found = {
-                                let state = b.0.state.borrow();
-                                state.tab().rows.iter().position(|item| item.key() == key)
-                            };
-                            if let Some(index) = found {
-                                b.select_row(index, Modifiers::default());
-                                b.restore_trash(false, false);
-                            }
-                        },
-                    )
-                });
-                let name_w = width_at(0);
-                let name_cell = match name_w {
-                    Some(w) => AnyView::new(view! {
-                        row(
-                            class = "gds-files-collection-cell gds-files-collection-cell--split",
-                            style:width = format!("{w:.1}px"),
-                        ) {
-                            row(style:gap = "8px", style:min-width = "0", style:flex = "1 1 0%", style:align-items = "center") {
-                                {artwork}
-                                {name_label}
-                            }
-                            {restore_button}
-                        }
-                    }),
-                    None => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell gds-files-collection-cell--split") {
-                            row(style:gap = "8px", style:min-width = "0", style:flex = "1 1 0%", style:align-items = "center") {
-                                {artwork}
-                                {name_label}
-                            }
-                            {restore_button}
-                        }
-                    }),
-                };
+                let (base, badge, is_dir) = trash_entry_artwork(entry);
+                let artwork = collection_artwork(base, badge, is_dir, sel_bool);
+                let name = entry.name.to_string_lossy().into_owned();
+                let name_cell = name_cell_view(
+                    artwork,
+                    name.clone(),
+                    Some(wrap_tokens(&name)),
+                    false,
+                    sel_bool,
+                    width_at(0),
+                );
 
-                let original = entry
-                    .original_path
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .unwrap_or(&entry.original_path)
-                    .display()
-                    .to_string();
                 let full_original = entry.original_path.display().to_string();
-
-                let deleted_at = entry.deleted_at;
-                let deleted_view = view! { {Timestamp::new(deleted_at)} };
-                let deleted_cell = match width_at(2) {
-                    Some(w) => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
-                            {deleted_view}
-                        }
-                    }),
-                    None => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell") {
-                            {deleted_view}
-                        }
-                    }),
-                };
-
-                let (size_label, muted) = match entry.size {
-                    Some(bytes) => (EntryPresentation::format_size(bytes), false),
-                    None => match entry.items {
-                        Some(items) => (items.to_string(), false),
-                        None => (UNKNOWN_VALUE.to_owned(), true),
-                    },
+                let size_label = if let Some(items) = entry.items {
+                    i18n::count("item-count", items)
+                } else if let Some(bytes) = entry.size {
+                    EntryPresentation::format_size(bytes)
+                } else {
+                    UNKNOWN_VALUE.to_owned()
                 };
 
                 Some(vec![
                     name_cell,
-                    plain_text_cell(original, true, Some(full_original), width_at(1)),
-                    deleted_cell,
-                    plain_text_cell(size_label, muted, None, width_at(3)),
+                    meta_text_cell(
+                        full_original.clone(),
+                        false,
+                        false,
+                        Some(full_original),
+                        width_at(1),
+                    ),
+                    timestamp_cell(entry.deleted_at, width_at(2)),
+                    meta_text_cell(size_label, true, false, None, width_at(3)),
                 ])
             }
             Row::Tag(tag) => {
-                let artwork = self.row_artwork_with_selection(row, 18.0, sel_f32);
+                let artwork = collection_artwork(IconName::Tag, None, false, sel_bool);
                 let leaf = row.label();
-                let tip = tag.contains('/').then(|| tag.clone());
-                let name_label = collection_name_label(leaf, sel_bool);
-                let name_inner = match tip {
-                    Some(full_tag) => AnyView::new(view! {
-                        HintTooltip(text = full_tag) {
-                            {name_label}
-                        }
-                    }),
-                    None => name_label,
+                let tip = if tag.contains('/') {
+                    tag.clone()
+                } else {
+                    wrap_tokens(&leaf)
                 };
-                let name_cell = match width_at(0) {
-                    Some(w) => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
-                            {artwork}
-                            {name_inner}
-                        }
-                    }),
-                    None => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell") {
-                            {artwork}
-                            {name_inner}
-                        }
-                    }),
-                };
+                let name_cell =
+                    name_cell_view(artwork, leaf, Some(tip), false, sel_bool, width_at(0));
 
-                if columns.is_some() {
+                if col_widths.len() <= 1 {
                     Some(vec![name_cell])
                 } else {
-                    // Mixed tag view (both subtags and files): pad extra directory columns.
-                    let extra_count =
-                        self.read(|state| state.tab().columns.columns().len().saturating_sub(1));
-                    let mut cells = Vec::with_capacity(1 + extra_count);
-                    cells.push(name_cell);
-                    for _ in 0..extra_count {
-                        cells.push(plain_text_cell(UNKNOWN_VALUE.to_owned(), true, None, None));
-                    }
-                    Some(cells)
+                    let tag_address = TagAddress::new(tag).map_or_else(
+                        |_| format!("tag://{tag}"),
+                        |addr| Location::Tags(addr).display_address(),
+                    );
+                    Some(vec![
+                        name_cell,
+                        timestamp_cell(None, width_at(1)),
+                        meta_text_cell(i18n::text("tags-title"), false, false, None, width_at(2)),
+                        meta_text_cell(UNKNOWN_VALUE.to_owned(), true, false, None, width_at(3)),
+                        meta_text_cell(
+                            tag_address.clone(),
+                            false,
+                            false,
+                            Some(tag_address),
+                            width_at(4),
+                        ),
+                    ])
                 }
             }
             Row::Remote(entry) => {
-                let icon = remote_entry_icon(entry.kind);
-                let name_label = collection_name_label(entry.name.clone(), sel_bool);
-                let name_cell = match width_at(0) {
-                    Some(w) => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
-                            Icon(name = icon) {}
-                            {name_label}
-                        }
-                    }),
-                    None => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell") {
-                            Icon(name = icon) {}
-                            {name_label}
-                        }
-                    }),
-                };
+                let (base, badge, is_dir) = remote_entry_artwork(entry);
+                let artwork = collection_artwork(base, badge, is_dir, sel_bool);
+                let name_cell = name_cell_view(
+                    artwork,
+                    entry.name.clone(),
+                    Some(wrap_tokens(&entry.name)),
+                    entry.name.starts_with('.'),
+                    sel_bool,
+                    width_at(0),
+                );
 
-                let modified_view = view! { {Timestamp::new(entry.modified)} };
-                let modified_cell = match width_at(1) {
-                    Some(w) => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
-                            {modified_view}
-                        }
-                    }),
-                    None => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell") {
-                            {modified_view}
-                        }
-                    }),
-                };
-
-                let (size_text, size_muted) = match entry.size {
-                    Some(bytes) => (EntryPresentation::format_size(bytes), false),
-                    None => (UNKNOWN_VALUE.to_owned(), true),
+                let size_text = if entry.kind == remote::EntryKind::Directory {
+                    UNKNOWN_VALUE.to_owned()
+                } else {
+                    entry
+                        .size
+                        .map_or_else(|| UNKNOWN_VALUE.to_owned(), EntryPresentation::format_size)
                 };
 
                 Some(vec![
                     name_cell,
-                    modified_cell,
-                    plain_text_cell(size_text, size_muted, None, width_at(2)),
+                    timestamp_cell(entry.modified, width_at(1)),
+                    meta_text_cell(
+                        remote_entry_type_label(entry),
+                        false,
+                        false,
+                        None,
+                        width_at(2),
+                    ),
+                    meta_text_cell(size_text, true, false, None, width_at(3)),
                 ])
             }
             Row::Volume(volume) => {
-                let artwork = self.row_artwork_with_selection(row, 18.0, sel_f32);
+                let snapshot = self.0.volumes.snapshot_untracked();
+                let base_icon = volume_device_icon(volume, &snapshot);
+                let artwork = collection_artwork(base_icon, None, false, sel_bool);
                 let name_label = collection_name_label(volume.name.clone(), sel_bool);
-                let lock_icon = volume
-                    .locked
-                    .then(|| view! { Icon(name = IconName::Lock) }.into_view());
+                let busy = self.device_is_busy(&volume.id);
+                let busy_spinner = busy.then(|| {
+                    view! {
+                        Spinner(label = volume.name.clone())
+                    }
+                    .into_view()
+                });
                 let system_badge = volume.system_mount.then(|| {
                     view! {
                         text(class = "gds-files-collection-cell__badge") {{i18n::text("device-system-volume")}}
@@ -1058,7 +1451,7 @@ impl Browser {
                         row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
                             {artwork}
                             {name_label}
-                            {lock_icon}
+                            {busy_spinner}
                             {system_badge}
                         }
                     }),
@@ -1066,16 +1459,16 @@ impl Browser {
                         row(class = "gds-files-collection-cell") {
                             {artwork}
                             {name_label}
-                            {lock_icon}
+                            {busy_spinner}
                             {system_badge}
                         }
                     }),
                 };
 
-                let (format_text, format_muted) = if volume.filesystem.is_empty() {
-                    (UNKNOWN_VALUE.to_owned(), true)
+                let (format_text, format_emphasis) = if volume.filesystem.is_empty() {
+                    (UNKNOWN_VALUE.to_owned(), false)
                 } else {
-                    (volume.filesystem.clone(), false)
+                    (volume.filesystem.clone(), true)
                 };
 
                 let space_w = width_at(2).unwrap_or(200.0);
@@ -1083,7 +1476,7 @@ impl Browser {
 
                 Some(vec![
                     name_cell,
-                    plain_text_cell(format_text, format_muted, None, width_at(1)),
+                    meta_text_cell(format_text, false, format_emphasis, None, width_at(1)),
                     volume_capacity_cell(self, volume, sel_bool, space_w),
                     volume_mount_point_cell(self, volume, mount_w),
                 ])

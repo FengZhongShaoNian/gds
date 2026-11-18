@@ -1,105 +1,124 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use gds::i18n;
 use gds::service::remote::{Address, Credentials, Protocol};
 use gds::ui::IconButtonProps;
+use gds::ui::button::{ButtonProps, ButtonVariant};
 use gds::ui::icon::{IconName, IconProps};
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, Owner, RenderEffect, RwSignal, on_cleanup_local};
-use zgui::view::install_stylesheet;
+use zgui::reactive::{LocalStorage, Owner, RenderEffect, RwSignal, Signal, on_cleanup_local};
+use zgui::view::{EventCx, current_host, events, install_stylesheet};
 use zgui::vocab::{Key, NamedKey};
-use zgui::{component, view};
-use zgui_ui::{ButtonProps, ButtonVariant, InputProps};
+use zgui::{component, css, view};
+use zgui_ui::InputProps;
 
 use super::super::model::{DEFAULT_SFTP_PORT, DEFAULT_SMB_PORT, Details, Error, Request};
 
 const FORM_SHEET: &str = "gds-files-connect-form";
-const FORM_CSS: &str = r#"
-.gds-connect-form {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    width: 100%;
-    min-width: 0;
-}
+const FORM_CSS: &str = css!(
+    r#"
+    .gds-connect-form {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        width: 100%;
+        min-width: 0;
+    }
 
-.gds-connect-form__header {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
-}
+    .gds-connect-form__header {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+    }
 
-.gds-connect-form__row {
-    display: flex;
-    flex-direction: row;
-    gap: 12px;
-    width: 100%;
-    min-width: 0;
-}
+    .gds-connect-form__row {
+        display: flex;
+        flex-direction: row;
+        gap: 12px;
+        width: 100%;
+        min-width: 0;
+    }
 
-.gds-connect-form__host {
-    flex: 1 1 0%;
-    min-width: 0;
-}
+    .gds-connect-form__host {
+        flex: 1 1 0%;
+        min-width: 0;
+    }
 
-.gds-connect-form__port {
-    width: 100px;
-    flex-shrink: 0;
-}
+    .gds-connect-form__port {
+        width: 100px;
+        flex-shrink: 0;
+    }
 
-.gds-connect-form__field {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-}
+    .gds-connect-form__field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
 
-.gds-connect-form__label {
-    font-size: 12px;
-    color: var(--gds-muted-foreground);
-}
+    .gds-connect-form__label {
+        font-size: var(--gds-font-size-xs, 12px);
+        color: var(--gds-muted-foreground);
+    }
 
-.gds-connect-form__methods {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: wrap;
-    gap: 6px;
-}
+    .gds-connect-form__methods {
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
 
-.gds-connect-form__protocol-choice {
-    width: 100%;
-    height: auto;
-    padding: 12px;
-    justify-content: flex-start;
-}
+    .gds-connect-form__methods [data-selected="true"],
+    .gds-connect-form__methods [data-selected="true"]:hover,
+    .zui-button.gds-connect-form__method[data-selected="true"],
+    .zui-button.gds-connect-form__method[data-selected="true"]:hover {
+        background-color: var(--gds-selection);
+        color: var(--gds-selection-foreground);
+        border-color: transparent;
+    }
 
-.gds-connect-form__protocol-body {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-    min-width: 0;
-}
+    .gds-connect-form__protocol-choice {
+        width: 100%;
+        height: auto;
+        padding: 12px;
+        justify-content: flex-start;
+    }
 
-.gds-connect-form__protocol-text {
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 0%;
-    min-width: 0;
-    gap: 4px;
-}
+    .gds-connect-form__protocol-body {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        min-width: 0;
+    }
 
-.gds-connect-form__protocol-title {
-    font-weight: 600;
-}
+    .gds-connect-form__protocol-text {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0%;
+        min-width: 0;
+        gap: 4px;
+    }
 
-.gds-connect-form__protocol-desc {
-    font-size: 12px;
-    color: var(--gds-muted-foreground);
+    .gds-connect-form__protocol-title {
+        font-weight: 600;
+    }
+
+    .gds-connect-form__protocol-desc {
+        font-size: var(--gds-font-size-xs, 12px);
+        color: var(--gds-muted-foreground);
+    }
+    "#
+);
+
+fn install_form_stylesheet() {
+    if current_host().is_some() {
+        install_stylesheet(FORM_SHEET, FORM_CSS);
+    }
 }
-"#;
 
 #[derive(Clone, PartialEq)]
 pub(super) enum Authentication {
@@ -249,18 +268,25 @@ impl Fields {
         })
     }
 
-    fn view(&self, choose_protocol: impl Fn() + 'static, submit: Rc<dyn Fn()>) -> AnyView {
-        install_stylesheet(FORM_SHEET, FORM_CSS);
+    fn view(
+        &self,
+        auto_focus: bool,
+        choose_protocol: impl Fn() + 'static,
+        submit: Rc<dyn Fn()>,
+    ) -> AnyView {
+        install_form_stylesheet();
         let host_node = self.host_node;
-        let focus_effect = RenderEffect::new(move |prev: Option<bool>| {
-            let mounted = host_node.get().is_some();
-            if mounted && prev != Some(true) {
-                host_node.focus();
-                host_node.select_all();
-            }
-            mounted
-        });
-        on_cleanup_local(move || drop(focus_effect));
+        if auto_focus {
+            let focus_effect = RenderEffect::new(move |prev: Option<bool>| {
+                let mounted = host_node.get().is_some();
+                if mounted && prev != Some(true) {
+                    host_node.focus();
+                    host_node.select_all();
+                }
+                mounted
+            });
+            on_cleanup_local(move || drop(focus_effect));
+        }
 
         let auth = self.authentication;
         let protocol = self.protocol;
@@ -281,6 +307,8 @@ impl Fields {
                 view! {
                     Button(
                         variant = ButtonVariant::Outline,
+                        class = "gds-connect-form__method",
+                        active = active,
                         a11y:selected = active,
                         attr:data-selected = move || active.get().then(|| "true".to_owned()),
                         on:click = move |_| auth.set(for_click.clone()),
@@ -294,18 +322,44 @@ impl Fields {
         let port_sig = self.port;
         let path_sig = self.path;
         let user_sig = self.user;
-        let submit_host = submit.clone();
-        let submit_port = submit.clone();
-        let submit_path = submit.clone();
+        let composing = Rc::new(Cell::new(false));
+        let ime_start = Rc::clone(&composing);
+        let ime_preedit = Rc::clone(&composing);
+        let ime_commit = Rc::clone(&composing);
+        let ime_end = Rc::clone(&composing);
+        let make_enter_handler = {
+            let composing = Rc::clone(&composing);
+            move |submit_fn: Rc<dyn Fn()>| {
+                let composing = Rc::clone(&composing);
+                move |ev: &mut EventCx<'_, events::KeyDown>| {
+                    if !composing.get()
+                        && ev.key == Key::Named(NamedKey::Enter)
+                        && ev.modifiers.is_empty()
+                    {
+                        ev.prevent_default();
+                        submit_fn();
+                    }
+                }
+            }
+        };
+        let on_host_key = make_enter_handler(submit.clone());
+        let on_port_key = make_enter_handler(submit.clone());
+        let on_path_key = make_enter_handler(submit.clone());
 
         AnyView::new(view! {
-            column(class = "gds-connect-form") {
+            column(
+                class = "gds-connect-form",
+                on:ime_start = move |_| ime_start.set(true),
+                on:ime_preedit = move |ev: &mut EventCx<'_, events::ImePreedit>| ime_preedit.set(ev.is_composing()),
+                on:ime_commit = move |_| ime_commit.set(false),
+                on:ime_end = move |_| ime_end.set(false),
+            ) {
                 row(class = "gds-connect-form__header") {
                     IconButton(
                         icon = IconName::ArrowLeft,
                         label = i18n::text("remote-change-protocol"),
                         on:click = move |_| choose_protocol(),
-                    )
+                    ) {}
                     text(class = "gds-connect-form__protocol-title") {{protocol_label}}
                 }
                 row(class = "gds-connect-form__row") {
@@ -315,12 +369,7 @@ impl Fields {
                                 value = host_sig,
                                 node_ref = host_node,
                                 placeholder = "server.example.com",
-                                on:key_down = move |ev| {
-                                    if ev.key == Key::Named(NamedKey::Enter) && ev.modifiers.is_empty() {
-                                        ev.prevent_default();
-                                        submit_host();
-                                    }
-                                },
+                                on:key_down = on_host_key,
                             )
                         }
                     }
@@ -328,12 +377,7 @@ impl Fields {
                         FormField(label = i18n::text("remote-port")) {
                             Input(
                                 value = port_sig,
-                                on:key_down = move |ev| {
-                                    if ev.key == Key::Named(NamedKey::Enter) && ev.modifiers.is_empty() {
-                                        ev.prevent_default();
-                                        submit_port();
-                                    }
-                                },
+                                on:key_down = on_port_key,
                             )
                         }
                     }
@@ -341,12 +385,7 @@ impl Fields {
                 FormField(label = i18n::text(path_label)) {
                     Input(
                         value = path_sig,
-                        on:key_down = move |ev| {
-                            if ev.key == Key::Named(NamedKey::Enter) && ev.modifiers.is_empty() {
-                                ev.prevent_default();
-                                submit_path();
-                            }
-                        },
+                        on:key_down = on_path_key,
                     )
                 }
                 column(class = "gds-connect-form__field") {
@@ -358,64 +397,62 @@ impl Fields {
                 {move || {
                     let submit_inner = submit.clone();
                     match auth.get() {
-                        Authentication::Agent => AnyView::new(view! {
-                            FormField(label = i18n::text(user_label)) {
-                                Input(
-                                    value = user_sig,
-                                    on:key_down = move |ev| {
-                                        if ev.key == Key::Named(NamedKey::Enter) && ev.modifiers.is_empty() {
-                                            ev.prevent_default();
-                                            submit_inner();
-                                        }
-                                    },
-                                )
-                            }
-                        }),
+                        Authentication::Agent => {
+                            let on_user_key = make_enter_handler(submit_inner);
+                            AnyView::new(view! {
+                                FormField(label = i18n::text(user_label)) {
+                                    Input(
+                                        value = user_sig,
+                                        on:key_down = on_user_key,
+                                    )
+                                }
+                            })
+                        }
                         Authentication::Password(password) => {
-                            let submit_pw = submit_inner.clone();
+                            let on_user_key = make_enter_handler(submit_inner.clone());
+                            let on_pw_key = make_enter_handler(submit_inner);
                             AnyView::new(view! {
                                 column(class = "gds-connect-form") {
                                     FormField(label = i18n::text(user_label)) {
-                                        Input(value = user_sig)
+                                        Input(
+                                            value = user_sig,
+                                            on:key_down = on_user_key,
+                                        )
                                     }
                                     FormField(label = i18n::text("remote-password")) {
                                         Input(
                                             value = password,
                                             secure = true,
-                                            on:key_down = move |ev| {
-                                                if ev.key == Key::Named(NamedKey::Enter) && ev.modifiers.is_empty() {
-                                                    ev.prevent_default();
-                                                    submit_pw();
-                                                }
-                                            },
+                                            on:key_down = on_pw_key,
                                         )
                                     }
                                 }
                             })
                         }
                         Authentication::Key { path, passphrase } => {
-                            let submit_key = submit_inner.clone();
+                            let on_user_key = make_enter_handler(submit_inner.clone());
+                            let on_path_key = make_enter_handler(submit_inner.clone());
+                            let on_pass_key = make_enter_handler(submit_inner);
                             AnyView::new(view! {
                                 column(class = "gds-connect-form") {
                                     FormField(label = i18n::text(user_label)) {
-                                        Input(value = user_sig)
+                                        Input(
+                                            value = user_sig,
+                                            on:key_down = on_user_key,
+                                        )
                                     }
                                     FormField(label = i18n::text("remote-auth-key")) {
                                         Input(
                                             value = path,
                                             placeholder = "/home/user/.ssh/id_ed25519",
+                                            on:key_down = on_path_key,
                                         )
                                     }
                                     FormField(label = i18n::text("remote-passphrase")) {
                                         Input(
                                             value = passphrase,
                                             secure = true,
-                                            on:key_down = move |ev| {
-                                                if ev.key == Key::Named(NamedKey::Enter) && ev.modifiers.is_empty() {
-                                                    ev.prevent_default();
-                                                    submit_key();
-                                                }
-                                            },
+                                            on:key_down = on_pass_key,
                                         )
                                     }
                                 }
@@ -463,12 +500,13 @@ impl Form {
             .request()
     }
 
-    pub fn view(&self, submit: impl Fn() + 'static) -> AnyView {
+    pub fn view(&self, auto_focus: bool, submit: impl Fn() + 'static) -> AnyView {
+        install_form_stylesheet();
         let submit: Rc<dyn Fn()> = Rc::new(submit);
         let fields = self.fields;
         let owner = self.owner.clone();
         AnyView::new(move || match fields.get() {
-            Some(current) => current.view(move || fields.set(None), submit.clone()),
+            Some(current) => current.view(auto_focus, move || fields.set(None), submit.clone()),
             None => {
                 let outer_owner = owner.clone();
                 let options = [

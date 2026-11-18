@@ -202,6 +202,15 @@ impl Places {
     pub(crate) fn set_favorite(&mut self, location: Location, present: bool) {
         self.change(Change::Favorite { location, present });
     }
+    pub(crate) fn reorder_pinned(&mut self, locations: Vec<Location>) {
+        self.change(Change::PinOrder(locations));
+    }
+    pub(crate) fn set_pinned(&mut self, location: &Location, present: bool) {
+        self.change(Change::Pin {
+            location: location.clone(),
+            present,
+        });
+    }
     pub(crate) fn set_columns(&mut self, location: impl Into<Location>, layout: Layout) {
         self.change(Change::Columns {
             scope: ViewScope::Location(location.into()),

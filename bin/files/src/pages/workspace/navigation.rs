@@ -3,6 +3,7 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
+    ffi::OsStr,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -10,6 +11,7 @@ use std::{
 };
 
 use gds::service::task_manager::Owner as TaskOwner;
+use gds::ui::IconName;
 use tokio::sync::mpsc;
 use zgui::geom::{DevicePx, Point};
 use zgui::prelude::*;
@@ -17,12 +19,20 @@ use zgui::reactive::{on_cleanup_local, spawn_local};
 use zgui::view::{ScrollBehavior, ScrollTarget};
 
 use super::{
-    model::{AddressPresentation, Contents, InitialVisit, Row, State, Tab},
+    model::{
+        AddressPresentation, ConfirmOptions, Contents, InitialVisit, Row, RowKey, State, Tab,
+        remote_task_key,
+    },
     ui::Browser,
 };
 use crate::{
     entities::{
-        file::{ViewMode, columns::Column, directory, sorting},
+        file::{
+            ViewMode,
+            columns::Column,
+            directory::{self, ContentType},
+            sorting,
+        },
         location::{
             Location, VolumeIdentity,
             navigation::{self, LoadOutcome, LoadRequest, PartialLoadOutcome},
@@ -30,14 +40,14 @@ use crate::{
         },
         tags,
     },
-    features::file_operations::recycle,
+    features::{connect_server::Intent, file_operations::recycle},
     shared::{i18n, lib::selection::SelectionBacking},
 };
 
 pub(super) enum Loaded {
     Unavailable(String),
     Places(Vec<Location>),
-    Network(Vec<PathBuf>),
+    Network(Result<Vec<PathBuf>, String>),
     Trash(Vec<recycle::Entry>),
     Tags {
         listing: tags::Listing,
@@ -137,12 +147,56 @@ impl Browser {
         Location::from(path)
     }
 
+    pub(super) fn place_entry(&self, location: &Location) -> Option<directory::Entry> {
+        let path = self.resolve_path(location)?;
+        let tab_id = self.read(|state| {
+            let tab = state.tab();
+            if let Contents::Tags { entries, .. } = &tab.contents
+                && let Some(found) = entries.iter().find(|entry| entry.path == path)
+            {
+                return Err(found.clone());
+            }
+            Ok(tab.id)
+        });
+        match tab_id {
+            Err(entry) => Some(entry),
+            Ok(id) => {
+                let key = (Rc::as_ptr(&self.0) as usize, id);
+                PLACE_ENTRIES.with(|slot| {
+                    slot.borrow()
+                        .get(&key)
+                        .and_then(|map| map.get(&path).cloned())
+                })
+            }
+        }
+    }
+
     pub(super) fn open(&self, location: Location) {
         let id = self.read_untracked(|state| state.tab().id);
         self.open_in_tab(id, location);
     }
 
     pub(super) fn open_in_tab(&self, id: u64, location: Location) {
+        let in_picker = self.read_untracked(|state| state.picker.is_some());
+        if in_picker && matches!(location, Location::Remote(_)) {
+            self.report_notice(i18n::text_untracked("remote-picker-local"));
+            self.sync_address();
+            return;
+        }
+        if self.is_background_task_busy_untracked(&remote_task_key(id))
+            && self.read_untracked(|state| {
+                state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .is_some_and(|tab| matches!(tab.contents, Contents::Remote { .. }))
+            })
+        {
+            self.report_notice(i18n::text_untracked("remote-task-running"));
+            self.sync_address();
+            return;
+        }
+
         self.save_active_scroll_if(id);
         self.0
             .address_presentation
@@ -163,6 +217,7 @@ impl Browser {
             };
             tab.work = None;
             tab.enrichment = None;
+            tab.reveal_hidden = false;
             tab.initial = InitialVisit::Explicit;
             if matches!(location, Location::Volume { .. }) && resolved.is_none() {
                 tab.navigation.cancel_pending();
@@ -247,17 +302,21 @@ impl Browser {
 
     pub(super) fn refresh_tab(&self, id: u64) {
         self.save_active_scroll_if(id);
-        let Some(location) = self.read_untracked(|state| {
+        let Some((location, in_picker)) = self.read_untracked(|state| {
             state
                 .tabs
                 .iter()
                 .find(|tab| tab.id == id)
-                .map(|tab| tab.navigation.location().clone())
+                .map(|tab| (tab.navigation.location().clone(), state.picker.is_some()))
         }) else {
             return;
         };
+        if in_picker && matches!(location, Location::Remote(_)) {
+            self.report_notice(i18n::text_untracked("remote-picker-local"));
+            return;
+        }
         let resolved = self.resolve_path_untracked(&location);
-        let show_hidden = self.0.preferences.snapshot().files.show_hidden;
+        let pref_show_hidden = self.0.preferences.snapshot().files.show_hidden;
         enum Dispatch {
             Remote(LoadRequest, gds::service::remote::Address),
             Standard(LoadRequest),
@@ -265,9 +324,11 @@ impl Browser {
         }
         let dispatch = {
             let mut state = self.0.state.borrow_mut();
-            let options = directory::ReadOptions { show_hidden };
             let Some(tab) = state.tab_by_id(id) else {
                 return;
+            };
+            let options = directory::ReadOptions {
+                show_hidden: pref_show_hidden || tab.reveal_hidden,
             };
             tab.work = None;
             tab.enrichment = None;
@@ -325,12 +386,30 @@ impl Browser {
     }
 
     pub(super) fn visit_history(&self, id: u64, index: usize, location: &Location) {
+        let in_picker = self.read_untracked(|state| state.picker.is_some());
+        if in_picker && matches!(location, Location::Remote(_)) {
+            self.report_notice(i18n::text_untracked("remote-picker-local"));
+            return;
+        }
+        if self.is_background_task_busy_untracked(&remote_task_key(id))
+            && self.read_untracked(|state| {
+                state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .is_some_and(|tab| matches!(tab.contents, Contents::Remote { .. }))
+            })
+        {
+            self.report_notice(i18n::text_untracked("remote-task-running"));
+            return;
+        }
+
         self.save_active_scroll_if(id);
         self.0
             .address_presentation
             .set(AddressPresentation::Breadcrumbs);
         let resolved = self.resolve_path_untracked(location);
-        let show_hidden = self.0.preferences.snapshot().files.show_hidden;
+        let pref_show_hidden = self.0.preferences.snapshot().files.show_hidden;
         enum Dispatch {
             Remote(LoadRequest, gds::service::remote::Address),
             Standard(LoadRequest),
@@ -339,9 +418,11 @@ impl Browser {
         }
         let dispatch = {
             let mut state = self.0.state.borrow_mut();
-            let options = directory::ReadOptions { show_hidden };
             let Some(tab) = state.tab_by_id(id) else {
                 return;
+            };
+            let options = directory::ReadOptions {
+                show_hidden: pref_show_hidden || tab.reveal_hidden,
             };
             if matches!(location, Location::Volume { .. }) && resolved.is_none() {
                 tab.work = None;
@@ -378,13 +459,28 @@ impl Browser {
     }
 
     pub(super) fn cancel_location_load(&self) {
-        self.update(|state| {
+        let (tab_id, unopened_remote) = self.update(|state| {
             let tab = state.tab_mut();
             tab.navigation.cancel_pending();
             tab.work = None;
+            let unopened_remote = matches!(tab.navigation.location(), Location::Remote(_))
+                && !matches!(tab.contents, Contents::Remote { .. });
+            (tab.id, unopened_remote)
         });
-        self.sync_address();
-        self.changed();
+        if self
+            .0
+            .connector
+            .pending()
+            .is_some_and(|(_, intent)| intent == Intent::Open)
+        {
+            self.0.connector.cancel();
+        }
+        if unopened_remote {
+            self.open_in_tab(tab_id, Location::Network);
+        } else {
+            self.sync_address();
+            self.changed();
+        }
     }
 
     pub(super) fn parent(&self) {
@@ -395,10 +491,15 @@ impl Browser {
     }
 
     pub(super) fn new_tab(&self, location: Option<Location>) {
+        let in_picker = self.read_untracked(|state| state.picker.is_some());
+        if in_picker && matches!(location, Some(Location::Remote(_))) {
+            self.report_notice(i18n::text_untracked("remote-picker-local"));
+            return;
+        }
         self.save_active_scroll();
         let new_id = {
             let mut state = self.0.state.borrow_mut();
-            let target = location.unwrap_or_else(|| state.tab().navigation.location().clone());
+            let target = location.unwrap_or_else(|| Location::from(state.home.as_path()));
             let id = state.next_tab;
             state.next_tab += 1;
             let insert_at = (state.active + 1).min(state.tabs.len());
@@ -421,12 +522,17 @@ impl Browser {
 
     pub(super) fn select_tab(&self, index: usize) {
         self.save_active_scroll();
-        let changed = self.update(|state| {
+        let (changed, needs_hidden_refresh) = self.update(|state| {
             if index < state.tabs.len() && state.active != index {
                 state.active = index;
-                true
+                let tab = state.tab();
+                let pref_hidden = self.0.preferences.snapshot().files.show_hidden;
+                let mismatch = tab.navigation.directory().is_some_and(|dir| {
+                    dir.options.show_hidden != (pref_hidden || tab.reveal_hidden)
+                });
+                (true, mismatch.then_some(tab.id))
             } else {
-                false
+                (false, None)
             }
         });
         if changed {
@@ -436,6 +542,9 @@ impl Browser {
             self.sync_active_chrome();
             self.update_selection(|_| {});
             self.restore_active_scroll();
+            if let Some(id) = needs_hidden_refresh {
+                self.refresh_tab(id);
+            }
         }
     }
 
@@ -444,92 +553,149 @@ impl Browser {
     }
 
     pub(super) fn close_tab(&self, index: usize) {
-        enum Outcome {
-            CloseWindow,
-            Closed(u64),
+        let target = self.read_untracked(|state| {
+            let tab = state.tabs.get(index)?;
+            let loc = tab.navigation.location();
+            let title = match loc {
+                Location::Volume { identity, relative } if relative.is_empty() => self
+                    .volume_at_location_untracked(identity)
+                    .map_or_else(|| loc.label(), |v| v.name),
+                _ => loc.label(),
+            };
+            Some((tab.id, tab.pinned, title))
+        });
+        let Some((id, pinned, title)) = target else {
+            return;
+        };
+        if pinned {
+            let confirm_title = i18n::text_untracked("unpin-close-title");
+            let message = gds::t_untracked!("unpin-close-message", name = title);
+            let primary = i18n::text_untracked("unpin-close-confirm");
+            let options = ConfirmOptions {
+                icon: Some(IconName::Pin),
+                primary_icon: Some(IconName::X),
+                destructive: false,
+                items: Vec::new(),
+                overflow_count: 0,
+            };
+            let browser = self.clone();
+            self.confirm_with_options(confirm_title, message, primary, options, move || {
+                browser.close_tab_approved(id);
+            });
+        } else {
+            self.close_tab_approved(id);
+        }
+    }
+
+    fn close_tab_approved(&self, id: u64) {
+        struct RemovedOutcome {
+            removed_id: u64,
+            need_save_pins: bool,
+            reopened_home_id: Option<u64>,
         }
         let outcome = {
             let mut state = self.0.state.borrow_mut();
-            let Some(tab) = state.tabs.get(index) else {
+            let Some(index) = state.tabs.iter().position(|tab| tab.id == id) else {
                 return;
             };
-            if tab.pinned {
-                return;
+            let removed = state.tabs.remove(index);
+            let removed_loc = removed.navigation.location().clone();
+            let was_pinned = removed.pinned;
+            if was_pinned {
+                let still_pinned_same = state
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.pinned && tab.navigation.location() == &removed_loc);
+                if !still_pinned_same {
+                    state.places.set_pinned(&removed_loc, false);
+                }
+                let pinned_order = pinned_tab_locations(&state.tabs);
+                state.places.reorder_pinned(pinned_order);
             }
-            if state.tabs.len() <= 1 {
-                Outcome::CloseWindow
+
+            let reopened_home_id = if state.tabs.is_empty() {
+                let home_id = state.next_tab;
+                state.next_tab += 1;
+                let home_loc = Location::from(state.home.as_path());
+                let home_tab = Tab::new(home_id, home_loc, &state.places, false);
+                state.tabs.push(home_tab);
+                state.active = 0;
+                Some(home_id)
             } else {
-                let removed = state.tabs.remove(index);
                 if state.active >= state.tabs.len() {
                     state.active = state.tabs.len() - 1;
                 } else if index < state.active {
                     state.active -= 1;
                 }
-                Outcome::Closed(removed.id)
+                None
+            };
+
+            RemovedOutcome {
+                removed_id: removed.id,
+                need_save_pins: was_pinned,
+                reopened_home_id,
             }
         };
-        match outcome {
-            Outcome::CloseWindow => {
-                if let Some(window) = &self.0.window {
-                    window.close();
-                }
-            }
-            Outcome::Closed(removed_id) => {
-                self.clear_watch(removed_id);
-                self.sync_active_chrome();
-                self.update_selection(|_| {});
-                self.changed();
-                self.restore_active_scroll();
-            }
+
+        self.clear_watch(outcome.removed_id);
+        let _ = self.finish_background_task(&remote_task_key(outcome.removed_id));
+        if outcome.need_save_pins {
+            self.save_places();
         }
+        self.0
+            .address_presentation
+            .set(AddressPresentation::Breadcrumbs);
+        self.sync_active_chrome();
+        self.update_selection(|_| {});
+        self.changed();
+        if let Some(home_id) = outcome.reopened_home_id {
+            self.refresh_tab(home_id);
+        } else {
+            self.restore_active_scroll();
+        }
+        self.focus_content();
     }
 
     pub(super) fn toggle_pin(&self, index: usize) {
         let changed = self.update(|state| {
-            if index >= state.tabs.len() {
-                return false;
+            let result = apply_toggle_pin(&mut state.tabs, &mut state.active, index);
+            if let Some((loc, now_pinned)) = result {
+                let still_pinned_same = state
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.pinned && tab.navigation.location() == &loc);
+                state
+                    .places
+                    .set_pinned(&loc, now_pinned || still_pinned_same);
+                let order = pinned_tab_locations(&state.tabs);
+                state.places.reorder_pinned(order);
+                true
+            } else {
+                false
             }
-            let active_id = state.tabs[state.active].id;
-            state.tabs[index].pinned = !state.tabs[index].pinned;
-            let tab = state.tabs.remove(index);
-            let pinned_count = state.tabs.iter().filter(|item| item.pinned).count();
-            let dest = pinned_count;
-            state.tabs.insert(dest, tab);
-            if let Some(next_active) = state.tabs.iter().position(|item| item.id == active_id) {
-                state.active = next_active;
-            }
-            true
         });
         if changed {
+            self.save_places();
             self.changed();
         }
     }
 
     pub(super) fn reorder_tab(&self, from: usize, to: usize) {
-        let changed = self.update(|state| {
-            let len = state.tabs.len();
-            if from >= len || to >= len || from == to {
-                return false;
-            }
-            let pinned = state.tabs[from].pinned;
-            let pinned_count = state.tabs.iter().filter(|tab| tab.pinned).count();
-            let target = if pinned {
-                to.min(pinned_count.saturating_sub(1))
-            } else {
-                to.max(pinned_count).min(len - 1)
+        let (changed, moved_pinned) = self.update(|state| {
+            let Some(was_pinned) = apply_reorder_tab(&mut state.tabs, &mut state.active, from, to)
+            else {
+                return (false, false);
             };
-            if from == target {
-                return false;
+            if was_pinned {
+                let order = pinned_tab_locations(&state.tabs);
+                state.places.reorder_pinned(order);
             }
-            let active_id = state.tabs[state.active].id;
-            let tab = state.tabs.remove(from);
-            state.tabs.insert(target, tab);
-            if let Some(next_active) = state.tabs.iter().position(|tab| tab.id == active_id) {
-                state.active = next_active;
-            }
-            true
+            (true, was_pinned)
         });
         if changed {
+            if moved_pinned {
+                self.save_places();
+            }
             self.changed();
         }
     }
@@ -544,13 +710,19 @@ impl Browser {
 
     pub(super) fn reproject(&self, id: u64) {
         let volumes_snapshot = self.0.volumes.snapshot_untracked().volumes;
+        let pref_show_hidden = self.0.preferences.snapshot().files.show_hidden;
         let reveal_scroll_idx = {
             let mut state = self.0.state.borrow_mut();
+            let in_picker = state.picker.is_some();
             let picker_projection = state.picker.as_ref().map(|picker| picker.projection());
             let is_active = state.tabs.get(state.active).is_some_and(|tab| tab.id == id);
             let Some(tab) = state.tab_by_id(id) else {
                 return;
             };
+            if !location_supports_grid(tab.navigation.location()) {
+                tab.mode = ViewMode::List;
+            }
+            let show_hidden = pref_show_hidden || tab.reveal_hidden;
             let filter_lower = tab.navigation.view().filter.trim().to_lowercase();
             let sort = tab.sort;
             let rows: Vec<Row> = match &tab.contents {
@@ -619,6 +791,7 @@ impl Browser {
                 }
                 Contents::Places(locations) => locations
                     .iter()
+                    .filter(|loc| !in_picker || !matches!(loc, Location::Remote(_)))
                     .filter(|loc| {
                         filter_lower.is_empty()
                             || loc.label().to_lowercase().contains(&filter_lower)
@@ -638,37 +811,27 @@ impl Browser {
                     })
                     .map(|path| Row::Place(Location::from(path.as_path())))
                     .collect(),
-                Contents::Trash(entries) => {
-                    let mut filtered: Vec<recycle::Entry> = entries
-                        .iter()
-                        .filter(|entry| {
-                            filter_lower.is_empty()
-                                || entry
-                                    .name
-                                    .to_string_lossy()
-                                    .to_lowercase()
-                                    .contains(&filter_lower)
-                                || entry
-                                    .original_path
-                                    .to_string_lossy()
-                                    .to_lowercase()
-                                    .contains(&filter_lower)
-                        })
-                        .cloned()
-                        .collect();
-                    sort_trash_entries(&mut filtered, sort);
-                    filtered.into_iter().map(Row::Trash).collect()
-                }
+                Contents::Trash(entries) => entries
+                    .iter()
+                    .filter(|entry| {
+                        filter_lower.is_empty()
+                            || entry
+                                .name
+                                .to_string_lossy()
+                                .to_lowercase()
+                                .contains(&filter_lower)
+                            || entry
+                                .original_path
+                                .to_string_lossy()
+                                .to_lowercase()
+                                .contains(&filter_lower)
+                    })
+                    .cloned()
+                    .map(Row::Trash)
+                    .collect(),
                 Contents::Remote { listing, .. } => {
-                    let mut filtered: Vec<gds::service::remote::Entry> = listing
-                        .entries
-                        .iter()
-                        .filter(|entry| {
-                            filter_lower.is_empty()
-                                || entry.name.to_lowercase().contains(&filter_lower)
-                        })
-                        .cloned()
-                        .collect();
+                    let mut filtered =
+                        filter_remote_entries(&listing.entries, &filter_lower, show_hidden);
                     sort_remote_entries(&mut filtered, sort);
                     filtered.into_iter().map(Row::Remote).collect()
                 }
@@ -743,8 +906,13 @@ impl Browser {
     }
 
     pub(super) fn sync_address(&self) {
-        let address =
-            self.read_untracked(|state| state.tab().navigation.location().display_address());
+        let address = self.read_untracked(|state| {
+            let tab = state.tab();
+            tab.navigation
+                .pending_location()
+                .unwrap_or_else(|| tab.navigation.location())
+                .display_address()
+        });
         self.0.address.set(address);
     }
 
@@ -764,45 +932,43 @@ impl Browser {
     }
 
     pub(super) fn toggle_view(&self) {
-        let (id, loc, next_mode) = {
+        let Some(id) = ({
             let mut state = self.0.state.borrow_mut();
             let tab = state.tab_mut();
-            let next_mode = match tab.mode {
-                ViewMode::List => ViewMode::Grid,
-                ViewMode::Grid => ViewMode::List,
-            };
-            tab.mode = next_mode;
-            let loc = tab.navigation.location().clone();
-            let id = tab.id;
-            state.places.set_view_mode(loc.clone(), next_mode);
-            (id, loc, next_mode)
+            if !location_supports_grid(tab.navigation.location()) {
+                None
+            } else {
+                let next_mode = match tab.mode {
+                    ViewMode::List => ViewMode::Grid,
+                    ViewMode::Grid => ViewMode::List,
+                };
+                tab.mode = next_mode;
+                let loc = tab.navigation.location().clone();
+                let id = tab.id;
+                state.places.set_view_mode(loc, next_mode);
+                Some(id)
+            }
+        }) else {
+            return;
         };
-        let _ = (loc, next_mode);
         self.save_places();
         self.changed();
         self.enrich_directory(id);
     }
 
     pub(super) fn favorite(&self) {
-        let (is_now_favorite, was_remote) = {
+        let (mutated, selection_cleared) = {
             let mut state = self.0.state.borrow_mut();
-            let loc = state.tab().navigation.location().clone();
-            match loc {
-                Location::Remote(address) => {
-                    let was = state.places.is_favorite(Location::Remote(address.clone()));
-                    state.places.toggle_remote_favorite(address);
-                    (!was, true)
-                }
-                other => {
-                    let was = state.places.is_favorite(other.clone());
-                    state.places.toggle_favorite(other);
-                    (!was, false)
-                }
-            }
+            toggle_tab_or_selected_favorite(&mut state)
         };
-        let _ = (is_now_favorite, was_remote);
+        if !mutated {
+            return;
+        }
         self.save_places();
         self.refresh_favorites_tabs();
+        if selection_cleared {
+            self.update_selection(|_| {});
+        }
         self.changed();
     }
 
@@ -857,7 +1023,7 @@ impl Browser {
         }
     }
 
-    fn restore_active_scroll(&self) {
+    pub(super) fn restore_active_scroll(&self) {
         let top = self.read_untracked(|state| state.tab().navigation.view().scroll.max(0.0));
         let scale = self.0.list.scale().max(1.0);
         self.0.list.scroll_to(
@@ -889,11 +1055,15 @@ impl Browser {
         self.0.column_widths.set(widths);
     }
 
-    fn apply_location_view_settings(&self, id: u64, location: &Location) {
+    pub(super) fn apply_location_view_settings(&self, id: u64, location: &Location) {
         let is_active = {
             let mut state = self.0.state.borrow_mut();
             let is_active = state.tabs.get(state.active).is_some_and(|tab| tab.id == id);
-            let mode = state.places.effective_view_mode(location);
+            let mode = if location_supports_grid(location) {
+                state.places.effective_view_mode(location)
+            } else {
+                ViewMode::List
+            };
             let sort = state.places.effective_sort(location);
             let columns = state.places.effective_columns(location).clone();
             if let Some(tab) = state.tab_by_id(id) {
@@ -908,7 +1078,7 @@ impl Browser {
         }
     }
 
-    fn refresh_favorites_tabs(&self) {
+    pub(super) fn refresh_favorites_tabs(&self) {
         let ids: Vec<u64> = self.read_untracked(|state| {
             state
                 .tabs
@@ -922,6 +1092,77 @@ impl Browser {
         }
     }
 
+    fn inspect_places_metadata(&self, id: u64, locations: &[Location]) {
+        let local_paths: Vec<PathBuf> = locations
+            .iter()
+            .filter_map(|loc| self.resolve_path_untracked(loc))
+            .collect();
+        let window_key = Rc::as_ptr(&self.0) as usize;
+        if local_paths.is_empty() {
+            PLACE_ENTRIES.with(|slot| {
+                slot.borrow_mut().remove(&(window_key, id));
+            });
+            return;
+        }
+        ensure_watch_cleanup(self);
+        let work = self.0.tasks.named_child("Inspect place metadata");
+        let scope = (*work).clone();
+        let cancel = work.token();
+        {
+            let mut state = self.0.state.borrow_mut();
+            if let Some(tab) = state.tab_by_id(id) {
+                tab.work = Some(work);
+            } else {
+                return;
+            }
+        }
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        drop(
+            scope.spawn_blocking_named("Inspect place entries", move || {
+                let mut map = HashMap::with_capacity(local_paths.len());
+                for path in local_paths {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+                    if let Ok(entry) = directory::Entry::inspect(&path) {
+                        map.insert(path, entry);
+                    }
+                }
+                let _ = tx.send(map);
+            }),
+        );
+        let weak = self.downgrade();
+        self.0.owner.with(|| {
+            drop(spawn_local(async move {
+                let Some(entries) = rx.recv().await else {
+                    return;
+                };
+                let Some(browser) = weak.upgrade() else {
+                    return;
+                };
+                let still_places = browser.read_untracked(|state| {
+                    state
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id == id)
+                        .is_some_and(|tab| matches!(tab.contents, Contents::Places(_)))
+                });
+                if !still_places {
+                    return;
+                }
+                PLACE_ENTRIES.with(|slot| {
+                    slot.borrow_mut().insert((window_key, id), entries);
+                });
+                browser.update(|state| {
+                    if let Some(tab) = state.tab_by_id(id) {
+                        tab.work = None;
+                    }
+                });
+                browser.changed();
+            }));
+        });
+    }
+
     fn start_load(&self, id: u64, request: LoadRequest) {
         self.clear_watch(id);
         let location = request.location().clone();
@@ -932,11 +1173,13 @@ impl Browser {
         match location {
             Location::Recent => {
                 let places = self.read_untracked(|state| state.places.recent.clone());
-                self.finish_collection_load(id, &request, Loaded::Places(places));
+                self.finish_collection_load(id, &request, Loaded::Places(places.clone()));
+                self.inspect_places_metadata(id, &places);
             }
             Location::Favorites => {
                 let places = self.read_untracked(|state| state.places.favorites.clone());
-                self.finish_collection_load(id, &request, Loaded::Places(places));
+                self.finish_collection_load(id, &request, Loaded::Places(places.clone()));
+                self.inspect_places_metadata(id, &places);
             }
             Location::Volumes => {
                 self.0.volumes.refresh();
@@ -973,10 +1216,7 @@ impl Browser {
                         let Some(browser) = weak.upgrade() else {
                             return;
                         };
-                        let loaded = match result {
-                            Ok(mounts) => Loaded::Network(mounts),
-                            Err(error) => Loaded::Unavailable(error.to_string()),
-                        };
+                        let loaded = Loaded::Network(result.map_err(|error| error.to_string()));
                         browser.finish_collection_load(id, &request, loaded);
                     }));
                 });
@@ -1139,17 +1379,30 @@ impl Browser {
                     };
                     match msg {
                         DirLoadMsg::Partial(snapshot) => {
+                            let mut pin_saved = false;
                             let outcome = {
                                 let mut state = browser.0.state.borrow_mut();
                                 let Some(tab) = state.tab_by_id(id) else {
                                     break;
                                 };
+                                let prior_pin =
+                                    tab.pinned.then(|| tab.navigation.location().clone());
                                 let outcome = tab.navigation.apply_partial_load(&request, snapshot);
                                 if outcome != PartialLoadOutcome::Stale {
                                     tab.contents = Contents::Directory;
                                 }
+                                if outcome == PartialLoadOutcome::FirstCommit
+                                    && let Some(old_loc) = prior_pin
+                                {
+                                    let new_loc = tab.navigation.location().clone();
+                                    pin_saved =
+                                        sync_pinned_navigation(&mut state, &old_loc, &new_loc);
+                                }
                                 outcome
                             };
+                            if pin_saved {
+                                browser.save_places();
+                            }
                             match outcome {
                                 PartialLoadOutcome::FirstCommit => {
                                     browser.apply_location_view_settings(id, request.location());
@@ -1168,6 +1421,8 @@ impl Browser {
                                 let Some(tab) = state.tab_by_id(id) else {
                                     break;
                                 };
+                                let prior_pin =
+                                    tab.pinned.then(|| tab.navigation.location().clone());
                                 let finish = tab.navigation.finish_load(&request, result);
                                 match finish {
                                     Ok(LoadOutcome::Stale) => None,
@@ -1187,6 +1442,11 @@ impl Browser {
                                         let loc = tab.navigation.location().clone();
                                         if request.records_recent() {
                                             state.places.record(loc.clone());
+                                            need_save = true;
+                                        }
+                                        if let Some(old_loc) = prior_pin
+                                            && sync_pinned_navigation(&mut state, &old_loc, &loc)
+                                        {
                                             need_save = true;
                                         }
                                         Some(Ok(loc))
@@ -1239,18 +1499,27 @@ impl Browser {
             let Some(tab) = state.tab_by_id(id) else {
                 return;
             };
+            let prior_pin = tab.pinned.then(|| tab.navigation.location().clone());
             match tab.navigation.finish_load(request, Ok(None)) {
                 Ok(LoadOutcome::Stale) | Err(_) => return,
                 Ok(LoadOutcome::Applied) => {}
             }
             tab.work = None;
             tab.enrichment = None;
+            let prior_mounts = match &tab.contents {
+                Contents::Network { mounts, .. } => mounts.clone(),
+                _ => Vec::new(),
+            };
             tab.contents = match loaded {
                 Loaded::Unavailable(message) => Contents::Unavailable(message),
                 Loaded::Places(places) => Contents::Places(places),
-                Loaded::Network(mounts) => Contents::Network {
+                Loaded::Network(Ok(mounts)) => Contents::Network {
                     mounts,
                     error: None,
+                },
+                Loaded::Network(Err(error)) => Contents::Network {
+                    mounts: prior_mounts,
+                    error: Some(error),
                 },
                 Loaded::Trash(entries) => Contents::Trash(entries),
                 Loaded::Tags {
@@ -1267,6 +1536,11 @@ impl Browser {
             let loc = tab.navigation.location().clone();
             if request.records_recent() {
                 state.places.record(loc.clone());
+                need_save = true;
+            }
+            if let Some(old_loc) = prior_pin
+                && sync_pinned_navigation(&mut state, &old_loc, &loc)
+            {
                 need_save = true;
             }
             loc
@@ -1397,11 +1671,16 @@ impl Browser {
         WATCHES.with(|slot| {
             slot.borrow_mut().remove(&key);
         });
+        PLACE_ENTRIES.with(|slot| {
+            slot.borrow_mut().remove(&key);
+        });
     }
 }
 
 thread_local! {
     static WATCHES: RefCell<HashMap<(usize, u64), TaskOwner>> = RefCell::new(HashMap::new());
+    static PLACE_ENTRIES: RefCell<HashMap<(usize, u64), HashMap<PathBuf, directory::Entry>>> =
+        RefCell::new(HashMap::new());
     static WATCH_CLEANUP_WINDOWS: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
 }
 
@@ -1414,6 +1693,9 @@ fn ensure_watch_cleanup(browser: &Browser) {
                 WATCHES.with(|slot| {
                     slot.borrow_mut().retain(|(win, _), _| *win != window_key);
                 });
+                PLACE_ENTRIES.with(|slot| {
+                    slot.borrow_mut().retain(|(win, _), _| *win != window_key);
+                });
                 WATCH_CLEANUP_WINDOWS.with(|slot| {
                     slot.borrow_mut().remove(&window_key);
                 });
@@ -1422,33 +1704,178 @@ fn ensure_watch_cleanup(browser: &Browser) {
     }
 }
 
-fn sort_trash_entries(entries: &mut [recycle::Entry], sort: sorting::Sort) {
-    use std::cmp::Ordering;
-    entries.sort_by(|left, right| {
-        let primary = match sort.key {
-            sorting::Key::Modified | sorting::Key::Accessed => {
-                left.deleted_at.cmp(&right.deleted_at)
-            }
-            sorting::Key::Size => left.size.cmp(&right.size),
-            _ => Ordering::Equal,
+pub(super) fn pinned_tab_locations(tabs: &[Tab]) -> Vec<Location> {
+    tabs.iter()
+        .filter(|tab| tab.pinned)
+        .map(|tab| tab.navigation.location().clone())
+        .collect()
+}
+
+pub(super) fn sync_pinned_navigation(
+    state: &mut State,
+    old_loc: &Location,
+    new_loc: &Location,
+) -> bool {
+    if old_loc == new_loc {
+        return false;
+    }
+    let still_pinned_old = state
+        .tabs
+        .iter()
+        .any(|tab| tab.pinned && tab.navigation.location() == old_loc);
+    if !still_pinned_old {
+        state.places.set_pinned(old_loc, false);
+    }
+    state.places.set_pinned(new_loc, true);
+    let order = pinned_tab_locations(&state.tabs);
+    state.places.reorder_pinned(order);
+    true
+}
+
+fn apply_toggle_pin(
+    tabs: &mut Vec<Tab>,
+    active: &mut usize,
+    index: usize,
+) -> Option<(Location, bool)> {
+    if index >= tabs.len() {
+        return None;
+    }
+    let active_id = tabs[*active].id;
+    let now_pinned = !tabs[index].pinned;
+    tabs[index].pinned = now_pinned;
+    let loc = tabs[index].navigation.location().clone();
+    let tab = tabs.remove(index);
+    let dest = tabs.iter().filter(|item| item.pinned).count();
+    tabs.insert(dest, tab);
+    if let Some(next_active) = tabs.iter().position(|item| item.id == active_id) {
+        *active = next_active;
+    }
+    Some((loc, now_pinned))
+}
+
+fn apply_reorder_tab(
+    tabs: &mut Vec<Tab>,
+    active: &mut usize,
+    from: usize,
+    to: usize,
+) -> Option<bool> {
+    let len = tabs.len();
+    if from >= len || to >= len || from == to {
+        return None;
+    }
+    let pinned = tabs[from].pinned;
+    let pinned_count = tabs.iter().filter(|tab| tab.pinned).count();
+    let target = if pinned {
+        to.min(pinned_count.saturating_sub(1))
+    } else {
+        to.max(pinned_count).min(len - 1)
+    };
+    if from == target {
+        return None;
+    }
+    let active_id = tabs[*active].id;
+    let tab = tabs.remove(from);
+    tabs.insert(target, tab);
+    if let Some(next_active) = tabs.iter().position(|item| item.id == active_id) {
+        *active = next_active;
+    }
+    Some(pinned)
+}
+
+fn selected_place_for_favorite(tab: &Tab) -> Option<(RowKey, Location)> {
+    if !matches!(
+        tab.navigation.location(),
+        Location::Recent | Location::Favorites | Location::Tags(_)
+    ) {
+        return None;
+    }
+    tab.selected().into_iter().find_map(|row| {
+        let key = row.key();
+        let loc = match row {
+            Row::Place(loc) => Some(loc),
+            Row::File(entry) => Some(Location::from(entry.path.as_path())),
+            Row::Tag(tag) => scheme::TagAddress::new(&tag).ok().map(Location::Tags),
+            _ => None,
+        }?;
+        Some((key, loc))
+    })
+}
+
+const fn location_supports_grid(location: &Location) -> bool {
+    !matches!(
+        location,
+        Location::Trash | Location::Volumes | Location::Network
+    )
+}
+
+fn toggle_tab_or_selected_favorite(state: &mut State) -> (bool, bool) {
+    let tab_loc = state.tab().navigation.location().clone();
+    if matches!(
+        tab_loc,
+        Location::Recent | Location::Favorites | Location::Tags(_)
+    ) {
+        let Some((row_key, target_loc)) = selected_place_for_favorite(state.tab()) else {
+            return (false, false);
         };
-        let ordered = match sort.direction {
-            sorting::Direction::Ascending => primary,
-            sorting::Direction::Descending => primary.reverse(),
-        };
-        let tie = left
-            .name
-            .cmp(&right.name)
-            .then_with(|| left.id.cmp(&right.id));
-        if ordered == Ordering::Equal {
-            match sort.direction {
-                sorting::Direction::Ascending => tie,
-                sorting::Direction::Descending => tie.reverse(),
-            }
-        } else {
-            ordered.then(tie)
+        state.places.toggle_favorite(target_loc.clone());
+        let is_favorites_page = matches!(tab_loc, Location::Favorites);
+        if is_favorites_page && !state.places.is_favorite(&target_loc) {
+            state
+                .tab_mut()
+                .navigation
+                .view_mut()
+                .selection
+                .remove(&row_key);
+            return (true, true);
         }
-    });
+        return (true, false);
+    }
+    if matches!(
+        tab_loc,
+        Location::Trash | Location::Volumes | Location::Network
+    ) {
+        return (false, false);
+    }
+    let current_loc = state
+        .tab()
+        .navigation
+        .path()
+        .map(Location::from)
+        .unwrap_or(tab_loc);
+    match current_loc {
+        Location::Remote(address) => state.places.toggle_remote_favorite(address),
+        other => state.places.toggle_favorite(other),
+    }
+    (true, false)
+}
+
+fn filter_remote_entries(
+    entries: &[gds::service::remote::Entry],
+    filter_lower: &str,
+    show_hidden: bool,
+) -> Vec<gds::service::remote::Entry> {
+    entries
+        .iter()
+        .filter(|entry| {
+            (show_hidden || !entry.name.starts_with('.'))
+                && (filter_lower.is_empty() || entry.name.to_lowercase().contains(filter_lower))
+        })
+        .cloned()
+        .collect()
+}
+
+fn remote_type_sort_rank(
+    entry: &gds::service::remote::Entry,
+) -> (u8, Option<directory::ContentCategory>) {
+    match entry.kind {
+        gds::service::remote::EntryKind::Directory => (0, None),
+        gds::service::remote::EntryKind::File => (
+            1,
+            ContentType::from_filename(OsStr::new(&entry.name)).map(|ct| ct.category),
+        ),
+        gds::service::remote::EntryKind::SymbolicLink => (2, None),
+        gds::service::remote::EntryKind::Other => (3, None),
+    }
 }
 
 fn sort_remote_entries(entries: &mut [gds::service::remote::Entry], sort: sorting::Sort) {
@@ -1462,6 +1889,9 @@ fn sort_remote_entries(entries: &mut [gds::service::remote::Entry], sort: sortin
         let primary = match sort.key {
             sorting::Key::Size => left.size.cmp(&right.size),
             sorting::Key::Modified | sorting::Key::Accessed => left.modified.cmp(&right.modified),
+            sorting::Key::Type | sorting::Key::DetailedType => {
+                remote_type_sort_rank(left).cmp(&remote_type_sort_rank(right))
+            }
             _ => Ordering::Equal,
         };
         let ordered = match sort.direction {
@@ -1483,12 +1913,14 @@ fn sort_remote_entries(entries: &mut [gds::service::remote::Entry], sort: sortin
 fn sortable_columns_for(state: &State) -> Vec<Column> {
     match &state.tab().contents {
         Contents::Directory => Column::ALL.to_vec(),
-        Contents::Tags { entries, .. } if !entries.is_empty() => Column::ALL.to_vec(),
-        Contents::Trash(_) => vec![Column::Name, Column::Size, Column::Modified],
-        Contents::Remote { .. } => {
-            vec![Column::Name, Column::Type, Column::Size, Column::Modified]
+        Contents::Tags { entries, .. } if !entries.is_empty() => {
+            vec![Column::Name, Column::Modified, Column::Type, Column::Size]
         }
-        Contents::Places(_)
+        Contents::Remote { .. } => {
+            vec![Column::Name, Column::Modified, Column::Type, Column::Size]
+        }
+        Contents::Trash(_)
+        | Contents::Places(_)
         | Contents::Network { .. }
         | Contents::Tags { .. }
         | Contents::Volumes

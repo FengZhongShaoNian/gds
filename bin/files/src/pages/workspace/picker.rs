@@ -61,11 +61,13 @@ const PICKER_CSS: &str = css!(
         box-sizing: border-box;
     }
 
+    .gds-files-picker-name-input.zui-field,
     .gds-files-picker-name-input.zui-input,
-    .gds-files-picker-name-input {
+    .gds-files-picker-name-input.gds-files-picker-name-input {
         width: 100%;
-        height: 26px;
-        min-height: 26px;
+        height: 28px;
+        min-height: 28px;
+        max-height: 28px;
         padding: 0 8px;
         font-size: var(--gds-font-size-small, 14px);
     }
@@ -93,15 +95,20 @@ const PICKER_CSS: &str = css!(
         white-space: nowrap;
     }
 
-    .gds-files-picker-filter-trigger.zui-select__trigger {
-        height: 26px;
-        min-height: 26px;
+    .gds-files-picker-filter-trigger.gds-files-picker-filter-trigger,
+    .gds-files-picker-filter-trigger.gds-files-picker-filter-trigger[data-size="sm"] {
+        height: 28px;
+        min-height: 28px;
+        max-height: 28px;
+        padding-top: 0;
+        padding-bottom: 0;
         max-width: 200px;
     }
 
     .gds-files-picker-btn.zui-button.gds-button[data-size="sm"] {
-        height: 26px;
-        min-height: 26px;
+        height: 28px;
+        min-height: 28px;
+        max-height: 28px;
     }
     "#
 );

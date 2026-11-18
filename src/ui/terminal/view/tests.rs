@@ -116,7 +116,10 @@ fn run_headless_terminal(
             let gds = Gds::install(scope.clone());
             gds.appearance()
                 .theme()
-                .apply(&crate::appearance::theme::Appearance::default())
+                .apply(&crate::appearance::theme::Appearance {
+                    source: crate::appearance::theme::Source::Builtin,
+                    ..crate::appearance::theme::Appearance::default()
+                })
                 .expect("default test theme");
         })
         .into_handler(move || -> AnyView {

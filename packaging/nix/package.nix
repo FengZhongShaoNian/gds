@@ -1,4 +1,4 @@
-{ lib, pkgs, rustPlatform, makeWrapper, makeDesktopItem, copyDesktopItems, pkg-config
+{ lib, pkgs, rustPlatform, makeWrapper, makeDesktopItem, copyDesktopItems, pkg-config, python3
 , application, desktopItem, description, postInstall ? "", checkFlags ? [ ]
 , extraNativeBuildInputs ? [ ], extraBuildInputs ? [ ], extraNativeCheckInputs ? [ ]
 , buildTag ? "unknown"
@@ -38,7 +38,7 @@ rustPlatform.buildRustPackage {
 
   cargoLock = import ./cargo-lock.nix;
 
-  nativeBuildInputs = [ pkg-config makeWrapper copyDesktopItems ] ++ extraNativeBuildInputs;
+  nativeBuildInputs = [ pkg-config python3 makeWrapper copyDesktopItems ] ++ extraNativeBuildInputs;
   nativeCheckInputs = [ pkgs.dbus pkgs.ffmpeg-headless pkgs.util-linux ] ++ extraNativeCheckInputs;
   buildInputs = libraries;
   dontUseCmakeConfigure = true;

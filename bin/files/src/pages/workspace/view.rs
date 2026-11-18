@@ -423,7 +423,7 @@ const WORKSPACE_CSS: &str = css!(
         width: 12px;
         height: 18px;
         color: var(--gds-muted-foreground);
-        opacity: 0.65;
+        opacity: 0;
         transition: opacity var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
     }
 
@@ -567,10 +567,12 @@ const WORKSPACE_CSS: &str = css!(
         box-sizing: border-box;
     }
 
+    .gds-files-meta-cell > *,
     .gds-files-meta-cell .zui-tooltip__trigger {
         display: flex;
         min-width: 0px;
         max-width: 100%;
+        overflow: hidden;
     }
 
     .gds-files-meta-cell[data-align-end="true"] {

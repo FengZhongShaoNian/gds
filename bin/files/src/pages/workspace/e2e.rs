@@ -1882,6 +1882,7 @@ mod driven {
     struct GalleryCtx<'a> {
         harness: &'a mut Harness<Box<dyn AppHandler>>,
         semantic: &'a mut SemanticStore,
+        secondary_semantics: HashMap<SurfaceId, SemanticStore>,
         registry: &'a CaptureRegistry,
         artifacts: &'a Path,
         captured: &'a mut Vec<String>,
@@ -1899,12 +1900,11 @@ mod driven {
 
         fn snap_surface(&mut self, name: &str, surface: &Arc<OffscreenSurface>) -> Result<()> {
             pump_frames(self.harness);
-            let mut sec_semantic = SemanticStore::default();
+            let id = zgui::platform::Surface::id(surface.as_ref());
+            let sec_semantic = self.secondary_semantics.entry(id).or_default();
             sec_semantic.ingest(surface);
-            let state = self
-                .registry
-                .state_for(zgui::platform::Surface::id(surface.as_ref()));
-            write_snapshot_files(name, &sec_semantic, &state, self.artifacts)?;
+            let state = self.registry.state_for(id);
+            write_snapshot_files(name, sec_semantic, &state, self.artifacts)?;
             self.captured.push(name.to_owned());
             Ok(())
         }
@@ -2173,6 +2173,7 @@ mod driven {
                     let mut ctx = GalleryCtx {
                         harness: &mut harness,
                         semantic: &mut semantic,
+                        secondary_semantics: HashMap::new(),
                         registry: &registry_for_scenario,
                         artifacts: &artifacts,
                         captured: &mut captured,

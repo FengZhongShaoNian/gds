@@ -20,29 +20,29 @@ pub struct CloseAllNotifications;
 /// Core semantic UI commands shared across windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
-    Cancel,
     FocusNotifications,
     CloseNotification,
     CloseAllNotifications,
+    Cancel,
 }
 
 impl Command {
     /// Every core [`Command`] in canonical menu/help presentation order.
     pub const ALL: [Self; 4] = [
-        Self::Cancel,
         Self::FocusNotifications,
         Self::CloseNotification,
         Self::CloseAllNotifications,
+        Self::Cancel,
     ];
 
     /// Fluent localization message ID describing this command.
     #[must_use]
     pub const fn label_id(self) -> &'static str {
         match self {
-            Self::Cancel => "dialog-cancel",
             Self::FocusNotifications => "focus-notifications",
             Self::CloseNotification => "notification-close",
             Self::CloseAllNotifications => "notifications-close-all",
+            Self::Cancel => "close",
         }
     }
 
@@ -50,12 +50,12 @@ impl Command {
     #[must_use]
     pub fn default_stroke(self) -> Shortcut {
         match self {
-            Self::Cancel => Shortcut::new(Key::Named(NamedKey::Escape), Modifiers::NONE),
             Self::FocusNotifications => Shortcut::new(Key::character("n"), Modifiers::ALT),
-            Self::CloseNotification => Shortcut::new(Key::character("c"), Modifiers::ALT),
+            Self::CloseNotification => Shortcut::new(Key::character("x"), Modifiers::ALT),
             Self::CloseAllNotifications => {
-                Shortcut::new(Key::character("c"), Modifiers::ALT | Modifiers::SHIFT)
+                Shortcut::new(Key::character("x"), Modifiers::ALT | Modifiers::SHIFT)
             }
+            Self::Cancel => Shortcut::new(Key::Named(NamedKey::Escape), Modifiers::NONE),
         }
     }
 
@@ -178,6 +178,47 @@ mod tests {
 
     use super::{ActionDispatcher, Command};
     use crate::ui::shortcut::Shortcut;
+
+    #[test]
+    fn core_command_labels_and_notification_shortcuts_match_spec() {
+        assert_eq!(Command::Cancel.label_id(), "close");
+        assert_eq!(
+            Command::FocusNotifications.label_id(),
+            "focus-notifications"
+        );
+        assert_eq!(Command::CloseNotification.label_id(), "notification-close");
+        assert_eq!(
+            Command::CloseAllNotifications.label_id(),
+            "notifications-close-all"
+        );
+
+        let dispatcher = ActionDispatcher::commands();
+        assert_eq!(
+            dispatcher.match_event_with_guard(&KeyEvent::character("x"), Modifiers::ALT, false),
+            Some(Command::CloseNotification)
+        );
+        assert_eq!(
+            dispatcher.match_event_with_guard(
+                &KeyEvent::character("X"),
+                Modifiers::ALT | Modifiers::SHIFT,
+                false
+            ),
+            Some(Command::CloseAllNotifications)
+        );
+        // Alt+C belongs to Dialog Cancel and Recent Clear, never CloseNotification.
+        assert_eq!(
+            dispatcher.match_event_with_guard(&KeyEvent::character("c"), Modifiers::ALT, false),
+            None
+        );
+        assert_eq!(
+            dispatcher.match_event_with_guard(
+                &KeyEvent::character("C"),
+                Modifiers::ALT | Modifiers::SHIFT,
+                false
+            ),
+            None
+        );
+    }
 
     #[test]
     fn dispatcher_guards_unmodified_and_shift_bindings_when_text_entry_is_focused() {

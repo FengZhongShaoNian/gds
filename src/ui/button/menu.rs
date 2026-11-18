@@ -1,23 +1,30 @@
 use zgui::prelude::*;
-use zgui::reactive::LocalStorage;
+use zgui::reactive::{LocalStorage, Signal};
 use zgui::view::PropValue;
 use zgui::{component, view};
 use zgui_ui::{ButtonProps as ZuiButtonProps, ButtonSize, ButtonVariant};
 
 use crate::ui::Shortcut;
 use crate::ui::about::Application;
+use crate::ui::actions::Command;
 use crate::ui::icon::{IconName, IconProps};
+use crate::ui::keytips::anchor_when;
 
-/// Leading toolbar button that anchors the primary application menu.
+/// Leading `32x32px` toolbar button that anchors the primary application menu.
 ///
-/// Displays the application's monochrome brand mark at rest and crossfades to the
-/// hamburger menu icon on hover or keyboard focus.
+/// Displays the application's `24px` monochrome brand mark at rest and swaps to a centered `16px`
+/// `Menu` icon strictly on pointer `:hover` (never on `:focus-visible`, `README.md` §3).
 #[allow(clippy::too_many_arguments)]
 #[component]
 pub fn ApplicationMenuButton(
     #[prop(into)] label: Signal<String, LocalStorage>,
     #[prop(optional)] application: Option<&'static Application>,
+    #[prop(optional)] command: Option<Command>,
     #[prop(optional)] shortcut: Option<Shortcut>,
+    #[prop(into, default = Signal::stored_local(true))] shortcut_enabled: Signal<
+        bool,
+        LocalStorage,
+    >,
     #[prop(default = None)] keytip: Option<&'static str>,
     #[prop(into, default = Signal::stored_local(false))] active: Signal<bool, LocalStorage>,
     #[prop(optional)] on_activate: Option<UnsyncCallback<()>>,
@@ -25,24 +32,29 @@ pub fn ApplicationMenuButton(
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::install_button_stylesheets();
     let resolved_ref = node_ref.unwrap_or_default();
     let disabled = Signal::stored_local(false);
-    if let Some(chord) = keytip {
+    let effective_shortcut = shortcut.or_else(|| command.map(Shortcut::command));
+
+    if let Some(ref key) = effective_shortcut {
+        anchor_when(resolved_ref, key.clone(), shortcut_enabled);
+    } else if let Some(chord) = keytip {
         super::register_button_keytip(chord, resolved_ref, disabled, on_activate);
     }
 
+    let advertised_a11y = effective_shortcut
+        .as_ref()
+        .filter(|_| shortcut_enabled.get_untracked());
     let own = super::button_attrs(
         Attrs::new().a11y_from(A11yBinding::unspecified().label(move || label.get())),
         None,
         Signal::stored_local(false),
         active,
-        shortcut.as_ref(),
+        advertised_a11y,
     );
 
-    let brand_svg = application
-        .and_then(Application::artwork_svg)
-        .or_else(|| Application::try_cargo("gds-files").and_then(Application::artwork_svg));
+    let brand_svg = application.and_then(Application::artwork_svg);
 
     let core = AnyView::new(view! {
         ZuiButton(
@@ -64,8 +76,8 @@ pub fn ApplicationMenuButton(
                     }),
                     None => AnyView::new(view! {
                         Icon(
-                            name = IconName::Files,
-                            size = crate::appearance::tokens::APPLICATION_MENU_ICON_SIZE,
+                            name = IconName::Menu,
+                            size = crate::appearance::tokens::ICON_SIZE,
                             class = "gds-app-menu-button__brand",
                         )
                     }),
@@ -79,5 +91,5 @@ pub fn ApplicationMenuButton(
         }
     });
 
-    super::wrap_tooltip(core, Some(label), shortcut)
+    super::wrap_tooltip(core, Some(label), effective_shortcut, shortcut_enabled)
 }

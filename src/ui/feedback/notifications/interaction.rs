@@ -3,9 +3,18 @@ use zgui::runtime::try_use_clipboard;
 
 use super::NotificationQueue;
 
-/// Moves keyboard focus into the notification stack and pauses auto-dismiss timers while focused.
+/// Toggles keyboard focus into or out of the notification stack (`Alt+N`, `shortcuts.md` §1):
+/// focuses the newest/selected notification when unfocused, and restores the prior focus target
+/// when pressed again while focused.
 pub fn focus() {
-    let queue = NotificationQueue::active();
+    focus_in(NotificationQueue::active());
+}
+
+pub(crate) fn focus_in(queue: NotificationQueue) {
+    if queue.focused().get_untracked() {
+        queue.clear_focus(true);
+        return;
+    }
     let items = queue.items().get_untracked();
     if items.is_empty() {
         return;
@@ -19,23 +28,34 @@ pub fn focus() {
     queue.focus_notification(target_id);
 }
 
-/// Dismisses the currently focused notification, or the newest notification when unfocused.
+/// Dismisses the currently focused notification, or the newest notification when unfocused (`Alt+X`).
 pub fn close_current() {
-    let queue = NotificationQueue::active();
+    close_current_in(NotificationQueue::active());
+}
+
+pub(crate) fn close_current_in(queue: NotificationQueue) {
     let items = queue.items().get_untracked();
-    let target = queue
-        .selected_id()
-        .get_untracked()
-        .filter(|id| items.iter().any(|item| item.id == *id))
-        .or_else(|| items.first().map(|item| item.id));
+    let target = if queue.focused().get_untracked() {
+        queue
+            .selected_id()
+            .get_untracked()
+            .filter(|id| items.iter().any(|item| item.id == *id))
+            .or_else(|| items.first().map(|item| item.id))
+    } else {
+        items.first().map(|item| item.id)
+    };
     if let Some(id) = target {
         queue.dismiss(id);
     }
 }
 
-/// Dismisses every active notification and restores any captured prior window focus.
+/// Dismisses every active notification and restores any captured prior window focus (`Alt+Shift+X`).
 pub fn close_all() {
-    NotificationQueue::active().dismiss_all();
+    close_all_in(NotificationQueue::active());
+}
+
+pub(crate) fn close_all_in(queue: NotificationQueue) {
+    queue.dismiss_all();
 }
 
 /// Returns `true` when keyboard focus currently sits inside the notification stack.
@@ -46,30 +66,32 @@ pub fn is_focused() -> bool {
     focused.get_untracked()
 }
 
+#[cfg(test)]
 pub(crate) fn select_next() {
-    move_selection(1);
+    select_next_in(NotificationQueue::active());
 }
 
-pub(crate) fn select_prev() {
-    move_selection(-1);
+pub(crate) fn select_next_in(queue: NotificationQueue) {
+    move_selection(queue, 1);
 }
 
-pub(crate) fn select_first() {
-    let queue = NotificationQueue::active();
+pub(crate) fn select_prev_in(queue: NotificationQueue) {
+    move_selection(queue, -1);
+}
+
+pub(crate) fn select_first_in(queue: NotificationQueue) {
     if let Some(first) = queue.items().get_untracked().first() {
         queue.focus_notification(first.id);
     }
 }
 
-pub(crate) fn select_last() {
-    let queue = NotificationQueue::active();
+pub(crate) fn select_last_in(queue: NotificationQueue) {
     if let Some(last) = queue.items().get_untracked().last() {
         queue.focus_notification(last.id);
     }
 }
 
-pub(crate) fn copy_selected() {
-    let queue = NotificationQueue::active();
+pub(crate) fn copy_selected_in(queue: NotificationQueue) {
     let items = queue.items().get_untracked();
     let target = queue
         .selected_id()
@@ -83,8 +105,7 @@ pub(crate) fn copy_selected() {
     }
 }
 
-fn move_selection(delta: isize) {
-    let queue = NotificationQueue::active();
+fn move_selection(queue: NotificationQueue, delta: isize) {
     let items = queue.items().get_untracked();
     if items.is_empty() {
         return;
@@ -96,11 +117,9 @@ fn move_selection(delta: isize) {
         .unwrap_or(0);
     let len = items.len();
     let next_index = if delta >= 0 {
-        (current_index + 1) % len
-    } else if current_index == 0 {
-        len - 1
+        (current_index + 1).min(len - 1)
     } else {
-        current_index - 1
+        current_index.saturating_sub(1)
     };
     queue.focus_notification(items[next_index].id);
 }

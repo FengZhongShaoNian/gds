@@ -1,10 +1,12 @@
 use zgui::prelude::*;
-use zgui::reactive::LocalStorage;
+use zgui::reactive::{LocalStorage, Signal};
 use zgui::{component, view};
 use zgui_ui::{ButtonProps as ZuiButtonProps, ButtonSize, ButtonVariant, SpinnerProps};
 
 use crate::ui::Shortcut;
+use crate::ui::actions::Command;
 use crate::ui::icon::{IconName, IconProps};
+use crate::ui::keytips::anchor_when;
 
 const fn icon_px_for_size(size: ButtonSize) -> f32 {
     match size {
@@ -15,8 +17,8 @@ const fn icon_px_for_size(size: ButtonSize) -> f32 {
     }
 }
 
-/// Shared icon-only control wrapping `zgui_ui::Button` with accessible name, hover crossfade,
-/// loading spinner, mnemonic keytip, and tooltip.
+/// Shared `32x32px` icon-only control wrapping `zgui_ui::Button` with accessible name, hover
+/// crossfade, loading spinner, `Corner` hold-to-reveal keytip, and `ShortcutHint` tooltip.
 #[allow(clippy::too_many_arguments)]
 #[component]
 pub fn IconButton(
@@ -30,7 +32,12 @@ pub fn IconButton(
     #[prop(into, default = Signal::stored_local(false))] loading: Signal<bool, LocalStorage>,
     #[prop(into, default = Signal::stored_local(false))] active: Signal<bool, LocalStorage>,
     #[prop(into, optional)] toggled: Option<Signal<bool, LocalStorage>>,
+    #[prop(optional)] command: Option<Command>,
     #[prop(optional)] shortcut: Option<Shortcut>,
+    #[prop(into, default = Signal::stored_local(true))] shortcut_enabled: Signal<
+        bool,
+        LocalStorage,
+    >,
     #[prop(default = None)] keytip: Option<&'static str>,
     #[prop(default = true)] tooltip: bool,
     #[prop(optional)] on_activate: Option<UnsyncCallback<()>>,
@@ -38,19 +45,28 @@ pub fn IconButton(
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::install_button_stylesheets();
     let resolved_ref = node_ref.unwrap_or_default();
     let effective_disabled = Signal::derive_local(move || disabled.get() || loading.get());
-    if let Some(chord) = keytip {
+    let effective_shortcut = shortcut.or_else(|| command.map(Shortcut::command));
+    let can_advertise =
+        Signal::derive_local(move || shortcut_enabled.get() && !effective_disabled.get());
+
+    if let Some(ref key) = effective_shortcut {
+        anchor_when(resolved_ref, key.clone(), can_advertise);
+    } else if let Some(chord) = keytip {
         super::register_button_keytip(chord, resolved_ref, effective_disabled, on_activate);
     }
 
+    let advertised_a11y = effective_shortcut
+        .as_ref()
+        .filter(|_| shortcut_enabled.get_untracked());
     let own = super::button_attrs(
         Attrs::new().a11y_from(A11yBinding::unspecified().label(move || label.get())),
         toggled,
         loading,
         active,
-        shortcut.as_ref(),
+        advertised_a11y,
     );
     let glyph_size = icon_size.unwrap_or_else(|| icon_px_for_size(size));
 
@@ -91,7 +107,7 @@ pub fn IconButton(
     });
 
     if tooltip {
-        super::wrap_tooltip(core, Some(label), shortcut)
+        super::wrap_tooltip(core, Some(label), effective_shortcut, can_advertise)
     } else {
         core
     }

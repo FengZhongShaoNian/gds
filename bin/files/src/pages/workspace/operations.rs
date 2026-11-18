@@ -1,20 +1,26 @@
 //! File, clipboard, trash, history, volume, and sort workflows.
 
 use std::{
-    collections::HashSet,
+    cell::RefCell,
+    collections::{HashMap, HashSet},
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    rc::Rc,
 };
 
 use gds::i18n as gds_i18n;
 use gds::service::desktop::{Desktop, OpenMode, OpenOutcome};
+use gds::ui::IconName;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use zgui::reactive::spawn_local;
+use zgui::reactive::{on_cleanup_local, spawn_local};
 
 use super::{
-    model::{Contents, Operation, Row},
+    model::{
+        ConfirmOptions, Contents, FILES_TASK_KEY, Row, RowKey, TRASH_TASK_KEY, remote_task_key,
+    },
     name_form::{NameForm, NamePurpose},
-    ui::Browser,
+    ui::{Browser, WeakBrowser},
 };
 use crate::{
     entities::{
@@ -38,7 +44,170 @@ use crate::{
     },
 };
 
+const NAME_PREVIEW_LIMIT: usize = 5;
+
+#[derive(Clone, Default)]
+struct HistoryPreview {
+    undo: Vec<history::Kind>,
+    redo: Vec<history::Kind>,
+}
+
+struct WindowHistorySlot {
+    browser: WeakBrowser,
+    preview: RefCell<HistoryPreview>,
+}
+
+thread_local! {
+    static HISTORY_PREVIEWS: RefCell<HashMap<usize, Rc<WindowHistorySlot>>> = RefCell::new(HashMap::new());
+}
+
+fn history_slot(browser: &Browser) -> Rc<WindowHistorySlot> {
+    let key = Rc::as_ptr(&browser.0) as usize;
+    if let Some(existing) = HISTORY_PREVIEWS.with(|map| {
+        map.borrow().get(&key).and_then(|slot| {
+            slot.browser
+                .upgrade()
+                .filter(|b| Rc::ptr_eq(&b.0, &browser.0))
+                .map(|_| Rc::clone(slot))
+        })
+    }) {
+        return existing;
+    }
+
+    let created = Rc::new(WindowHistorySlot {
+        browser: browser.downgrade(),
+        preview: RefCell::new(HistoryPreview::default()),
+    });
+    browser.0.owner.with(|| {
+        on_cleanup_local(move || {
+            HISTORY_PREVIEWS.with(|map| {
+                map.borrow_mut().remove(&key);
+            });
+        });
+    });
+    HISTORY_PREVIEWS.with(|map| {
+        map.borrow_mut().insert(key, Rc::clone(&created));
+    });
+    created
+}
+
+fn sanitize_preview_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_control() {
+            for esc in ch.escape_default() {
+                out.push(esc);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn freeze_name_preview(names: impl IntoIterator<Item = String>) -> (Vec<String>, usize) {
+    let mut preview = Vec::with_capacity(NAME_PREVIEW_LIMIT);
+    let mut total = 0usize;
+    for name in names {
+        total += 1;
+        if preview.len() < NAME_PREVIEW_LIMIT {
+            preview.push(sanitize_preview_name(&name));
+        }
+    }
+    let overflow = total.saturating_sub(preview.len());
+    (preview, overflow)
+}
+
+fn next_free_remote_name(default_name: &str, reserved: &HashSet<String>) -> String {
+    if !reserved.contains(default_name) {
+        return default_name.to_owned();
+    }
+    let mut index = 2usize;
+    loop {
+        let candidate = format!("{default_name} ({index})");
+        if !reserved.contains(&candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
 impl Browser {
+    fn record_history(&self, entry: history::Entry) {
+        let kind = entry.kind;
+        let recorded = self.update(|state| {
+            let non_empty = !entry.steps.is_empty();
+            state.history.record(entry);
+            non_empty
+        });
+        if recorded {
+            let slot = history_slot(self);
+            let mut preview = slot.preview.borrow_mut();
+            preview.redo.clear();
+            preview.undo.push(kind);
+        }
+    }
+
+    fn clear_history(&self) {
+        self.update(|state| state.history.clear());
+        let slot = history_slot(self);
+        let mut preview = slot.preview.borrow_mut();
+        preview.undo.clear();
+        preview.redo.clear();
+    }
+
+    fn peek_history_kind(&self, redo: bool) -> Option<history::Kind> {
+        let slot = history_slot(self);
+        let preview = slot.preview.borrow();
+        if redo {
+            preview.redo.last().copied()
+        } else {
+            preview.undo.last().copied()
+        }
+    }
+
+    pub(super) fn history_available(&self, redo: bool) -> bool {
+        !self.is_background_task_busy_untracked(FILES_TASK_KEY)
+            && !self.read_untracked(|state| state.operation.busy())
+            && self.peek_history_kind(redo).is_some()
+    }
+
+    pub(super) fn history_label(&self, redo: bool) -> String {
+        if let Some(kind) = self.peek_history_kind(redo) {
+            let op_name = i18n::text_untracked(kind.label_id());
+            if redo {
+                gds::t_untracked!("redo-operation", operation = op_name)
+            } else {
+                gds::t_untracked!("undo-operation", operation = op_name)
+            }
+        } else {
+            i18n::text_untracked(if redo { "redo" } else { "undo" })
+        }
+    }
+
+    pub(super) fn cancel_clipboard_cut(&self) -> bool {
+        let Some(snapshot) = Clipboard::current()
+            .snapshot_untracked()
+            .filter(|snap| snap.can_cancel())
+        else {
+            return false;
+        };
+        let paths = snapshot.paths.clone();
+        let weak = self.downgrade();
+        self.0.owner.with(|| {
+            drop(spawn_local(async move {
+                let result = Clipboard::current().remove(snapshot, paths).await;
+                if let Some(browser) = weak.upgrade() {
+                    if let Err(error) = result {
+                        browser.report_notice(error.to_string());
+                    }
+                    browser.changed();
+                }
+            }));
+        });
+        true
+    }
+
     pub(super) fn refresh_affected(&self, paths: &[PathBuf]) {
         self.refresh_after_file_operation(paths, false);
     }
@@ -83,28 +252,11 @@ impl Browser {
     }
 
     pub(super) fn begin_operation(&self, label: &str) -> Option<CancellationToken> {
-        let cancel = CancellationToken::new();
-        let started = self.update(|state| {
-            if state.operation.busy() {
-                return false;
-            }
-            state.operation = Operation::Running {
-                label: label.to_owned(),
-                cancel: cancel.clone(),
-            };
-            true
-        });
-        if started {
-            self.changed();
-            Some(cancel)
-        } else {
-            None
-        }
+        self.begin_background_task(FILES_TASK_KEY, label)
     }
 
     pub(super) fn end_operation(&self) {
-        self.update(|state| state.operation = Operation::Idle);
-        self.changed();
+        let _ = self.finish_background_task(FILES_TASK_KEY);
     }
 
     pub(super) fn open_selected(&self) {
@@ -151,7 +303,7 @@ impl Browser {
                     self.new_tab(Some(location));
                 }
                 Row::File(entry) => {
-                    self.open_file(entry.path.clone(), OpenMode::DefaultApplication)
+                    self.open_file(entry.path.clone(), OpenMode::DefaultApplication);
                 }
                 _ => self.open_row(idx, false),
             }
@@ -219,104 +371,227 @@ impl Browser {
     }
 
     pub(super) fn new_folder(&self) {
-        let info = self.read_untracked(|state| {
-            if state.operation.busy() {
-                return None;
-            }
+        enum NewFolderTarget {
+            Local {
+                directory: PathBuf,
+                folder_label: String,
+                reserved: HashSet<OsString>,
+            },
+            Remote {
+                tab_id: u64,
+                parent_address: gds::service::remote::Address,
+                session: gds::service::remote::Session,
+                folder_label: String,
+                reserved: HashSet<String>,
+            },
+        }
+
+        let target = self.read_untracked(|state| {
             let tab = state.tab();
-            if !matches!(tab.contents, Contents::Directory) {
+            if tab.navigation.is_loading() {
                 return None;
             }
-            let directory = tab.navigation.path()?.to_path_buf();
-            let folder_label = self.location_title(tab.navigation.location());
-            let reserved: HashSet<OsString> = tab
-                .navigation
-                .directory()
-                .map(|snap| {
-                    snap.entries
+            match &tab.contents {
+                Contents::Directory => {
+                    if state.operation.busy() {
+                        return None;
+                    }
+                    let directory = tab.navigation.path()?.to_path_buf();
+                    let folder_label = self.location_title(tab.navigation.location());
+                    let reserved: HashSet<OsString> = tab
+                        .navigation
+                        .directory()
+                        .map(|snap| {
+                            snap.entries
+                                .iter()
+                                .map(|entry| entry.name.clone())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(NewFolderTarget::Local {
+                        directory,
+                        folder_label,
+                        reserved,
+                    })
+                }
+                Contents::Remote { listing, session } => {
+                    if state.operation.busy()
+                        || self.is_background_task_busy_untracked(&remote_task_key(tab.id))
+                    {
+                        return None;
+                    }
+                    let folder_label = self.location_title(tab.navigation.location());
+                    let reserved: HashSet<String> = listing
+                        .entries
                         .iter()
                         .map(|entry| entry.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            Some((directory, folder_label, reserved))
+                        .collect();
+                    Some(NewFolderTarget::Remote {
+                        tab_id: tab.id,
+                        parent_address: listing.address.clone(),
+                        session: session.clone(),
+                        folder_label,
+                        reserved,
+                    })
+                }
+                _ => None,
+            }
         });
-        let Some((directory, folder_label, reserved)) = info else {
+
+        let Some(target) = target else {
             return;
         };
-        let default_name = i18n::text_untracked("new-folder-default-name");
-        let suggestion = names::free_name(&directory, OsStr::new(&default_name), &reserved)
-            .unwrap_or_else(|_| OsString::from(&default_name));
-        let title = gds::t_untracked!("new-folder-title", folder = folder_label);
-        let form = NameForm::new(NamePurpose::NewFolder, title, suggestion);
-        let browser = self.clone();
-        self.name_form(form, move |name| {
-            let Some(cancel) = browser.begin_operation(&i18n::text_untracked("new-folder-working"))
-            else {
-                return;
-            };
-            let parent = directory.clone();
-            let request = new_folder::Request {
-                directory: parent.clone(),
-                name,
-            };
-            let task = request.spawn(&browser.scope(), cancel);
-            let weak = browser.downgrade();
-            browser.0.owner.with(|| {
-                drop(spawn_local(async move {
-                    let result = task.await;
-                    let Some(browser) = weak.upgrade() else {
+
+        match target {
+            NewFolderTarget::Local {
+                directory,
+                folder_label,
+                reserved,
+            } => {
+                let default_name = i18n::text_untracked("new-folder-default-name");
+                let suggestion = names::free_name(&directory, OsStr::new(&default_name), &reserved)
+                    .unwrap_or_else(|_| OsString::from(&default_name));
+                let title = gds::t_untracked!("new-folder-title", folder = folder_label);
+                let form = NameForm::new(NamePurpose::NewFolder, title, suggestion);
+                let browser = self.clone();
+                self.name_form(form, move |name| {
+                    let Some(cancel) =
+                        browser.begin_operation(&i18n::text_untracked("new-folder-working"))
+                    else {
                         return;
                     };
-                    browser.end_operation();
-                    match result {
-                        Ok(Ok(created)) => {
-                            let label = created
-                                .path
-                                .file_name()
-                                .map(|n| n.to_string_lossy().into_owned())
-                                .unwrap_or_default();
-                            if let Some(expected) = created.snapshot {
-                                browser.update(|state| {
-                                    state.history.record(history::Entry::new(
-                                        history::Kind::NewFolder,
-                                        vec![history::Step::trash_empty_directory(
-                                            created.path.clone(),
-                                            expected,
-                                        )],
-                                    ));
-                                });
-                            }
-                            browser.reveal_paths(vec![created.path.clone()]);
-                            browser.refresh_affected(&[parent]);
-                            browser
-                                .report_success(gds::t_untracked!("new-folder-done", name = label));
-                            browser.focus_content();
-                        }
-                        Ok(Err(error)) => {
-                            let message = match error {
-                                new_folder::Error::Exists { name, .. } => {
-                                    gds::t_untracked!("new-folder-exists", name = name)
-                                }
-                                other => {
-                                    gds::t_untracked!(
-                                        "new-folder-failed",
-                                        error = other.to_string()
-                                    )
-                                }
+                    let parent = directory.clone();
+                    let request = new_folder::Request {
+                        directory: parent.clone(),
+                        name,
+                    };
+                    let task = request.spawn(&browser.scope(), cancel);
+                    let weak = browser.downgrade();
+                    browser.0.owner.with(|| {
+                        drop(spawn_local(async move {
+                            let result = task.await;
+                            let Some(browser) = weak.upgrade() else {
+                                return;
                             };
-                            browser.report_notice(message);
-                        }
-                        Err(error) => {
-                            browser.report_notice(gds::t_untracked!(
-                                "new-folder-failed",
-                                error = error.to_string()
-                            ));
-                        }
-                    }
-                }));
-            });
-        });
+                            browser.end_operation();
+                            match result {
+                                Ok(Ok(created)) => {
+                                    let label = created
+                                        .path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_default();
+                                    if let Some(expected) = created.snapshot {
+                                        browser.record_history(history::Entry::new(
+                                            history::Kind::NewFolder,
+                                            vec![history::Step::trash_empty_directory(
+                                                created.path.clone(),
+                                                expected,
+                                            )],
+                                        ));
+                                    }
+                                    browser.reveal_paths(vec![created.path.clone()]);
+                                    browser.refresh_affected(&[parent]);
+                                    browser.report_success(gds::t_untracked!(
+                                        "new-folder-done",
+                                        name = label
+                                    ));
+                                    browser.focus_content();
+                                }
+                                Ok(Err(error)) => {
+                                    let message = match error {
+                                        new_folder::Error::Exists { name, .. } => {
+                                            gds::t_untracked!("new-folder-exists", name = name)
+                                        }
+                                        other => gds::t_untracked!(
+                                            "new-folder-failed",
+                                            error = other.to_string()
+                                        ),
+                                    };
+                                    browser.report_notice(message);
+                                }
+                                Err(error) => {
+                                    browser.report_notice(gds::t_untracked!(
+                                        "new-folder-failed",
+                                        error = error.to_string()
+                                    ));
+                                }
+                            }
+                        }));
+                    });
+                });
+            }
+            NewFolderTarget::Remote {
+                tab_id,
+                parent_address,
+                session,
+                folder_label,
+                reserved,
+            } => {
+                let default_name = i18n::text_untracked("new-folder-default-name");
+                let suggestion = next_free_remote_name(&default_name, &reserved);
+                let title = gds::t_untracked!("new-folder-title", folder = folder_label);
+                let form = NameForm::new(NamePurpose::NewFolder, title, OsString::from(suggestion));
+                let browser = self.clone();
+                self.name_form(form, move |os_name| {
+                    let Some(name_str) = os_name.to_str() else {
+                        browser.report_notice(i18n::text_untracked("rename-not-text"));
+                        return;
+                    };
+                    let Ok(child_address) = parent_address.child(name_str) else {
+                        browser.report_notice(i18n::text_untracked("rename-error-invalid"));
+                        return;
+                    };
+                    let task_key = remote_task_key(tab_id);
+                    let Some(_cancel) = browser.begin_background_task(
+                        task_key.clone(),
+                        i18n::text_untracked("new-folder-working"),
+                    ) else {
+                        return;
+                    };
+                    let session = session.clone();
+                    let parent_location = Location::Remote(parent_address.clone());
+                    let display_name = name_str.to_owned();
+                    let (tx, mut rx) = mpsc::unbounded_channel();
+                    drop(
+                        browser
+                            .scope()
+                            .spawn_named("Create remote folder", async move {
+                                let result = session.mkdir(&child_address).await;
+                                let _ = tx.send(result);
+                            }),
+                    );
+                    let weak = browser.downgrade();
+                    browser.0.owner.with(|| {
+                        drop(spawn_local(async move {
+                            let Some(result) = rx.recv().await else {
+                                return;
+                            };
+                            let Some(browser) = weak.upgrade() else {
+                                return;
+                            };
+                            let _ = browser.finish_background_task(&task_key);
+                            match result {
+                                Ok(()) => {
+                                    browser.refresh_location(&parent_location);
+                                    browser.report_success(gds::t_untracked!(
+                                        "new-folder-done",
+                                        name = display_name
+                                    ));
+                                }
+                                Err(error) => {
+                                    browser.report_notice(gds::t_untracked!(
+                                        "new-folder-failed",
+                                        error = error.to_string()
+                                    ));
+                                }
+                            }
+                            browser.focus_content();
+                        }));
+                    });
+                });
+            }
+        }
     }
 
     pub(super) fn rename(&self) {
@@ -378,16 +653,14 @@ impl Browser {
                                         .map(|n| n.to_string_lossy().into_owned())
                                         .unwrap_or_default();
                                     if let Some(expected) = renamed.snapshot {
-                                        browser.update(|state| {
-                                            state.history.record(history::Entry::new(
-                                                history::Kind::Rename,
-                                                vec![history::Step::Move {
-                                                    source: renamed.destination.clone(),
-                                                    destination: src.clone(),
-                                                    expected,
-                                                }],
-                                            ));
-                                        });
+                                        browser.record_history(history::Entry::new(
+                                            history::Kind::Rename,
+                                            vec![history::Step::Move {
+                                                source: renamed.destination.clone(),
+                                                destination: src.clone(),
+                                                expected,
+                                            }],
+                                        ));
                                     }
                                     browser.reveal_paths(vec![renamed.destination.clone()]);
                                     browser.refresh_affected(&[src, renamed.destination]);
@@ -430,23 +703,47 @@ impl Browser {
     pub(super) fn delete(&self, permanent: bool) {
         enum DeleteTarget {
             None,
+            Favorites(Vec<Location>),
             Remote(Vec<Row>),
             Trash(bool),
             Tags(Vec<Row>),
             Local(Vec<PathBuf>),
         }
         let target = self.read_untracked(|state| {
-            if state.operation.busy() {
-                return DeleteTarget::None;
-            }
             let tab = state.tab();
             let selected = tab.selected();
             if selected.is_empty() {
                 return DeleteTarget::None;
             }
+            if matches!(tab.navigation.location(), Location::Favorites) {
+                if permanent {
+                    return DeleteTarget::None;
+                }
+                let bookmarks: Vec<Location> = selected
+                    .into_iter()
+                    .filter_map(|row| match row {
+                        Row::Place(loc) => Some(loc),
+                        _ => None,
+                    })
+                    .collect();
+                return if bookmarks.is_empty() {
+                    DeleteTarget::None
+                } else {
+                    DeleteTarget::Favorites(bookmarks)
+                };
+            }
+            if matches!(tab.contents, Contents::Trash(_)) {
+                return if self.is_background_task_busy_untracked(TRASH_TASK_KEY) {
+                    DeleteTarget::None
+                } else {
+                    DeleteTarget::Trash(false)
+                };
+            }
+            if state.operation.busy() {
+                return DeleteTarget::None;
+            }
             match tab.contents {
                 Contents::Remote { .. } => DeleteTarget::Remote(selected),
-                Contents::Trash(_) => DeleteTarget::Trash(false),
                 Contents::Tags { .. } if selected.iter().any(|r| matches!(r, Row::Tag(_))) => {
                     DeleteTarget::Tags(selected)
                 }
@@ -462,6 +759,20 @@ impl Browser {
         });
         match target {
             DeleteTarget::None => {}
+            DeleteTarget::Favorites(bookmarks) => {
+                self.update(|state| {
+                    for loc in &bookmarks {
+                        state.places.set_favorite(loc.clone(), false);
+                    }
+                    let view = state.tab_mut().navigation.view_mut();
+                    for loc in bookmarks {
+                        view.selection.remove(&RowKey::Place(loc));
+                    }
+                });
+                self.save_places();
+                self.refresh_location(&Location::Favorites);
+                self.focus_content();
+            }
             DeleteTarget::Remote(rows) => self.delete_remote(rows),
             DeleteTarget::Trash(all) => self.restore_trash(true, all),
             DeleteTarget::Tags(rows) => self.delete_tags(rows),
@@ -479,12 +790,25 @@ impl Browser {
                 let actually_permanent = permanent || !recycle::supported();
                 if actually_permanent {
                     let count = batch.paths().len();
+                    let (items, overflow_count) =
+                        freeze_name_preview(batch.paths().iter().map(|path| {
+                            path.file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string())
+                        }));
                     let title = gds_i18n::count_untracked("delete-confirm-title", count);
                     let message = i18n::text_untracked("delete-confirm-message");
                     let primary = gds_i18n::count_untracked("delete-selected", count);
+                    let options = ConfirmOptions {
+                        icon: Some(IconName::Trash),
+                        primary_icon: Some(IconName::Trash),
+                        destructive: true,
+                        items,
+                        overflow_count,
+                    };
                     let browser = self.clone();
                     let paths = batch.paths().to_vec();
-                    self.confirm_labelled(title, message, primary, move || {
+                    self.confirm_with_options(title, message, primary, options, move || {
                         if let Ok(batch) = Batch::new(paths.clone()) {
                             browser.execute_delete(batch, DeleteKind::PermanentDelete);
                         }
@@ -544,11 +868,7 @@ impl Browser {
                         .into_iter()
                         .map(history::Step::Restore)
                         .collect();
-                    browser.update(|state| {
-                        state
-                            .history
-                            .record(history::Entry::new(history::Kind::Trash, steps));
-                    });
+                    browser.record_history(history::Entry::new(history::Kind::Trash, steps));
                 }
                 browser.refresh_after_file_operation(&affected, report.kind == DeleteKind::Trash);
                 if !failed.is_empty() {
@@ -584,18 +904,31 @@ impl Browser {
     }
 
     pub(super) fn replay(&self, redo: bool) {
+        if self.is_background_task_busy_untracked(FILES_TASK_KEY)
+            || self.read_untracked(|state| state.operation.busy())
+        {
+            return;
+        }
         let direction = if redo {
             history::Direction::Redo
         } else {
             history::Direction::Undo
         };
-        let entry = {
-            let mut state = self.0.state.borrow_mut();
-            if state.operation.busy() {
-                return;
+        let entry = self.update(|state| state.history.take(direction));
+        let slot = history_slot(self);
+        {
+            let mut preview = slot.preview.borrow_mut();
+            let stack = if redo {
+                &mut preview.redo
+            } else {
+                &mut preview.undo
+            };
+            if entry.is_some() {
+                let _ = stack.pop();
+            } else {
+                stack.clear();
             }
-            state.history.take(direction)
-        };
+        }
         let Some(entry) = entry else {
             return;
         };
@@ -606,12 +939,9 @@ impl Browser {
             gds::t_untracked!("undo-operation", operation = op_name)
         };
         let Some(cancel) = self.begin_operation(&label) else {
-            self.update(|state| {
-                // Return entry cleanly if operation couldn't start.
-                if redo {
-                    state.history.clear();
-                }
-            });
+            if redo {
+                self.clear_history();
+            }
             return;
         };
         let task = self
@@ -635,13 +965,34 @@ impl Browser {
                 };
                 let changed = report.changed.clone();
                 let errors = report.errors.clone();
+                let kind = report.kind;
+                let has_remaining = !report.remaining.is_empty();
+                let has_inverse = !report.inverse.is_empty();
                 let trash_affected = matches!(
-                    report.kind,
+                    kind,
                     history::Kind::Trash | history::Kind::Restore | history::Kind::NewFolder
                 );
                 browser.update(|state| {
                     state.history.finish(direction, &mut report);
                 });
+                {
+                    let finish_slot = history_slot(&browser);
+                    let mut preview = finish_slot.preview.borrow_mut();
+                    if has_remaining {
+                        if redo {
+                            preview.redo.push(kind);
+                        } else {
+                            preview.undo.push(kind);
+                        }
+                    }
+                    if has_inverse {
+                        if redo {
+                            preview.undo.push(kind);
+                        } else {
+                            preview.redo.push(kind);
+                        }
+                    }
+                }
                 browser.refresh_after_file_operation(&changed, trash_affected);
                 if errors.is_empty() {
                     browser.report_success(i18n::text_untracked(if redo {
@@ -1079,14 +1430,10 @@ impl Browser {
         if record_history {
             let kind = summary.history_kind();
             let reset = summary.requires_history_reset();
-            self.update(|state| {
-                if reset {
-                    state.history.clear();
-                }
-                state
-                    .history
-                    .record(history::Entry::new(kind, summary.undo));
-            });
+            if reset {
+                self.clear_history();
+            }
+            self.record_history(history::Entry::new(kind, summary.undo));
         }
         self.refresh_affected(&changed_paths);
         if !summary.committed.is_empty() {
@@ -1129,12 +1476,12 @@ impl Browser {
     }
 
     pub(super) fn restore_trash(&self, purge: bool, all: bool) {
+        if self.is_background_task_busy_untracked(TRASH_TASK_KEY) {
+            return;
+        }
         let entries: Vec<recycle::Entry> = self.read_untracked(|state| {
-            if state.operation.busy() {
-                return Vec::new();
-            }
             let tab = state.tab();
-            if !matches!(tab.contents, Contents::Trash(_)) {
+            if !matches!(tab.contents, Contents::Trash(_)) || tab.navigation.is_loading() {
                 return Vec::new();
             }
             let view = tab.navigation.view();
@@ -1153,21 +1500,35 @@ impl Browser {
         }
         if purge {
             let count = entries.len();
-            let (title, message, primary) = if all {
+            let (items, overflow_count) = freeze_name_preview(
+                entries
+                    .iter()
+                    .map(|entry| entry.name.to_string_lossy().into_owned()),
+            );
+            let (title, message, primary, icon) = if all {
                 (
                     i18n::text_untracked("recycle-empty-confirm-title"),
                     gds_i18n::count_untracked("recycle-empty-confirm-message", count),
                     i18n::text_untracked("recycle-empty-confirm-ok"),
+                    IconName::Broom,
                 )
             } else {
                 (
                     gds_i18n::count_untracked("recycle-purge-confirm-title", count),
                     i18n::text_untracked("recycle-purge-confirm-message"),
                     i18n::text_untracked("recycle-purge-confirm-ok"),
+                    IconName::Trash,
                 )
             };
+            let options = ConfirmOptions {
+                icon: Some(icon),
+                primary_icon: Some(icon),
+                destructive: true,
+                items,
+                overflow_count,
+            };
             let browser = self.clone();
-            self.confirm_labelled(title, message, primary, move || {
+            self.confirm_with_options(title, message, primary, options, move || {
                 browser.execute_trash_action(recycle::Action::Purge, entries.clone());
             });
         } else {
@@ -1184,7 +1545,7 @@ impl Browser {
             },
             count,
         );
-        let Some(cancel) = self.begin_operation(&label) else {
+        let Some(cancel) = self.begin_background_task(TRASH_TASK_KEY, label) else {
             return;
         };
         let task = self
@@ -1199,7 +1560,7 @@ impl Browser {
                 let Some(browser) = weak.upgrade() else {
                     return;
                 };
-                browser.end_operation();
+                let _ = browser.finish_background_task(TRASH_TASK_KEY);
                 let Ok(outcomes) = result else {
                     if let Err(error) = result {
                         browser.report_notice(error.to_string());
@@ -1231,11 +1592,7 @@ impl Browser {
                     }
                 }
                 if !undo_steps.is_empty() {
-                    browser.update(|state| {
-                        state
-                            .history
-                            .record(history::Entry::new(history::Kind::Restore, undo_steps));
-                    });
+                    browser.record_history(history::Entry::new(history::Kind::Restore, undo_steps));
                 }
                 browser.refresh_after_file_operation(&changed_paths, true);
                 if !failed.is_empty() {

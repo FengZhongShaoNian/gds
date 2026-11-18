@@ -8,15 +8,18 @@ use zgui::view::EventCx;
 use zgui::vocab::{Key, KeyEvent, Modifiers, NamedKey};
 
 use super::{
-    model::{Pane, Prompt, Row},
+    model::{AddressPresentation, Pane, Prompt, Row},
     ui::Browser,
 };
 use crate::{
     entities::{
         file::ViewMode,
-        location::{Location, LocationTarget, volumes::DeviceAction},
+        location::{Collection, Location, LocationTarget, volumes::DeviceAction},
     },
-    shared::ui::actions::{Command, ordinal_shortcut},
+    shared::{
+        lib::clipboard::Clipboard,
+        ui::actions::{Command, ordinal_shortcut},
+    },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -42,6 +45,9 @@ impl Browser {
             Command::NewFolder => self.new_folder(),
             Command::NewTab => self.new_tab(None),
             Command::NewWindow => {
+                if self.read_untracked(|state| state.picker.is_some()) {
+                    return;
+                }
                 let target = self.read_untracked(|state| {
                     state
                         .tab()
@@ -86,7 +92,10 @@ impl Browser {
             Command::Refresh => self.refresh(),
             Command::Filter => {
                 if self.filter_available_untracked() {
+                    let current = self.0.filter.get_untracked();
                     self.0.filter_node.focus();
+                    self.0.filter_node.set_value(&current);
+                    self.0.filter_node.select_all();
                 }
             }
             Command::Hidden => {
@@ -173,26 +182,92 @@ impl Browser {
             Command::FocusNotifications => notifications::focus(),
             Command::CloseNotification => notifications::close_current(),
             Command::CloseAllNotifications => notifications::close_all(),
-            Command::Cancel => {
-                if self.0.menus.is_open() {
-                    self.0.menus.close();
-                } else if !matches!(self.0.prompt.get_untracked(), Prompt::Closed) {
-                    self.cancel_prompt();
-                } else if self.read_untracked(|state| state.operation.busy()) {
-                    self.read_untracked(|state| state.operation.cancel());
-                } else if !self.0.filter.get_untracked().is_empty() {
-                    self.filter(String::new());
-                    self.focus_content();
-                } else if self.read_untracked(|state| state.tab().navigation.is_loading()) {
-                    self.cancel_location_load();
-                } else if self.read_untracked(|state| state.picker.is_some()) {
-                    self.cancel_picker();
-                } else {
-                    self.update_selection(|state| {
-                        state.tab_mut().navigation.view_mut().selection.clear();
-                    });
-                }
+            Command::Cancel => self.cancel_escape(),
+        }
+    }
+
+    fn cancel_active_drag(&self) -> bool {
+        let had_sources = self.has_drag_sources_untracked();
+        if had_sources {
+            self.clear_drag_sources();
+        }
+        let had_term_drag = self.cancel_terminal_drag_hover();
+        had_sources || had_term_drag
+    }
+
+    /// Exact 8-step `Escape` (`Command::Cancel`) priority chain matching `main`.
+    /// NEVER cancels running background file transfers (`state.operation` / `background_tasks`)
+    /// and NEVER clears unfocused filter text or file selection.
+    fn cancel_escape(&self) {
+        // 1. Open menu
+        if self.0.menus.is_open() {
+            self.0.menus.close();
+            self.focus_content();
+            return;
+        }
+
+        // 2. Open modal prompt or inspection dialog
+        if !matches!(self.0.prompt.get_untracked(), Prompt::Closed) {
+            self.cancel_prompt();
+            return;
+        }
+        if self.has_open_inspection_dialog() {
+            let _ = self.cancel_inspection_dialog();
+            return;
+        }
+
+        // 3. Connecting remote server
+        if self.0.connector.is_connecting() {
+            self.0.connector.cancel();
+            return;
+        }
+
+        // 4. Loading location
+        if self.read_untracked(|state| state.tab().navigation.is_loading()) {
+            self.cancel_location_load();
+            return;
+        }
+
+        // 5. Active pointer drag (cancel without dropping, keep selection intact)
+        if self.cancel_active_drag() {
+            return;
+        }
+
+        // 6. Focused sidebar region
+        if self.focused_sidebar_region().is_some() {
+            if self.pane_untracked() == Pane::Files {
+                let _ = self.cancel_clipboard_cut();
             }
+            self.focus_content();
+            return;
+        }
+
+        // 7 & 8. Transient local modes vs Cut ghosting vs Picker cancel
+        let focused_node = zgui::view::focused_node().get_untracked();
+        let filter_focused = focused_node.is_some_and(|node| self.0.filter_node.contains(node));
+        let editing_address = !matches!(
+            self.0.address_presentation.get_untracked(),
+            AddressPresentation::Breadcrumbs
+        );
+        let local_mode = self.pane_untracked() != Pane::Files
+            || editing_address
+            || notifications::is_focused()
+            || filter_focused;
+
+        if !local_mode && self.cancel_clipboard_cut() {
+            self.focus_content();
+            return;
+        }
+
+        self.finish_address_edit();
+        if self.pane_untracked() != Pane::Files {
+            self.show_files();
+        }
+        Clipboard::current().refresh();
+        self.focus_content();
+
+        if !local_mode && self.read_untracked(|state| state.picker.is_some()) {
+            self.cancel_picker();
         }
     }
 
@@ -223,16 +298,27 @@ impl Browser {
 
         if self.0.menus.is_open() {
             if self.menu_key(event) {
+                self.focus_content();
                 event.prevent_default();
                 event.stop_propagation();
                 return;
             }
             if event.key == Key::Named(NamedKey::Escape) {
                 self.0.menus.close();
+                self.focus_content();
                 event.prevent_default();
                 event.stop_propagation();
                 return;
             }
+        }
+
+        if self.has_open_inspection_dialog() {
+            if event.key == Key::Named(NamedKey::Escape) && modifiers.is_empty() {
+                let _ = self.cancel_inspection_dialog();
+                event.prevent_default();
+                event.stop_propagation();
+            }
+            return;
         }
 
         match self.0.prompt.get_untracked() {
@@ -251,15 +337,67 @@ impl Browser {
             }
         }
 
-        if self.pane_untracked() != Pane::Files {
+        if self.0.connector.is_connecting() {
+            if event.key == Key::Named(NamedKey::Escape) && modifiers.is_empty() {
+                self.0.connector.cancel();
+                event.prevent_default();
+                event.stop_propagation();
+            }
+            return;
+        }
+
+        let pane = self.pane_untracked();
+        if pane != Pane::Files {
             if !event.repeat
-                && let Some(command) = Command::from_key_event(event, modifiers)
-                && matches!(command, Command::Settings | Command::Help | Command::Cancel)
+                && let Some(command) = resolve_shortcut(event, modifiers)
             {
                 match command {
-                    Command::Cancel => self.back_page(),
-                    other => self.dispatch(other),
+                    Command::Cancel | Command::Back | Command::CloseTab => {
+                        self.back_page();
+                        event.prevent_default();
+                        event.stop_propagation();
+                    }
+                    Command::NextTab if pane == Pane::Settings => {
+                        self.0.settings.cycle_page(false);
+                        event.prevent_default();
+                        event.stop_propagation();
+                    }
+                    Command::PreviousTab if pane == Pane::Settings => {
+                        self.0.settings.cycle_page(true);
+                        event.prevent_default();
+                        event.stop_propagation();
+                    }
+                    Command::Settings
+                    | Command::Help
+                    | Command::Sidebar
+                    | Command::Terminal
+                    | Command::FocusNotifications
+                    | Command::CloseNotification
+                    | Command::CloseAllNotifications => {
+                        self.dispatch(command);
+                        event.prevent_default();
+                        event.stop_propagation();
+                    }
+                    _ => {}
                 }
+            }
+            return;
+        }
+
+        if self.terminal_focused() {
+            if !event.repeat
+                && let Some(command) = resolve_shortcut(event, modifiers)
+                && matches!(
+                    command,
+                    Command::Settings
+                        | Command::Help
+                        | Command::Terminal
+                        | Command::FocusNotifications
+                        | Command::CloseNotification
+                        | Command::CloseAllNotifications
+                )
+            {
+                self.dispatch(command);
                 event.prevent_default();
                 event.stop_propagation();
             }
@@ -271,8 +409,15 @@ impl Browser {
             return;
         }
 
+        // Picker Alt-mnemonics and Ctrl+Enter apply across the picker workspace (including Save/Filter inputs).
+        if !event.repeat && self.picker_key(event, modifiers) {
+            event.prevent_default();
+            event.stop_propagation();
+            return;
+        }
+
         if focused_node.is_some_and(|node| self.0.filter_node.contains(node)) {
-            if self.handle_search_key(event) {
+            if self.handle_search_key(event, modifiers) {
                 event.prevent_default();
                 event.stop_propagation();
             }
@@ -310,12 +455,6 @@ impl Browser {
         }
 
         if self.0.list_focused.get() && self.handle_content_key(event, modifiers) {
-            event.prevent_default();
-            event.stop_propagation();
-            return;
-        }
-
-        if self.picker_key(event) {
             event.prevent_default();
             event.stop_propagation();
         }
@@ -430,10 +569,16 @@ impl Browser {
                     .map(|tab| SidebarRow::Tab(tab.id))
                     .collect()
             }),
-            SidebarRegion::Locations => LocationTarget::ALL
-                .into_iter()
-                .map(SidebarRow::Location)
-                .collect(),
+            SidebarRegion::Locations => {
+                let tags_enabled = self.tags_enabled_untracked();
+                LocationTarget::ALL
+                    .into_iter()
+                    .filter(|target| {
+                        *target != LocationTarget::Collection(Collection::Tags) || tags_enabled
+                    })
+                    .map(SidebarRow::Location)
+                    .collect()
+            }
             SidebarRegion::Volumes => self
                 .0
                 .volumes
@@ -502,6 +647,9 @@ impl Browser {
                 true
             }
             Key::Named(NamedKey::Escape) => {
+                if self.pane_untracked() == Pane::Files {
+                    let _ = self.cancel_clipboard_cut();
+                }
                 self.focus_content();
                 true
             }
@@ -540,17 +688,63 @@ impl Browser {
         }
     }
 
-    fn handle_search_key(&self, event: &KeyEvent) -> bool {
+    fn handle_search_key(&self, event: &KeyEvent, modifiers: Modifiers) -> bool {
+        if !modifiers.is_empty() {
+            if !event.repeat
+                && let Some(command) = resolve_shortcut(event, modifiers)
+                && matches!(
+                    command,
+                    Command::Settings
+                        | Command::Help
+                        | Command::Sidebar
+                        | Command::Terminal
+                        | Command::Filter
+                        | Command::FocusLocations
+                        | Command::FocusVolumes
+                        | Command::FocusTabs
+                        | Command::FocusContent
+                        | Command::FocusNotifications
+                        | Command::CloseNotification
+                        | Command::CloseAllNotifications
+                )
+            {
+                self.dispatch(command);
+                return true;
+            }
+            return false;
+        }
+
         match event.key {
             Key::Named(NamedKey::Escape) => {
                 if !self.0.filter.get_untracked().is_empty() {
                     self.filter(String::new());
+                    self.0.filter_node.set_value("");
                 } else {
                     self.focus_content();
                 }
                 true
             }
-            Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::Enter) => {
+            Key::Named(NamedKey::ArrowDown) => {
+                self.focus_content();
+                let row_count = self.read_untracked(|state| state.tab().rows.len());
+                if row_count > 0 {
+                    self.select_row(0, Modifiers::NONE);
+                    self.0.list_focus_visible.set(true);
+                    self.scroll_row_into_view(0);
+                }
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.focus_content();
+                let row_count = self.read_untracked(|state| state.tab().rows.len());
+                if let Some(last) = row_count.checked_sub(1) {
+                    self.select_row(last, Modifiers::NONE);
+                    self.0.list_focus_visible.set(true);
+                    self.scroll_row_into_view(last);
+                }
+                true
+            }
+            Key::Named(NamedKey::Enter) => {
                 self.focus_content();
                 let should_select_first = self.read_untracked(|state| {
                     let tab = state.tab();
@@ -559,6 +753,7 @@ impl Browser {
                 if should_select_first {
                     self.select_row(0, Modifiers::NONE);
                     self.0.list_focus_visible.set(true);
+                    self.scroll_row_into_view(0);
                 }
                 true
             }

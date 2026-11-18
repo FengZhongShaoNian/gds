@@ -12,7 +12,7 @@ use gds::ui::page::{
 use gds::ui::{IconButtonProps, IconName, IconProps};
 use zgui::prelude::*;
 use zgui::view::{EventCx, current_host, events, install_stylesheet};
-use zgui::vocab::{Modifiers, Role};
+use zgui::vocab::{Key, Modifiers, NamedKey, Role};
 use zgui::{css, view};
 use zgui_ui::SpinnerProps;
 
@@ -248,6 +248,10 @@ fn open_mounted_place(browser: &Browser, path: PathBuf, modifiers: Modifiers) {
     }
 }
 
+fn is_button_activation_key(key: &Key) -> bool {
+    matches!(key, Key::Named(NamedKey::Enter | NamedKey::Space)) || *key == Key::character(" ")
+}
+
 fn remote_location_row(
     browser: Browser,
     address: Address,
@@ -269,6 +273,8 @@ fn remote_location_row(
 
     let body_addr = address.clone();
     let body_browser = browser.clone();
+    let key_addr = address.clone();
+    let key_browser = browser.clone();
     let open_addr = address.clone();
     let open_browser = browser.clone();
     let disconnect_addr = address.clone();
@@ -290,6 +296,13 @@ fn remote_location_row(
                 a11y:label = a11y_title,
                 on:click = move |ev: &mut EventCx<'_, events::Click>| {
                     open_remote_place(&body_browser, body_addr.clone(), ev.modifiers);
+                },
+                on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
+                    if is_button_activation_key(&ev.key) {
+                        ev.prevent_default();
+                        ev.stop_propagation();
+                        open_remote_place(&key_browser, key_addr.clone(), ev.modifiers);
+                    }
                 },
             ) {
                 text(class = "gds-files-network-row__title") {{title}}
@@ -347,6 +360,8 @@ fn mounted_location_row(browser: Browser, path: PathBuf) -> AnyView {
     let detail = path.display().to_string();
     let body_path = path.clone();
     let body_browser = browser.clone();
+    let key_path = path.clone();
+    let key_browser = browser.clone();
     let open_path = path;
     let open_browser = browser;
 
@@ -364,6 +379,13 @@ fn mounted_location_row(browser: Browser, path: PathBuf) -> AnyView {
                 a11y:label = a11y_title,
                 on:click = move |ev: &mut EventCx<'_, events::Click>| {
                     open_mounted_place(&body_browser, body_path.clone(), ev.modifiers);
+                },
+                on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
+                    if is_button_activation_key(&ev.key) {
+                        ev.prevent_default();
+                        ev.stop_propagation();
+                        open_mounted_place(&key_browser, key_path.clone(), ev.modifiers);
+                    }
                 },
             ) {
                 text(class = "gds-files-network-row__title") {{title}}

@@ -136,7 +136,12 @@ impl Browser {
     }
 
     pub(super) fn location_title(&self, location: &Location) -> String {
-        location.label()
+        match location {
+            Location::Volume { identity, relative } if relative.is_empty() => self
+                .volume_at_location_untracked(identity)
+                .map_or_else(|| location.label(), |volume| volume.name),
+            _ => location.label(),
+        }
     }
 
     pub(super) fn location_address(location: &Location, _path: Option<&Path>) -> String {

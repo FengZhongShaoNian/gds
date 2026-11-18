@@ -183,10 +183,17 @@ const SURFACES_CSS: &str = css!(
         width: 12px;
         height: 18px;
         flex-shrink: 0;
+        opacity: 0;
         color: var(--gds-muted-foreground);
     }
 
+    .gds-files-collection-header__button:hover .gds-files-collection-header__sort,
+    .gds-files-collection-header__button:focus-visible .gds-files-collection-header__sort {
+        opacity: 1;
+    }
+
     .gds-files-collection-header__sort[data-active="true"] {
+        opacity: 1;
         color: var(--gds-foreground);
     }
 
@@ -246,8 +253,12 @@ const SURFACES_CSS: &str = css!(
 
     .gds-files-collection-artwork__badge {
         position: absolute;
-        right: -1px;
-        bottom: -1px;
+        right: -4px;
+        bottom: -4px;
+        border-radius: 999px;
+        background: var(--gds-panel);
+        color: var(--gds-foreground);
+        padding: 1px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -1240,7 +1251,7 @@ impl Browser {
                     artwork,
                     entry.display_name.clone(),
                     Some(address.clone()),
-                    entry.display_name.starts_with('.'),
+                    entry.is_hidden,
                     sel_bool,
                     width_at(0),
                 );
@@ -1287,12 +1298,12 @@ impl Browser {
                             sel_bool,
                         );
                         (
-                            label.clone(),
+                            label,
                             art,
                             entry.modified,
                             EntryPresentation::type_label(entry),
                             EntryPresentation::size_label(entry),
-                            label.starts_with('.'),
+                            entry.is_hidden,
                         )
                     }
                     None => {

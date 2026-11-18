@@ -1,21 +1,34 @@
 #![allow(dead_code)]
-//! Native tab reordering and lazy file drag snapshots.
+//! Native tab reordering, pointer/OS drag-and-drop, spring-loading, and lazy file drag snapshots.
 
 use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{Arc, OnceLock},
+    time::Duration,
 };
 
+use gds::ui::drag::{DragCardProps, DragOverlayState, drop_hit_test, drop_target_attrs};
 use zgui::prelude::*;
-use zgui::view::EventCx;
+use zgui::reactive::{Signal, UnsyncCallback, on_cleanup_local};
+use zgui::view;
+use zgui::view::{EventCx, TimeoutHandle, Timers};
+use zgui::vocab::PointerButton;
 
-use super::{geometry::Grid, model::Row, ui::Browser};
+use super::{
+    geometry::Grid,
+    model::{Contents, Row},
+    ui::Browser,
+};
 use crate::{
     entities::file::{
         directory::{Entry, EntryKind},
         ui::FileIcon,
     },
-    shared::lib::selection::Selection,
+    features::file_operations::{paste::PasteJob, transfer},
+    shared::{i18n, lib::selection::Selection},
 };
 
 #[derive(Clone, Debug)]
@@ -249,28 +262,617 @@ impl DragSnapshot {
     }
 }
 
+const DRAG_THRESHOLD: f32 = 6.0;
+const SPRING_LOAD_DELAY: Duration = Duration::from_millis(600);
+
+#[derive(Clone)]
+enum WindowDragPayload {
+    Files(FileDrag),
+    Tab { id: u64, title: String },
+}
+
+#[derive(Clone)]
+enum ArmedDrag {
+    File {
+        entry: Entry,
+        tab_id: u64,
+        start: (f32, f32),
+    },
+    Tab {
+        id: u64,
+        pinned: bool,
+        start: (f32, f32),
+    },
+}
+
+#[derive(Clone)]
+enum TargetKind {
+    Folder(PathBuf),
+    Tab(u64),
+}
+
+#[derive(Clone)]
+struct RegisteredTarget {
+    key: String,
+    node: NodeRef,
+    kind: TargetKind,
+}
+
+#[derive(Clone)]
+struct RegisteredTab {
+    id: u64,
+    pinned: bool,
+    node: NodeRef,
+}
+
+struct SpringLoad {
+    target_key: String,
+    _timer: TimeoutHandle,
+}
+
+struct DragCoordinator {
+    overlay: DragOverlayState<WindowDragPayload>,
+    armed: RefCell<Option<ArmedDrag>>,
+    targets: RefCell<Vec<RegisteredTarget>>,
+    tabs: RefCell<Vec<RegisteredTab>>,
+    spring: RefCell<Option<SpringLoad>>,
+    copy_modifier: Cell<bool>,
+}
+
+impl DragCoordinator {
+    fn new() -> Self {
+        Self {
+            overlay: DragOverlayState::new(),
+            armed: RefCell::new(None),
+            targets: RefCell::new(Vec::new()),
+            tabs: RefCell::new(Vec::new()),
+            spring: RefCell::new(None),
+            copy_modifier: Cell::new(false),
+        }
+    }
+
+    fn register_target(&self, key: String, node: NodeRef, kind: TargetKind) {
+        let mut targets = self.targets.borrow_mut();
+        targets.retain(|item| item.node.get_untracked().is_some() && item.key != key);
+        targets.push(RegisteredTarget { key, node, kind });
+    }
+
+    fn unregister_target(&self, key: &str) {
+        self.targets.borrow_mut().retain(|item| item.key != key);
+    }
+
+    fn register_tab(&self, id: u64, pinned: bool, node: NodeRef) {
+        let mut tabs = self.tabs.borrow_mut();
+        tabs.retain(|item| item.node.get_untracked().is_some() && item.id != id);
+        tabs.push(RegisteredTab { id, pinned, node });
+    }
+
+    fn unregister_tab(&self, id: u64) {
+        self.tabs.borrow_mut().retain(|item| item.id != id);
+    }
+
+    fn hit_target(&self, pos: (f32, f32)) -> Option<RegisteredTarget> {
+        let mut targets = self.targets.borrow_mut();
+        targets.retain(|item| item.node.get_untracked().is_some());
+        targets
+            .iter()
+            .rev()
+            .find(|item| drop_hit_test(&item.node, pos))
+            .cloned()
+    }
+
+    fn hit_tab(&self, pos: (f32, f32)) -> Option<RegisteredTab> {
+        let mut tabs = self.tabs.borrow_mut();
+        tabs.retain(|item| item.node.get_untracked().is_some());
+        tabs.iter()
+            .find(|item| drop_hit_test(&item.node, pos))
+            .cloned()
+    }
+
+    fn clear_spring(&self) {
+        *self.spring.borrow_mut() = None;
+    }
+
+    fn cancel_all(&self) {
+        *self.armed.borrow_mut() = None;
+        self.clear_spring();
+        self.overlay.cancel();
+    }
+}
+
+thread_local! {
+    static COORDINATORS: RefCell<HashMap<usize, Rc<DragCoordinator>>> = RefCell::new(HashMap::new());
+    static CLEANUP_REGISTERED: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    static ROW_PRESSED_WINDOW: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(super) fn mark_row_pointer_down(browser: &Browser) {
+    ROW_PRESSED_WINDOW.with(|slot| slot.set(Rc::as_ptr(&browser.0) as usize));
+}
+
+pub(super) fn take_row_pointer_down(browser: &Browser) -> bool {
+    let key = Rc::as_ptr(&browser.0) as usize;
+    ROW_PRESSED_WINDOW.with(|slot| {
+        let matched = slot.get() == key;
+        slot.set(0);
+        matched
+    })
+}
+
+fn coordinator_for(browser: &Browser) -> Rc<DragCoordinator> {
+    let window_key = Rc::as_ptr(&browser.0) as usize;
+    let needs_cleanup = CLEANUP_REGISTERED.with(|slot| slot.borrow_mut().insert(window_key));
+    if needs_cleanup {
+        browser.0.owner.with(|| {
+            on_cleanup_local(move || {
+                COORDINATORS.with(|slot| {
+                    slot.borrow_mut().remove(&window_key);
+                });
+                CLEANUP_REGISTERED.with(|slot| {
+                    slot.borrow_mut().remove(&window_key);
+                });
+            });
+        });
+    }
+    COORDINATORS.with(|slot| {
+        Rc::clone(
+            slot.borrow_mut()
+                .entry(window_key)
+                .or_insert_with(|| Rc::new(DragCoordinator::new())),
+        )
+    })
+}
+
 impl Browser {
     pub(super) fn background_drop_target(&self, view: AnyView) -> AnyView {
-        view
+        let coord = coordinator_for(self);
+        let overlay = coord.overlay;
+        let browser = self.clone();
+        let on_external_drop =
+            UnsyncCallback::new(move |(paths, _pos): (Vec<PathBuf>, (f32, f32))| {
+                let destination = browser.read(|state| {
+                    let tab = state.tab();
+                    matches!(tab.contents, Contents::Directory)
+                        .then(|| tab.navigation.path().map(Path::to_path_buf))
+                        .flatten()
+                });
+                if let Some(destination) = destination
+                    && !paths.is_empty()
+                {
+                    let job = PasteJob::new(destination, transfer::Mode::Copy, paths);
+                    browser.inspect_paste(job, false, true, None);
+                }
+            });
+        let inactive = Signal::stored_local(false);
+        let drop_attrs = drop_target_attrs(inactive, Some(on_external_drop));
+        let copy_mode = Signal::derive_local(move || {
+            let _ = overlay.position().get();
+            coord.copy_modifier.get()
+        });
+
+        AnyView::new(view! {
+            box(class = "gds-files-drop-background", {..drop_attrs}) {
+                {view}
+                {move || overlay.payload().get().map(|payload| {
+                    let (header, detail) = match payload {
+                        WindowDragPayload::Files(drag) => {
+                            let count = drag.count();
+                            let title = if count == 1 {
+                                drag.paths()
+                                    .first()
+                                    .and_then(|path| path.file_name())
+                                    .map(|name| name.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| gds::i18n::count("selection-count", count))
+                            } else {
+                                gds::i18n::count("selection-count", count)
+                            };
+                            let action = if copy_mode.get() {
+                                i18n::text("copy-files")
+                            } else {
+                                String::new()
+                            };
+                            (title, action)
+                        }
+                        WindowDragPayload::Tab { title, .. } => (title, String::new()),
+                    };
+                    AnyView::new(view! {
+                        DragCard(position = overlay.position()) {
+                            row(class = "gds-drag-card__header") { {header} }
+                            {(!detail.is_empty()).then(|| view! {
+                                column(class = "gds-drag-card__content") { {detail} }
+                            })}
+                        }
+                    })
+                })}
+            }
+        })
     }
 
-    pub(super) fn draggable_tab(&self, view: AnyView, _id: u64, _pinned: bool) -> AnyView {
-        view
+    pub(super) fn draggable_tab(&self, view: AnyView, id: u64, pinned: bool) -> AnyView {
+        let coord = coordinator_for(self);
+        let node = NodeRef::new();
+        let target_key = format!("tab:{id}");
+        coord.register_tab(id, pinned, node);
+        coord.register_target(target_key.clone(), node, TargetKind::Tab(id));
+        let cleanup_coord = Rc::clone(&coord);
+        let cleanup_key = target_key.clone();
+        on_cleanup_local(move || {
+            cleanup_coord.unregister_tab(id);
+            cleanup_coord.unregister_target(&cleanup_key);
+        });
+
+        let overlay = coord.overlay;
+        let is_hovered = Signal::derive_local(move || {
+            overlay.hovered_target().get().as_deref() == Some(&target_key)
+        });
+
+        let down_coord = Rc::clone(&coord);
+        let move_coord = Rc::clone(&coord);
+        let move_browser = self.clone();
+        let up_coord = Rc::clone(&coord);
+        let up_browser = self.clone();
+        let cancel_coord = Rc::clone(&coord);
+
+        AnyView::new(view! {
+            box(
+                node_ref = node,
+                attr:data-drop-active = move || is_hovered.get().then(|| "true".to_owned()),
+                on:pointer_down = move |ev| {
+                    if ev.button != Some(PointerButton::Primary) {
+                        return;
+                    }
+                    *down_coord.armed.borrow_mut() = Some(ArmedDrag::Tab {
+                        id,
+                        pinned,
+                        start: (ev.position.x.0, ev.position.y.0),
+                    });
+                },
+                on:pointer_move = move |ev| {
+                    let pos = (ev.position.x.0, ev.position.y.0);
+                    let mut start_payload = None;
+                    if let Some(ArmedDrag::Tab {
+                        id: armed_id,
+                        pinned: armed_pinned,
+                        start,
+                    }) = *move_coord.armed.borrow()
+                        && armed_id == id
+                        && distance(start, pos) >= DRAG_THRESHOLD
+                    {
+                        let _ = armed_pinned;
+                        let title = move_browser.read(|state| {
+                            state
+                                .tabs
+                                .iter()
+                                .find(|tab| tab.id == id)
+                                .map_or_else(String::new, |tab| {
+                                    move_browser.location_title(tab.navigation.location())
+                                })
+                        });
+                        start_payload = Some(WindowDragPayload::Tab { id, title });
+                    }
+                    if let Some(payload) = start_payload {
+                        *move_coord.armed.borrow_mut() = None;
+                        ev.capture_pointer();
+                        move_coord.overlay.begin(payload, pos.0, pos.1);
+                    }
+                    if matches!(move_coord.overlay.payload().get_untracked(), Some(WindowDragPayload::Tab { .. })) {
+                        move_coord.overlay.move_to(pos.0, pos.1);
+                        let hovered = move_coord
+                            .hit_tab(pos)
+                            .filter(|tab| tab.pinned == pinned)
+                            .map(|tab| format!("tab:{}", tab.id));
+                        move_coord.overlay.set_hovered_target(hovered);
+                    }
+                },
+                on:pointer_up = move |ev| {
+                    if ev.button != Some(PointerButton::Primary) {
+                        return;
+                    }
+                    if matches!(
+                        up_coord.armed.borrow().as_ref(),
+                        Some(ArmedDrag::Tab { id: armed_id, .. }) if *armed_id == id
+                    ) {
+                        *up_coord.armed.borrow_mut() = None;
+                    }
+                    let is_tab_drag = matches!(
+                        up_coord.overlay.payload().get_untracked(),
+                        Some(WindowDragPayload::Tab { .. })
+                    );
+                    if !is_tab_drag {
+                        return;
+                    }
+                    let pos = (ev.position.x.0, ev.position.y.0);
+                    if let Some(WindowDragPayload::Tab { id: from_id, .. }) = up_coord.overlay.end()
+                        && let Some(target_tab) = up_coord.hit_tab(pos)
+                        && target_tab.id != from_id
+                        && let (Some(from_idx), Some(to_idx)) = (
+                            up_browser.tab_index(from_id),
+                            up_browser.tab_index(target_tab.id),
+                        )
+                    {
+                        up_browser.reorder_tab(from_idx, to_idx);
+                        ev.stop_propagation();
+                    }
+                },
+                on:pointer_cancel = move |_| {
+                    cancel_coord.cancel_all();
+                },
+            ) {
+                {view}
+            }
+        })
     }
 
-    pub(super) fn file_drag_target(&self, view: AnyView, _destination: PathBuf) -> AnyView {
-        view
+    pub(super) fn file_drag_target(&self, view: AnyView, destination: PathBuf) -> AnyView {
+        let coord = coordinator_for(self);
+        let node = NodeRef::new();
+        let target_key = format!("dir:{}", destination.display());
+        coord.register_target(
+            target_key.clone(),
+            node,
+            TargetKind::Folder(destination.clone()),
+        );
+        let cleanup_coord = Rc::clone(&coord);
+        let cleanup_key = target_key.clone();
+        on_cleanup_local(move || {
+            cleanup_coord.unregister_target(&cleanup_key);
+        });
+
+        let overlay = coord.overlay;
+        let internal_active = Signal::derive_local(move || {
+            overlay.hovered_target().get().as_deref() == Some(&target_key)
+        });
+
+        let drop_browser = self.clone();
+        let drop_dest = destination;
+        let on_external_drop =
+            UnsyncCallback::new(move |(paths, _pos): (Vec<PathBuf>, (f32, f32))| {
+                if !paths.is_empty() {
+                    let job = PasteJob::new(drop_dest.clone(), transfer::Mode::Copy, paths);
+                    drop_browser.inspect_paste(job, false, true, None);
+                }
+            });
+        let attrs = drop_target_attrs(internal_active, Some(on_external_drop));
+
+        AnyView::new(view! {
+            box(node_ref = node, {..attrs}) {
+                {view}
+            }
+        })
     }
 
-    pub(super) fn file_row_drag(&self, view: AnyView, _row: &Row, _grid: Option<Grid>) -> AnyView {
-        view
+    pub(super) fn file_row_drag(&self, view: AnyView, row: &Row, _grid: Option<Grid>) -> AnyView {
+        let Row::File(entry) = row else {
+            return view;
+        };
+        let coord = coordinator_for(self);
+        let row_entry = entry.clone();
+        let press_browser = self.clone();
+        let press_coord = Rc::clone(&coord);
+        let move_browser = self.clone();
+        let move_coord = Rc::clone(&coord);
+        let up_browser = self.clone();
+        let up_coord = Rc::clone(&coord);
+        let cancel_coord = Rc::clone(&coord);
+
+        AnyView::new(view! {
+            box(
+                on:pointer_down = move |ev| {
+                    if ev.button != Some(PointerButton::Primary) {
+                        return;
+                    }
+                    mark_row_pointer_down(&press_browser);
+                    let tab_id = press_browser.read(|state| state.tab().id);
+                    *press_coord.armed.borrow_mut() = Some(ArmedDrag::File {
+                        entry: row_entry.clone(),
+                        tab_id,
+                        start: (ev.position.x.0, ev.position.y.0),
+                    });
+                },
+                on:pointer_move = move |ev| {
+                    let pos = (ev.position.x.0, ev.position.y.0);
+                    move_coord.copy_modifier.set(ev.modifiers.control());
+
+                    let start_drag = {
+                        let armed = move_coord.armed.borrow();
+                        match armed.as_ref() {
+                            Some(ArmedDrag::File { entry, tab_id, start })
+                                if distance(*start, pos) >= DRAG_THRESHOLD =>
+                            {
+                                Some((entry.clone(), *tab_id))
+                            }
+                            _ => None,
+                        }
+                    };
+                    if let Some((entry, tab_id)) = start_drag {
+                        *move_coord.armed.borrow_mut() = None;
+                        let drag = materialize_file_drag(&move_browser, tab_id, &entry);
+                        if let Some(drag) = drag {
+                            let outbound_supported = move_browser
+                                .0
+                                .window
+                                .as_ref()
+                                .is_some_and(|w| w.capabilities().drag_source);
+                            let _ = outbound_supported;
+                            ev.capture_pointer();
+                            move_coord.overlay.begin(WindowDragPayload::Files(drag), pos.0, pos.1);
+                        }
+                    }
+
+                    if matches!(
+                        move_coord.overlay.payload().get_untracked(),
+                        Some(WindowDragPayload::Files(_))
+                    ) {
+                        move_coord.overlay.move_to(pos.0, pos.1);
+                        update_file_drag_hover(&move_browser, &move_coord, pos);
+                    }
+                },
+                on:pointer_up = move |ev| {
+                    if ev.button != Some(PointerButton::Primary) {
+                        return;
+                    }
+                    if matches!(up_coord.armed.borrow().as_ref(), Some(ArmedDrag::File { .. })) {
+                        *up_coord.armed.borrow_mut() = None;
+                    }
+                    if !matches!(
+                        up_coord.overlay.payload().get_untracked(),
+                        Some(WindowDragPayload::Files(_))
+                    ) {
+                        return;
+                    }
+                    up_coord.clear_spring();
+                    let pos = (ev.position.x.0, ev.position.y.0);
+                    let target = up_coord.hit_target(pos);
+                    if let Some(WindowDragPayload::Files(drag)) = up_coord.overlay.end()
+                        && let Some(target) = target
+                    {
+                        let destination = match target.kind {
+                            TargetKind::Folder(path) => Some(path),
+                            TargetKind::Tab(tab_id) => up_browser.read(|state| {
+                                state
+                                    .tabs
+                                    .iter()
+                                    .find(|tab| tab.id == tab_id)
+                                    .and_then(|tab| tab.navigation.path().map(Path::to_path_buf))
+                            }),
+                        };
+                        if let Some(destination) = destination {
+                            let copy = ev.modifiers.control();
+                            let mode = if copy {
+                                transfer::Mode::Copy
+                            } else {
+                                transfer::Mode::Move
+                            };
+                            let paths = drag.paths();
+                            let same_dir = mode == transfer::Mode::Move
+                                && paths.iter().all(|p| p.parent() == Some(destination.as_path()));
+                            if !paths.is_empty() && !same_dir {
+                                let job = PasteJob::new(destination, mode, paths);
+                                up_browser.inspect_paste(job, false, true, None);
+                            }
+                        }
+                        ev.stop_propagation();
+                    }
+                },
+                on:pointer_cancel = move |_| {
+                    cancel_coord.cancel_all();
+                },
+            ) {
+                {view}
+            }
+        })
     }
 
     pub(super) fn mouse_navigation(
         &self,
-        _event: &mut EventCx<'_, zgui::view::events::PointerDown>,
+        event: &mut EventCx<'_, zgui::view::events::PointerDown>,
     ) {
+        match event.button {
+            Some(PointerButton::Back) => {
+                self.history(false);
+                event.prevent_default();
+                event.stop_propagation();
+            }
+            Some(PointerButton::Forward) => {
+                self.history(true);
+                event.prevent_default();
+                event.stop_propagation();
+            }
+            _ => {}
+        }
     }
+}
+
+fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    (dx * dx + dy * dy).sqrt()
+}
+
+fn materialize_file_drag(browser: &Browser, tab_id: u64, entry: &Entry) -> Option<FileDrag> {
+    browser.read(|state| {
+        let tab = state.tabs.iter().find(|tab| tab.id == tab_id)?;
+        if !matches!(tab.contents, Contents::Directory | Contents::Tags { .. }) {
+            return None;
+        }
+        let entries: Arc<[Entry]> = tab
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::File(item) => Some(item.clone()),
+                _ => None,
+            })
+            .collect();
+        let selected_paths: Selection<PathBuf> = tab
+            .navigation
+            .view()
+            .selection
+            .iter()
+            .filter_map(|key| match key {
+                super::model::RowKey::Local(path) => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        let snapshot = DragSnapshot::new(&entries, &selected_paths);
+        Some(snapshot.drag_for_row(entry, selected_paths.contains(&entry.path)))
+    })
+}
+
+fn update_file_drag_hover(browser: &Browser, coord: &Rc<DragCoordinator>, pos: (f32, f32)) {
+    let target = coord.hit_target(pos);
+    let next_key = target.as_ref().map(|t| t.key.clone());
+    let prev_key = coord.overlay.hovered_target().get_untracked();
+    if next_key == prev_key {
+        return;
+    }
+    coord.overlay.set_hovered_target(next_key.clone());
+    coord.clear_spring();
+    let Some(target) = target else {
+        return;
+    };
+    let already_open = match &target.kind {
+        TargetKind::Folder(dest) => {
+            browser.read(|state| state.tab().navigation.path() == Some(dest.as_path()))
+        }
+        TargetKind::Tab(tab_id) => browser.read(|state| state.tab().id == *tab_id),
+    };
+    if already_open {
+        return;
+    }
+    let Some(timers) = Timers::current() else {
+        return;
+    };
+    let weak = browser.downgrade();
+    let spring_coord = Rc::downgrade(coord);
+    let expected_key = target.key.clone();
+    let kind = target.kind;
+    let handle = timers.set_timeout(SPRING_LOAD_DELAY, move || {
+        let Some(browser) = weak.upgrade() else {
+            return;
+        };
+        let Some(coord) = spring_coord.upgrade() else {
+            return;
+        };
+        if coord.overlay.hovered_target().get_untracked().as_deref() != Some(expected_key.as_str())
+        {
+            return;
+        }
+        match kind {
+            TargetKind::Folder(dest) => {
+                let location = browser.local_location(&dest);
+                browser.open(location);
+            }
+            TargetKind::Tab(tab_id) => {
+                if let Some(index) = browser.tab_index(tab_id) {
+                    browser.select_tab(index);
+                }
+            }
+        }
+    });
+    *coord.spring.borrow_mut() = Some(SpringLoad {
+        target_key: target.key,
+        _timer: handle,
+    });
 }
 
 #[cfg(test)]

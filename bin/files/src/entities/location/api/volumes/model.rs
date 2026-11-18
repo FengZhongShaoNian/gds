@@ -164,16 +164,9 @@ impl Snapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceAction {
     Mount(VolumeId),
-    SetLabel {
-        volume: VolumeId,
-        label: String,
-    },
+    SetLabel { volume: VolumeId, label: String },
     Unmount(VolumeId),
     PowerOff(VolumeId),
-    #[expect(
-        dead_code,
-        reason = "UDisks supports optical-media ejection; Files currently exposes unmount and power-off"
-    )]
     Eject(VolumeId),
 }
 

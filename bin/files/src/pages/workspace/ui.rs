@@ -205,6 +205,7 @@ impl Browser {
                 }
             });
         let initial_width = 960.0;
+        let initial_widths = Self::column_widths_map(&places, &location);
         let window = try_use_window();
         let browser = Self(Rc::new(Workspace {
             alive: Cell::new(true),
@@ -223,7 +224,7 @@ impl Browser {
             }),
             revision: RwSignal::new_local(0),
             selection: RwSignal::new_local(0),
-            column_widths: RwSignal::new_local(HashMap::new()),
+            column_widths: RwSignal::new_local(initial_widths),
             pages: RwSignal::new_local(Pages::default()),
             window_width: RwSignal::new_local(initial_width),
             content_width: RwSignal::new_local(initial_width - COLLAPSED_SIDEBAR_WIDTH),
@@ -582,6 +583,14 @@ impl Browser {
 }
 
 impl Browser {
+    pub(super) fn column_widths_map(places: &Places, location: &Location) -> HashMap<Column, f32> {
+        places
+            .column_widths(location.clone())
+            .into_iter()
+            .filter_map(|(id, width)| Column::from_id(&id).map(|column| (column, width)))
+            .collect()
+    }
+
     fn observe_services(&self) {
         let previous = RefCell::new(self.0.preferences.snapshot());
         let browser = self.clone();
@@ -589,12 +598,14 @@ impl Browser {
             let preferences = browser.0.preferences.snapshot();
             let prior = previous.replace(preferences.clone());
             browser.apply_terminal_preferences(&preferences);
-            browser
-                .0
-                .inspections
-                .set(gds::ui::file_inspection::Cache::new(
-                    preferences.files.preview.cache_options(),
-                ));
+            if prior.files.preview != preferences.files.preview {
+                browser
+                    .0
+                    .inspections
+                    .set(gds::ui::file_inspection::Cache::new(
+                        preferences.files.preview.cache_options(),
+                    ));
+            }
             if prior.files.show_hidden != preferences.files.show_hidden
                 || prior.files.watching != preferences.files.watching
                 || prior.files.streaming != preferences.files.streaming

@@ -3034,6 +3034,8 @@ dependencies = [
  "zgui",
  "zgui-image",
  "zgui-platform-headless",
+ "zgui-render-vector-vello",
+ "zgui-render-wgpu",
  "zgui-ui",
  "zgui-ui-icons",
  "zgui-ui-primitives",

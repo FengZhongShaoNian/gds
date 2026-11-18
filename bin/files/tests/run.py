@@ -231,15 +231,21 @@ def run_wayland_smoke(
         bus_env = base_env.copy()
         bus_env["DBUS_SESSION_BUS_ADDRESS"] = dbus_addr
 
+        weston_ini = artifacts / "weston.ini"
+        weston_ini.write_text(
+            "[core]\nidle-time=0\n\n[shell]\nlocking=false\n\n[output]\nname=headless\nmode=1600x1000\n",
+            encoding="utf-8",
+        )
+
         weston_cmd = [
             str(weston),
             "--backend=headless",
             "--renderer=pixman",
             f"--socket={socket_name}",
-            "--width=1280",
-            "--height=900",
+            "--width=1600",
+            "--height=1000",
             "--fake-seat",
-            "--no-config",
+            f"--config={weston_ini}",
             "--idle-time=0",
             "--debug",
         ]
@@ -332,6 +338,12 @@ def run_wayland_smoke(
                         if not window_painted:
                             raise SystemExit(
                                 f"Native Wayland window did not paint onto Weston within 20s; inspect {app_log_path}"
+                            )
+                        shot_hdr = wayland_png.read_bytes()[:24]
+                        shot_w, shot_h = struct.unpack(">II", shot_hdr[16:24])
+                        if (shot_w, shot_h) != (1600, 1000):
+                            raise SystemExit(
+                                f"Expected 1600x1000 Weston screenshot, got {shot_w}x{shot_h} in {wayland_png}"
                             )
                     finally:
                         if app_proc.poll() is None:

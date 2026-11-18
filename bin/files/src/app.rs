@@ -34,7 +34,10 @@ pub(super) const APP_NAME: &str = "Files";
 
 pub(crate) fn run() -> ExitCode {
     #[cfg(feature = "files-e2e")]
-    if std::env::var("GDS_E2E_MODE").as_deref() == Ok("driven") {
+    if matches!(
+        std::env::var("GDS_E2E_MODE").as_deref(),
+        Ok("driven" | "gallery")
+    ) {
         return crate::pages::workspace::e2e::run();
     }
     let arguments = cli::Arguments::parse();

@@ -152,7 +152,13 @@ portal = [
     "dep:serde_json", "dep:thiserror", "dep:url", "dep:zbus",
 ]
 gui-tests = ["files", "dep:zgui-platform-headless", "zbus?/p2p"]
-files-e2e = ["files", "dep:futures", "dep:zgui-platform-headless"]
+files-e2e = [
+    "files",
+    "dep:futures",
+    "dep:zgui-platform-headless",
+    "dep:zgui-render-wgpu",
+    "dep:zgui-render-vector-vello",
+]
 
 [dependencies]
 # Async runtime, errors and serialization shared by several capabilities.
@@ -257,6 +263,8 @@ zgui-ui-primitives = { git = "https://github.com/GanDesktop/zgui", branch = "gds
 zgui-ui-icons = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
 zgui-image = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
 zgui-platform-headless = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
+zgui-render-wgpu = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
+zgui-render-vector-vello = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
 gds-settings-derive = { path = "macros/gds-settings-derive", optional = true }
 rust-embed = { version = "8", optional = true, features = ["debug-embed"] }
 unicode-segmentation = { version = "1", optional = true }

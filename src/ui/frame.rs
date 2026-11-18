@@ -188,10 +188,10 @@ mod tests {
     };
     use zgui::runtime::AppError;
     use zgui::view;
-    use zgui::vocab::{Modifiers, PointerAction, PointerEvent, Timestamp};
+    use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Timestamp};
     use zgui_platform_headless::Harness;
 
-    use super::{FOOTER_HEIGHT, FrameProps, TOOLBAR_HEIGHT, WindowDragAreaProps};
+    use super::{FOOTER_HEIGHT, FrameProps, TOOLBAR_HEIGHT, ToolbarProps, WindowDragAreaProps};
     use crate::appearance::tokens;
 
     struct NoopSink;
@@ -307,6 +307,22 @@ mod tests {
                 "hovering north edge grip sets vertical resize cursor"
             );
 
+            // Click the no-drag control mounted inside WindowDragArea.
+            let button_pos = Point::new(CssPx(40.0), CssPx(26.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(button_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(button_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+
             harness.shut_down();
             Ok(())
         };
@@ -321,19 +337,29 @@ mod tests {
                 let clicked = Rc::clone(&clicked_ref);
                 view! {
                     Frame {
-                        WindowDragArea {
-                            control(
-                                on:pointer_down = move |ev: &mut zgui::view::EventCx<'_, zgui::view::events::PointerDown>| {
-                                    if let Some(ref handler) = no_drag {
-                                        handler(ev);
-                                    }
-                                },
-                                on:click = move |_| clicked.set(clicked.get() + 1)
-                            ) {"Action"}
+                        Toolbar {
+                            WindowDragArea {
+                                control(
+                                    style:width = "160px",
+                                    style:height = "36px",
+                                    on:pointer_down = move |ev: &mut zgui::view::EventCx<'_, zgui::view::events::PointerDown>| {
+                                        if let Some(ref handler) = no_drag {
+                                            handler(ev);
+                                        }
+                                    },
+                                    on:click = move |_| clicked.set(clicked.get() + 1)
+                                ) {"Action"}
+                            }
                         }
                     }
                 }
             })
             .expect("frame runs headlessly");
+
+        assert_eq!(
+            clicked.get(),
+            1,
+            "no-drag child inside WindowDragArea must receive primary click"
+        );
     }
 }

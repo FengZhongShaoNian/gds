@@ -208,11 +208,9 @@ fn control_button(
     })
 }
 
-/// Client-side window control buttons (minimize, maximize/restore, close), suppressed under Niri.
-#[component]
-pub fn WindowControls(#[prop(into, optional)] class: Classes) -> impl IntoView {
+fn render_window_controls(class: Classes, hidden: bool) -> AnyView {
     install_window_stylesheets();
-    if hidden_in_current_session() {
+    if hidden {
         return AnyView::new(());
     }
     let window = zgui::prelude::try_use_window();
@@ -270,13 +268,18 @@ pub fn WindowControls(#[prop(into, optional)] class: Classes) -> impl IntoView {
     })
 }
 
-/// Draggable titlebar strip with optional leading/trailing slots and window menu on secondary click.
+/// Client-side window control buttons (minimize, maximize/restore, close), suppressed under Niri.
 #[component]
-pub fn TitleBar(
-    #[prop(into)] title: Signal<String, LocalStorage>,
-    #[prop(optional)] leading: Option<Children>,
-    #[prop(optional)] trailing: Option<Children>,
-    #[prop(into, optional)] class: Classes,
+pub fn WindowControls(#[prop(into, optional)] class: Classes) -> impl IntoView {
+    render_window_controls(class, hidden_in_current_session())
+}
+
+fn render_title_bar(
+    title: Signal<String, LocalStorage>,
+    leading: Option<Children>,
+    trailing: Option<Children>,
+    class: Classes,
+    hide_controls: bool,
 ) -> impl IntoView {
     if let Some(gds) = Gds::try_current() {
         let _ = gds.appearance().install_window_sheet();
@@ -304,7 +307,29 @@ pub fn TitleBar(
             text(class = "gds-titlebar__title") {{move || title.get()}}
             spacer() {}
             {trailing.map(Children::into_view_once)}
-            WindowControls()
+            {render_window_controls(Classes::default(), hide_controls)}
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn title_bar_with_forced_controls(title: &str) -> impl IntoView {
+    render_title_bar(
+        Signal::stored_local(title.to_owned()),
+        None,
+        None,
+        Classes::default(),
+        false,
+    )
+}
+
+/// Draggable titlebar strip with optional leading/trailing slots and window menu on secondary click.
+#[component]
+pub fn TitleBar(
+    #[prop(into)] title: Signal<String, LocalStorage>,
+    #[prop(optional)] leading: Option<Children>,
+    #[prop(optional)] trailing: Option<Children>,
+    #[prop(into, optional)] class: Classes,
+) -> impl IntoView {
+    render_title_bar(title, leading, trailing, class, hidden_in_current_session())
 }

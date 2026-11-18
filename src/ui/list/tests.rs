@@ -121,10 +121,10 @@ fn blank_press_tracks_scrolled_rows_and_preserves_header_and_scrollbars() {
         "space below the rows clears selection"
     );
     assert!(
-        hit(100.0, 180.0, -80.0),
+        hit(100.0, 180.0, 80.0),
         "the live scroll offset moves the blank boundary"
     );
-    assert!(!hit(100.0, 15.0, -80.0), "column headings keep selection");
+    assert!(!hit(100.0, 15.0, 80.0), "column headings keep selection");
     assert!(
         !hit(390.0, 240.0, 0.0),
         "the vertical scrollbar keeps selection"

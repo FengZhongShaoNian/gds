@@ -9,13 +9,10 @@ use zgui::render::{
     Renderer, TextureHandle,
 };
 use zgui::runtime::AppError;
-use zgui::view;
 use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Role, Timestamp};
 use zgui_platform_headless::Harness;
 
-use super::{
-    TitleBarProps, fit_size, initial_size, minimum_size, session_hides_controls, workspace_options,
-};
+use super::{fit_size, initial_size, minimum_size, session_hides_controls, workspace_options};
 
 struct NoopSink;
 
@@ -134,13 +131,6 @@ fn missing_desktop_uses_the_niri_socket_as_a_fallback() {
 
 #[test]
 fn csd_close_button_exposes_button_role_and_label_and_stops_drag() {
-    if session_hides_controls(
-        std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
-        std::env::var_os("NIRI_SOCKET").is_some_and(|s| !s.is_empty()),
-    ) {
-        return;
-    }
-
     let found_close: Arc<Mutex<Option<(Role, Option<String>, bool)>>> = Arc::new(Mutex::new(None));
     let recorded = Arc::clone(&found_close);
 
@@ -161,7 +151,7 @@ fn csd_close_button_exposes_button_role_and_label_and_stops_drag() {
         let updates = surface.a11y_log();
         for update in updates {
             for (_, node) in update.nodes {
-                if node.label() == Some("Close window") {
+                if node.role() == Role::Button && node.label() == Some("Close window") {
                     *recorded.lock().expect("lock") = Some((
                         node.role(),
                         node.label().map(str::to_owned),
@@ -195,7 +185,9 @@ fn csd_close_button_exposes_button_role_and_label_and_stops_drag() {
         .with_fonts(Fonts::shipped_only())
         .with_renderer(Box::new(noop_renderer))
         .with_size(640.0, 120.0)
-        .run_on(driver, || view! { TitleBar(title = "Test Window") })
+        .run_on(driver, || {
+            super::title_bar_with_forced_controls("Test Window")
+        })
         .expect("window titlebar runs headlessly");
 
     assert_eq!(

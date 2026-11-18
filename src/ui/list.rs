@@ -122,6 +122,8 @@ impl Default for ListGeometry {
 }
 
 impl ListGeometry {
+    /// Returns whether `position` hits empty background below the rendered rows,
+    /// where `scroll_y` is the downward scroll offset in CSS px (matching `ScrollPosition::offset.y`).
     #[must_use]
     pub fn is_blank(
         self,
@@ -147,7 +149,7 @@ impl ListGeometry {
         }
         local_x < self.inset_x
             || local_x >= right
-            || local_y >= self.header_height + self.row_height * self.rows as f32 + scroll_y.0
+            || local_y >= self.header_height + self.row_height * self.rows as f32 - scroll_y.0
     }
 }
 

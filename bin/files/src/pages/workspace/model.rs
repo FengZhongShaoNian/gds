@@ -199,6 +199,11 @@ impl Tab {
             .cloned()
             .collect()
     }
+
+    pub fn is_pure_tag_catalogue(&self) -> bool {
+        matches!(self.contents, Contents::Tags { .. })
+            && !self.rows.iter().any(|row| matches!(row, Row::File(_)))
+    }
 }
 
 impl Drop for Tab {

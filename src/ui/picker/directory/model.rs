@@ -5,14 +5,14 @@ pub struct Location {
     pub label: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub location: Location,
     pub hidden: bool,
 }
 
 /// One page of directories from the host's data source.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Page {
     pub location: Location,
     pub parent: Option<String>,
@@ -21,13 +21,12 @@ pub struct Page {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request {
     pub path: Option<String>,
     pub cursor: Option<String>,
 }
 
-#[allow(dead_code)] // Seed skeleton for Wave 2 ui-overlays-data.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Navigation {
     Visit,
@@ -37,13 +36,12 @@ pub(super) enum Navigation {
     More,
 }
 
-#[allow(dead_code)] // Seed skeleton for Wave 2 ui-overlays-data.
 #[derive(Default)]
 pub(super) struct History {
     pub back: Vec<String>,
     pub forward: Vec<String>,
 }
-#[allow(dead_code)] // Seed skeleton for Wave 2 ui-overlays-data.
+
 impl History {
     pub fn commit(&mut self, kind: Navigation, previous: Option<&str>, current: &str) {
         let Some(previous) = previous.filter(|path| *path != current) else {

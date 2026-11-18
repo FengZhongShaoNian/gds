@@ -5,3 +5,17 @@ pub enum DialogDecision {
     Cancel,
     Dismiss,
 }
+
+impl DialogDecision {
+    /// Returns `true` when the user confirmed the dialog action.
+    #[must_use]
+    pub const fn is_confirmed(self) -> bool {
+        matches!(self, Self::Confirm)
+    }
+
+    /// Returns `true` when the user cancelled or dismissed the dialog.
+    #[must_use]
+    pub const fn is_cancelled(self) -> bool {
+        !self.is_confirmed()
+    }
+}

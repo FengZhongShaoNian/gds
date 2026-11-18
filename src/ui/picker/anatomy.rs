@@ -1,5 +1,61 @@
 use zgui::prelude::*;
-use zgui::{component, view};
+use zgui::{component, css, view};
+
+const SHEET: &str = css!(
+    r#"
+    .gds-picker {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 0;
+        width: 100%;
+    }
+
+    .gds-picker__toolbar {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .gds-picker__location {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        overflow-x: auto;
+    }
+
+    .gds-picker__content {
+        flex: 1;
+        min-height: 220px;
+        max-height: 360px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border: 1px solid var(--gds-border);
+        border-radius: 6px;
+        background: var(--gds-panel);
+    }
+
+    .gds-picker__status {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-height: 22px;
+        font-size: 12px;
+        color: var(--gds-muted-foreground);
+    }
+    "#
+);
+
+fn install_picker_stylesheets() {
+    if zgui::view::current_host().is_some() {
+        crate::ui::styles::install_ui_stylesheets();
+        zgui::view::install_stylesheet("gds-ui-picker-anatomy", SHEET);
+    }
+}
 
 /// A picker column; its host owns the title and decision footer.
 #[component]
@@ -8,7 +64,7 @@ pub fn Picker(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    install_picker_stylesheets();
     view! {
         column(class = "gds-picker", class = class, {..attrs}) {
             {children.into_view_once()}
@@ -23,6 +79,7 @@ pub fn PickerToolbar(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    install_picker_stylesheets();
     view! {
         row(class = "gds-picker__toolbar", class = class, {..attrs}) {
             {children.into_view_once()}
@@ -37,6 +94,7 @@ pub fn PickerLocation(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    install_picker_stylesheets();
     view! {
         row(class = "gds-picker__location", class = class, {..attrs}) {
             {children.into_view_once()}
@@ -51,6 +109,7 @@ pub fn PickerContent(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    install_picker_stylesheets();
     view! {
         box(class = "gds-picker__content", class = class, {..attrs}) {
             {children.into_view_once()}
@@ -65,6 +124,7 @@ pub fn PickerStatus(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    install_picker_stylesheets();
     view! {
         row(class = "gds-picker__status", class = class, {..attrs}) {
             {children.into_view_once()}

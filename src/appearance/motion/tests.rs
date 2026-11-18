@@ -37,6 +37,7 @@ fn reactive_motion_zeroes_durations_in_css_when_reduced() {
 
         let css = gds.appearance().gds_stylesheet_css();
         assert!(css.contains("--gds-motion-normal: 160ms;"));
+        assert!(!css.contains("--zui-motion-duration-slow: 0ms;"));
         assert_eq!(
             gds.appearance().tokens_theme().motion.duration_normal,
             "160ms"
@@ -48,10 +49,17 @@ fn reactive_motion_zeroes_durations_in_css_when_reduced() {
         assert!(css.contains("--gds-motion-reduced: 1;"));
         assert!(css.contains("--gds-motion-fast: 0ms;"));
         assert!(css.contains("--gds-motion-normal: 0ms;"));
+        assert!(css.contains("--gds-motion-slow: 0ms;"));
+        assert!(css.contains("--zui-motion-duration-fast: 0ms;"));
+        assert!(css.contains("--zui-motion-duration-normal: 0ms;"));
+        assert!(css.contains("--zui-motion-duration-slow: 0ms;"));
+        assert!(css.contains("--zui-motion-duration-slower: 0ms;"));
+        assert!(css.contains("--zui-motion-duration-slowest: 0ms;"));
         assert_eq!(
             gds.appearance().tokens_theme().motion.duration_normal,
             "0ms"
         );
+        assert_eq!(gds.appearance().tokens_theme().motion.duration_slow, "0ms");
     });
     root.unmount();
 }

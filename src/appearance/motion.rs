@@ -68,6 +68,13 @@ impl Policy {
         let _ = writeln!(out, "    --gds-motion-fast: {fast}ms;");
         let _ = writeln!(out, "    --gds-motion-normal: {normal}ms;");
         let _ = writeln!(out, "    --gds-motion-slow: {slow}ms;");
+        if reduced {
+            let _ = writeln!(out, "    --zui-motion-duration-fast: 0ms;");
+            let _ = writeln!(out, "    --zui-motion-duration-normal: 0ms;");
+            let _ = writeln!(out, "    --zui-motion-duration-slow: 0ms;");
+            let _ = writeln!(out, "    --zui-motion-duration-slower: 0ms;");
+            let _ = writeln!(out, "    --zui-motion-duration-slowest: 0ms;");
+        }
         let _ = writeln!(
             out,
             "    --gds-motion-ease-standard: cubic-bezier(0.4, 0, 0.2, 1);"

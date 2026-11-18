@@ -1,12 +1,12 @@
 //! The file surface shares one geometry for rendering, navigation, and hit testing.
 
 use gds::app::Gds;
-use gds::appearance::tokens::{CONTENT_PADDING, DataListStyle};
+use gds::appearance::tokens::DataListStyle;
 use zgui::prelude::*;
 
 use super::ui::Browser;
 
-pub(super) const TABLE_INSET: f32 = CONTENT_PADDING;
+pub(super) const TABLE_INSET: f32 = gds::ui::page::TABLE_INSET;
 pub(super) const GRID_PADDING: f32 = 8.0;
 pub(super) const GRID_GAP: f32 = 8.0;
 pub(super) const GRID_INSET: f32 = TABLE_INSET + GRID_PADDING;

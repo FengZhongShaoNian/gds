@@ -1547,7 +1547,7 @@ impl Browser {
     }
 
     pub(super) fn show_about(&self) {
-        self.0.prompt.set(Prompt::About);
+        self.open_prompt(Prompt::About);
     }
 
     pub(super) fn column_menu(&self) -> AnyView {

@@ -110,7 +110,12 @@ impl NameForm {
         }
     }
 
-    pub(super) fn view(self, browser: &Browser, submit: Rc<dyn Fn(OsString)>) -> AnyView {
+    pub(super) fn view(
+        self,
+        browser: &Browser,
+        generation: u64,
+        submit: Rc<dyn Fn(OsString)>,
+    ) -> AnyView {
         if zgui::view::current_host().is_some() {
             install_stylesheet(NAME_FORM_SHEET, NAME_FORM_CSS);
         }
@@ -118,6 +123,7 @@ impl NameForm {
         let value = RwSignal::new_local(self.display.clone());
         let error = RwSignal::new_local(Option::<String>::None);
         let composing = Rc::new(Cell::new(false));
+        let settled = Rc::new(Cell::new(false));
         let input_node = NodeRef::new();
 
         let initial_text = self.display.clone();
@@ -152,10 +158,21 @@ impl NameForm {
         let form = Rc::new(self);
         let browser_submit = browser.clone();
         let submit_form = form.clone();
+        let submit_settled = Rc::clone(&settled);
         let submit_action = Rc::new(move || {
+            if submit_settled.get()
+                || browser_submit.0.prompt_generation.get_untracked() != generation
+                || matches!(
+                    browser_submit.0.prompt.get_untracked(),
+                    super::model::Prompt::Closed
+                )
+            {
+                return;
+            }
             let current = value.get_untracked();
             match submit_form.checked_name(&current) {
                 Ok(validated) => {
+                    submit_settled.set(true);
                     error.set(None);
                     // Close the active prompt before running `submit` so chained
                     // dialogs (for example, sequential conflict resolution) are not
@@ -171,7 +188,18 @@ impl NameForm {
         });
 
         let browser_cancel = browser.clone();
+        let cancel_settled = settled;
         let cancel_action = Rc::new(move || {
+            if cancel_settled.get()
+                || browser_cancel.0.prompt_generation.get_untracked() != generation
+                || matches!(
+                    browser_cancel.0.prompt.get_untracked(),
+                    super::model::Prompt::Closed
+                )
+            {
+                return;
+            }
+            cancel_settled.set(true);
             browser_cancel.cancel_prompt();
         });
 

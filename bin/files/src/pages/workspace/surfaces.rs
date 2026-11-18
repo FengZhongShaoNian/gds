@@ -15,7 +15,7 @@ use gds::{i18n, t};
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, Signal};
 use zgui::view::{current_host, install_stylesheet};
-use zgui::vocab::Modifiers;
+use zgui::vocab::{Modifiers, Role, SharedString};
 use zgui::{css, view};
 use zgui_ui::{
     ButtonProps, DropdownMenuContentProps, DropdownMenuProps, DropdownMenuTriggerProps,
@@ -96,7 +96,6 @@ const SURFACES_CSS: &str = css!(
         flex-direction: row;
         align-items: center;
         height: 32px;
-        padding: 0 8px;
         border-bottom: 1px solid var(--gds-border);
         background: var(--gds-surface);
     }
@@ -250,6 +249,18 @@ impl CollectionBodyState {
             }
         })
     }
+}
+
+fn collection_name_label(label: String, selected: Signal<bool, LocalStorage>) -> AnyView {
+    let a11y_value = SharedString::from(label.clone());
+    AnyView::new(view! {
+        text(
+            class = "gds-files-collection-cell__text",
+            a11y:role = Role::Label,
+            a11y:value = a11y_value,
+            a11y:selected = move || selected.get(),
+        ) {{label}}
+    })
 }
 
 fn plain_text_cell(
@@ -835,20 +846,20 @@ impl Browser {
             Row::File(_) => None,
             Row::Place(location) => {
                 let artwork = self.row_artwork_with_selection(row, 18.0, sel_f32);
-                let label = location.label();
+                let name_label = collection_name_label(location.label(), sel_bool);
                 let address = location.display_address();
                 let name_w = width_at(0);
                 let name_cell = match name_w {
                     Some(w) => AnyView::new(view! {
                         row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
                             {artwork}
-                            text(class = "gds-files-collection-cell__text") {{label}}
+                            {name_label}
                         }
                     }),
                     None => AnyView::new(view! {
                         row(class = "gds-files-collection-cell") {
                             {artwork}
-                            text(class = "gds-files-collection-cell__text") {{label}}
+                            {name_label}
                         }
                     }),
                 };
@@ -859,7 +870,8 @@ impl Browser {
             }
             Row::Trash(entry) => {
                 let artwork = self.row_artwork_with_selection(row, 18.0, sel_f32);
-                let label = entry.name.to_string_lossy().into_owned();
+                let name_label =
+                    collection_name_label(entry.name.to_string_lossy().into_owned(), sel_bool);
                 let key = row.key();
                 let b = self.clone();
                 let restore_button = AnyView::new(view! {
@@ -889,7 +901,7 @@ impl Browser {
                         ) {
                             row(style:gap = "8px", style:min-width = "0", style:flex = "1 1 0%", style:align-items = "center") {
                                 {artwork}
-                                text(class = "gds-files-collection-cell__text") {{label}}
+                                {name_label}
                             }
                             {restore_button}
                         }
@@ -898,7 +910,7 @@ impl Browser {
                         row(class = "gds-files-collection-cell gds-files-collection-cell--split") {
                             row(style:gap = "8px", style:min-width = "0", style:flex = "1 1 0%", style:align-items = "center") {
                                 {artwork}
-                                text(class = "gds-files-collection-cell__text") {{label}}
+                                {name_label}
                             }
                             {restore_button}
                         }
@@ -948,15 +960,14 @@ impl Browser {
                 let artwork = self.row_artwork_with_selection(row, 18.0, sel_f32);
                 let leaf = row.label();
                 let tip = tag.contains('/').then(|| tag.clone());
+                let name_label = collection_name_label(leaf, sel_bool);
                 let name_inner = match tip {
                     Some(full_tag) => AnyView::new(view! {
                         HintTooltip(text = full_tag) {
-                            text(class = "gds-files-collection-cell__text") {{leaf}}
+                            {name_label}
                         }
                     }),
-                    None => AnyView::new(view! {
-                        text(class = "gds-files-collection-cell__text") {{leaf}}
-                    }),
+                    None => name_label,
                 };
                 let name_cell = match width_at(0) {
                     Some(w) => AnyView::new(view! {
@@ -989,18 +1000,18 @@ impl Browser {
             }
             Row::Remote(entry) => {
                 let icon = remote_entry_icon(entry.kind);
-                let name = entry.name.clone();
+                let name_label = collection_name_label(entry.name.clone(), sel_bool);
                 let name_cell = match width_at(0) {
                     Some(w) => AnyView::new(view! {
                         row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
-                            Icon(name = icon)
-                            text(class = "gds-files-collection-cell__text") {{name}}
+                            Icon(name = icon) {}
+                            {name_label}
                         }
                     }),
                     None => AnyView::new(view! {
                         row(class = "gds-files-collection-cell") {
-                            Icon(name = icon)
-                            text(class = "gds-files-collection-cell__text") {{name}}
+                            Icon(name = icon) {}
+                            {name_label}
                         }
                     }),
                 };
@@ -1032,7 +1043,7 @@ impl Browser {
             }
             Row::Volume(volume) => {
                 let artwork = self.row_artwork_with_selection(row, 18.0, sel_f32);
-                let label = volume.name.clone();
+                let name_label = collection_name_label(volume.name.clone(), sel_bool);
                 let lock_icon = volume
                     .locked
                     .then(|| view! { Icon(name = IconName::Lock) }.into_view());
@@ -1046,7 +1057,7 @@ impl Browser {
                     Some(w) => AnyView::new(view! {
                         row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
                             {artwork}
-                            text(class = "gds-files-collection-cell__text") {{label}}
+                            {name_label}
                             {lock_icon}
                             {system_badge}
                         }
@@ -1054,7 +1065,7 @@ impl Browser {
                     None => AnyView::new(view! {
                         row(class = "gds-files-collection-cell") {
                             {artwork}
-                            text(class = "gds-files-collection-cell__text") {{label}}
+                            {name_label}
                             {lock_icon}
                             {system_badge}
                         }

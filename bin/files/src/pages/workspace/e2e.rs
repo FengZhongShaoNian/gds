@@ -737,6 +737,16 @@ mod driven {
                 .any(|node| node.role == expected)
         }
 
+        fn dialog_height(&self) -> Option<f64> {
+            self.resolved_live_nodes().into_iter().find_map(|node| {
+                if node.role != Role::Dialog {
+                    return None;
+                }
+                let (_x0, y0, _x1, y1) = node.bounds?;
+                Some(y1 - y0)
+            })
+        }
+
         fn find_entry_center(&self, needle: &str) -> Option<Point<CssPx, Css>> {
             self.resolved_live_nodes().into_iter().find_map(|node| {
                 if !matches!(node.role, Role::Label | Role::ListItem) {
@@ -1171,6 +1181,42 @@ mod driven {
                         &capture_state,
                         &artifacts,
                     )?;
+
+                    // Verify animated Prompt dismissal retains dialog content during exit fade-out
+                    // rather than collapsing to an empty [x] shell, then unmounts cleanly.
+                    browser.0.owner.with(|| {
+                        Gds::current().appearance().motion().set_enabled(true);
+                    });
+                    browser.show_about();
+                    harness.pump();
+                    semantic.ingest_from(&harness);
+                    let open_dialog_h = semantic
+                        .dialog_height()
+                        .context("03b: animated About dialog did not mount")?;
+                    ensure!(
+                        open_dialog_h > 120.0,
+                        "03b: expected full About dialog height, got {open_dialog_h:.1}"
+                    );
+                    browser.cancel_prompt();
+                    harness.pump();
+                    semantic.ingest_from(&harness);
+                    if let Some(leaving_h) = semantic.dialog_height() {
+                        ensure!(
+                            leaving_h > 120.0,
+                            "03b: closing Prompt dialog collapsed to empty shell (height={leaving_h:.1}) during exit fade"
+                        );
+                    }
+                    ensure!(
+                        wait_until(&mut harness, Duration::from_secs(2), |h| {
+                            semantic.ingest_from(h);
+                            !semantic.has_role(Role::Dialog)
+                        }),
+                        "03b: animated Prompt dialog did not unmount after exit transition"
+                    );
+                    browser.0.owner.with(|| {
+                        Gds::current().appearance().motion().set_enabled(false);
+                    });
+                    pump_frames(&mut harness);
 
                     // 04: Trash & restore flow.
                     ensure!(

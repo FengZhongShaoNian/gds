@@ -22,8 +22,12 @@ const MARQUEE_CSS: &str = css!(
     r#"
     .gds-files-marquee {
         position: relative;
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0%;
         width: 100%;
         height: 100%;
+        min-width: 0;
         min-height: 0;
     }
 

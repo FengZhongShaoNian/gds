@@ -79,6 +79,8 @@ pub(super) struct Workspace {
     pub terminal: RwSignal<bool, LocalStorage>,
     pub notice: RwSignal<Option<String>, LocalStorage>,
     pub prompt: RwSignal<Prompt, LocalStorage>,
+    pub prompt_generation: RwSignal<u64, LocalStorage>,
+    pub prompt_about: RwSignal<bool, LocalStorage>,
     pub address: RwSignal<String, LocalStorage>,
     pub filter: RwSignal<String, LocalStorage>,
     pub save_name: RwSignal<String, LocalStorage>,
@@ -233,6 +235,8 @@ impl Browser {
             terminal: RwSignal::new_local(false),
             notice,
             prompt: RwSignal::new_local(Prompt::Closed),
+            prompt_generation: RwSignal::new_local(0),
+            prompt_about: RwSignal::new_local(false),
             address: RwSignal::new_local(location.display_address()),
             filter: RwSignal::new_local(String::new()),
             save_name: RwSignal::new_local(save_name),
@@ -519,6 +523,15 @@ impl Browser {
         }
     }
 
+    pub(super) fn open_prompt(&self, prompt: Prompt) {
+        debug_assert!(!matches!(prompt, Prompt::Closed));
+        self.0.prompt_about.set(matches!(prompt, Prompt::About));
+        self.0
+            .prompt_generation
+            .update(|generation| *generation = generation.wrapping_add(1));
+        self.0.prompt.set(prompt);
+    }
+
     pub(super) fn confirm_labelled(
         &self,
         title: String,
@@ -526,7 +539,7 @@ impl Browser {
         primary: String,
         accept: impl Fn() + 'static,
     ) {
-        self.0.prompt.set(Prompt::Confirm {
+        self.open_prompt(Prompt::Confirm {
             title,
             message,
             primary,
@@ -552,7 +565,7 @@ impl Browser {
     }
 
     pub(super) fn name_form(&self, form: NameForm, submit: impl Fn(OsString) + 'static) {
-        self.0.prompt.set(Prompt::Name {
+        self.open_prompt(Prompt::Name {
             form,
             submit: Rc::new(submit),
             cancel: None,
@@ -565,7 +578,7 @@ impl Browser {
         submit: impl Fn(OsString) + 'static,
         cancel: impl Fn() + 'static,
     ) {
-        self.0.prompt.set(Prompt::Name {
+        self.open_prompt(Prompt::Name {
             form,
             submit: Rc::new(submit),
             cancel: Some(Rc::new(cancel)),
@@ -574,6 +587,9 @@ impl Browser {
 
     pub(super) fn cancel_prompt(&self) {
         let prompt = self.0.prompt.get_untracked();
+        if matches!(prompt, Prompt::Closed) {
+            return;
+        }
         self.0.prompt.set(Prompt::Closed);
         if let Prompt::Name {
             cancel: Some(cancel),

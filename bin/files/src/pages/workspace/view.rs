@@ -796,6 +796,14 @@ const WORKSPACE_CSS: &str = css!(
         min-height: 0px;
     }
 
+    .gds-files-drop-background {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0%;
+        min-width: 0px;
+        min-height: 0px;
+    }
+
     .gds-files-menu-wrap {
         display: flex;
         min-width: 0px;
@@ -1173,6 +1181,7 @@ impl Browser {
         let root_focus = self.0.root_focus;
         let notice_sig = self.0.notice;
         let prompt_sig = self.0.prompt;
+        let prompt_about = self.0.prompt_about;
         let prompt_open = Signal::derive_local(move || !matches!(prompt_sig.get(), Prompt::Closed));
 
         let keyboard = self.clone();
@@ -1228,13 +1237,26 @@ impl Browser {
                                 ) {
                                     DialogContent(
                                         class = "gds-files-prompt-dialog",
-                                        attr:data-about = move || matches!(prompt_sig.get(), Prompt::About).then(|| "true".to_owned()),
+                                        attr:data-about = move || prompt_about.get().then(|| "true".to_owned()),
                                         dismiss_on_outside_press = true,
                                         dismiss_on_escape = true
                                     ) {
                                         {{
                                             let pb = prompt_browser.clone();
-                                            move || pb.prompt_view()
+                                            let gen_sig = pb.0.prompt_generation;
+                                            let retained = std::rc::Rc::new(std::cell::RefCell::new(Prompt::Closed));
+                                            move || {
+                                                let generation = gen_sig.get();
+                                                let _z = enter_non_reactive_zone();
+                                                let current = pb.0.prompt.get_untracked();
+                                                let prompt = if matches!(current, Prompt::Closed) {
+                                                    retained.borrow().clone()
+                                                } else {
+                                                    *retained.borrow_mut() = current.clone();
+                                                    current
+                                                };
+                                                pb.prompt_view(prompt, generation)
+                                            }
                                         }}
                                     }
                                 }
@@ -2169,63 +2191,62 @@ impl Browser {
         }
 
         // Table row (`ViewMode::List` and collection tables)
-        let name_width_browser = self.clone();
-        let label_tooltip = wrap_tokens(&label);
-        let a11y_value = SharedString::from(label.clone());
-        let select_label = self.clone();
-        let open_label = self.clone();
-        let label_view = AnyView::new(view! {
-            text(
-                class = "gds-files-row-name-text",
-                a11y:role = Role::Label,
-                a11y:value = a11y_value,
-                a11y:selected = move || selected_sig.get(),
-                {..desc_attrs},
-                on:click = move |ev: &mut EventCx<'_, events::Click>| {
-                    ev.stop_propagation();
-                    select_label.select_row(index, ev.modifiers);
-                    select_label.focus_content();
-                },
-                on:double_click = move |ev: &mut EventCx<'_, events::DoubleClick>| {
-                    ev.stop_propagation();
-                    open_label.open_row(index, false);
-                }
-            ) {{label}}
-        });
-
-        let row_artwork = self.row_artwork_with_selection(&row, 18.0, selection_progress);
-        let name_cell = AnyView::new(view! {
-            HintTooltip(text = label_tooltip) {
-                row(
-                    class = "gds-files-name-cell",
-                    style:width = move || {
-                        Some(format!("{:.1}px", name_width_browser.column_width(Column::Name)))
-                    }
-                ) {
-                    {row_artwork}
-                    {label_view}
-                }
-            }
-        });
-
         let selected_binding = Binding::controlled(selected_sig, |_| {});
-        let cells: Vec<AnyView> =
-            if let Some(metadata) = self.collection_cells(&row, selected_binding) {
-                std::iter::once(name_cell).chain(metadata).collect()
-            } else {
-                let mut name = Some(name_cell);
-                columns
-                    .columns()
-                    .iter()
-                    .map(|column| {
-                        if *column == Column::Name {
-                            name.take().unwrap_or_else(|| AnyView::new(view! { box() }))
-                        } else {
-                            self.cell(&row, *column)
+        let cells: Vec<AnyView> = if let Some(collection_cells) =
+            self.collection_cells(&row, selected_binding)
+        {
+            collection_cells
+        } else {
+            let name_width_browser = self.clone();
+            let label_tooltip = wrap_tokens(&label);
+            let a11y_value = SharedString::from(label.clone());
+            let select_label = self.clone();
+            let open_label = self.clone();
+            let label_view = AnyView::new(view! {
+                text(
+                    class = "gds-files-row-name-text",
+                    a11y:role = Role::Label,
+                    a11y:value = a11y_value,
+                    a11y:selected = move || selected_sig.get(),
+                    {..desc_attrs},
+                    on:click = move |ev: &mut EventCx<'_, events::Click>| {
+                        ev.stop_propagation();
+                        select_label.select_row(index, ev.modifiers);
+                        select_label.focus_content();
+                    },
+                    on:double_click = move |ev: &mut EventCx<'_, events::DoubleClick>| {
+                        ev.stop_propagation();
+                        open_label.open_row(index, false);
+                    }
+                ) {{label}}
+            });
+
+            let row_artwork = self.row_artwork_with_selection(&row, 18.0, selection_progress);
+            let mut name = Some(AnyView::new(view! {
+                HintTooltip(text = label_tooltip) {
+                    row(
+                        class = "gds-files-name-cell",
+                        style:width = move || {
+                            Some(format!("{:.1}px", name_width_browser.column_width(Column::Name)))
                         }
-                    })
-                    .collect()
-            };
+                    ) {
+                        {row_artwork}
+                        {label_view}
+                    }
+                }
+            }));
+            columns
+                .columns()
+                .iter()
+                .map(|column| {
+                    if *column == Column::Name {
+                        name.take().unwrap_or_else(|| AnyView::new(view! { box() }))
+                    } else {
+                        self.cell(&row, *column)
+                    }
+                })
+                .collect()
+        };
 
         let target = AnyView::new(view! {
             row(
@@ -2386,9 +2407,7 @@ impl Browser {
         })
     }
 
-    fn prompt_view(&self) -> AnyView {
-        let prompt = self.0.prompt.get();
-        let cancel_browser = self.clone();
+    fn prompt_view(&self, prompt: Prompt, generation: u64) -> AnyView {
         match prompt {
             Prompt::Closed => AnyView::new(view! { box() }),
             Prompt::About => AnyView::new(view! {
@@ -2407,7 +2426,7 @@ impl Browser {
                 accept,
             } => {
                 let confirm_browser = self.downgrade();
-                let cancel_action = cancel_browser;
+                let settled = std::rc::Rc::new(std::cell::Cell::new(false));
                 AnyView::new(view! {
                     column(class = "gds-files-confirm-body") {
                         DialogHeader {
@@ -2419,15 +2438,25 @@ impl Browser {
                                 confirm_label = primary,
                                 cancel_label = i18n::text("dialog-cancel"),
                                 on_decision = UnsyncCallback::new(move |decision: DialogDecision| {
+                                    if settled.get() {
+                                        return;
+                                    }
+                                    let Some(browser) = confirm_browser.upgrade() else {
+                                        return;
+                                    };
+                                    if browser.0.prompt_generation.get_untracked() != generation
+                                        || matches!(browser.0.prompt.get_untracked(), Prompt::Closed)
+                                    {
+                                        return;
+                                    }
+                                    settled.set(true);
                                     match decision {
                                         DialogDecision::Confirm => {
-                                            if let Some(browser) = confirm_browser.upgrade() {
-                                                browser.0.prompt.set(Prompt::Closed);
-                                                accept();
-                                            }
+                                            browser.0.prompt.set(Prompt::Closed);
+                                            accept();
                                         }
                                         DialogDecision::Cancel | DialogDecision::Dismiss => {
-                                            cancel_action.cancel_prompt();
+                                            browser.cancel_prompt();
                                         }
                                     }
                                 })
@@ -2436,7 +2465,7 @@ impl Browser {
                     }
                 })
             }
-            Prompt::Name { form, submit, .. } => form.view(self, submit),
+            Prompt::Name { form, submit, .. } => form.view(self, generation, submit),
         }
     }
 }

@@ -138,6 +138,7 @@ impl Resolved {
         let _ = writeln!(out, "    --gds-font-size-md: {:.2}px;", 16.0 * scale);
         let _ = writeln!(out, "    --gds-font-size-lg: {:.2}px;", 18.0 * scale);
         let _ = writeln!(out, "    --gds-font-size-xl: {:.2}px;", 20.0 * scale);
+        let _ = writeln!(out, "    --gds-font-size-2xl: {:.2}px;", 24.0 * scale);
     }
 }
 

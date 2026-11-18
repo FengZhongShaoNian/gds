@@ -124,6 +124,25 @@ fn reactive_appearance_emits_gds_and_zui_css_tokens() {
         assert!(initial_css.contains("--gds-radius-control: 6px;"));
         assert!(initial_css.contains("--gds-term-ansi-0:"));
 
+        let initial_tokens = app.tokens_theme();
+        assert_eq!(initial_tokens.radius.sm, "4px");
+        assert_eq!(initial_tokens.radius.md, "6px");
+        assert_eq!(initial_tokens.radius.lg, "8px");
+        assert_eq!(initial_tokens.radius.xl, "10px");
+        assert_eq!(initial_tokens.radius.base, "8px");
+        assert_eq!(initial_tokens.focus.ring_shadow, "none");
+        assert_eq!(initial_tokens.focus.ring_invalid_shadow, "none");
+        assert_eq!(initial_tokens.focus.sidebar_ring_shadow, "none");
+        assert_eq!(initial_tokens.focus.ring_inset_shadow, "none");
+        assert_ne!(
+            initial_tokens.control.ghost_hover, initial_tokens.color.accent,
+            "ghost hover must use neutral 8% foreground tint instead of selection accent"
+        );
+        assert_eq!(
+            initial_tokens.control.ghost_hover,
+            initial_tokens.control.outline_hover
+        );
+
         app.theme()
             .apply(&Appearance {
                 source: Source::Builtin,
@@ -144,7 +163,8 @@ fn reactive_appearance_emits_gds_and_zui_css_tokens() {
         assert!(updated_css.contains("--gds-radius-window: 10px;"));
         assert!(updated_css.contains("--gds-content-opacity: 0.75;"));
         assert!(updated_css.contains("--gds-sidebar-opacity: 0.5;"));
-        assert_eq!(app.tokens_theme().radius.base, "10px");
+        assert_eq!(app.tokens_theme().radius.base, "8px");
+        assert_eq!(app.tokens_theme().radius.md, "6px");
 
         app.typography()
             .apply(&crate::appearance::typography::Preferences {
@@ -153,10 +173,9 @@ fn reactive_appearance_emits_gds_and_zui_css_tokens() {
             })
             .expect("apply font scale");
         assert_eq!(app.typography().size(), 20.0);
-        assert!(
-            app.gds_stylesheet_css()
-                .contains("--gds-font-size: 20.00px;")
-        );
+        let scaled_css = app.gds_stylesheet_css();
+        assert!(scaled_css.contains("--gds-font-size: 20.00px;"));
+        assert!(scaled_css.contains("--gds-font-size-2xl: 30.00px;"));
     });
     root.unmount();
 }

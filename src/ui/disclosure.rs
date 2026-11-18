@@ -9,21 +9,32 @@ use zgui::{component, view};
 use zgui_ui::{CollapsibleContentProps, CollapsibleProps, CollapsibleTriggerProps};
 use zgui_ui_primitives::Binding;
 
+use crate::appearance::motion::{INLINE_DURATION_MS, use_transition};
+use crate::appearance::tokens::SIDEBAR_ICON_SIZE;
 use crate::ui::icon::{IconName, IconProps};
 
-/// Animated disclosure chevron (`>` rotated 90deg when open).
+/// Fixed-size disclosure chevron (`18px` default) rotating `90deg` over `140ms` (`ease-out cubic`)
+/// while inheriting its enclosing control's `currentColor`.
 #[component]
 pub fn DisclosureIcon(
-    #[prop(into)] open: Signal<bool, LocalStorage>,
-    #[prop(default = crate::appearance::tokens::ICON_SIZE)] size: f32,
+    #[prop(into, default = Signal::stored_local(false))] open: Signal<bool, LocalStorage>,
+    #[prop(into, optional)] expanded: Option<Signal<bool, LocalStorage>>,
+    #[prop(default = SIDEBAR_ICON_SIZE)] size: f32,
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
 ) -> impl IntoView {
     crate::ui::styles::install_ui_stylesheets();
+    let active = expanded.unwrap_or(open);
+    let target = Signal::derive_local(move || if active.get() { 1.0 } else { 0.0 });
+    let progress = use_transition(target, INLINE_DURATION_MS);
     view! {
         box(
             class = "gds-disclosure-icon",
-            attr:data-state = move || Some(if open.get() { "open" } else { "closed" }.to_owned()),
+            style:width = format!("{size}px"),
+            style:height = format!("{size}px"),
+            style:transition = "none",
+            style:transform = move || Some(format!("rotate({:.2}deg)", progress.get() * 90.0)),
+            attr:data-state = move || Some(if active.get() { "open" } else { "closed" }.to_owned()),
             a11y:hidden = true,
             class = class,
             {..attrs}

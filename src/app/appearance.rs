@@ -3,13 +3,22 @@ use crate::appearance::{motion, theme, typography};
 use std::{cell::RefCell, rc::Rc};
 use zgui::canvas::zgui_color::Color;
 use zgui::reactive::{
-    LocalStorage, ReadSignal, RenderEffect, RwSignal, on_cleanup_local, prelude::*,
+    LocalStorage, Mounted, Owner, ReadSignal, RenderEffect, RwSignal, on_cleanup_local, prelude::*,
 };
-use zgui::view::Stylesheet;
+use zgui::view::{HostHandle, Stylesheet, current_host};
 use zgui_ui_tokens::{ColorScheme, Theme as TokensTheme};
+
+struct WindowSheet {
+    host: HostHandle,
+    refs: usize,
+    scope: Mounted,
+    sheet: Stylesheet,
+}
 
 #[derive(Clone)]
 pub struct Appearance {
+    owner: Owner,
+    sheets: Rc<RefCell<Vec<WindowSheet>>>,
     theme: Theme,
     typography: Typography,
     motion: Motion,
@@ -17,7 +26,10 @@ pub struct Appearance {
 
 impl Appearance {
     pub(super) fn new() -> Self {
+        let owner = Owner::current().unwrap_or_default();
         Self {
+            owner,
+            sheets: Rc::new(RefCell::new(Vec::new())),
             theme: Theme::new(),
             typography: Typography::new(),
             motion: Motion::new(),
@@ -72,9 +84,6 @@ impl Appearance {
         })
     }
 
-    /// Install and reactively update `"gds-appearance"` inside the current `zgui` window scope.
-    ///
-    /// Returns `true` when a window document host is active, or `false` in headless contexts.
     /// Construct the combined `:root` Stylo CSS sheet without subscribing a reactive observer.
     pub fn full_stylesheet_css_untracked(&self) -> String {
         let policy = self.motion.policy.get_untracked();
@@ -85,21 +94,73 @@ impl Appearance {
         })
     }
 
+    /// Install and reactively update `"gds-appearance"` inside the current `zgui` window scope.
+    ///
+    /// Reference-counted per window [`HostHandle`] with the reactive update effect anchored under
+    /// the application's root [`Owner`], so mounting a replacement [`crate::ui::Frame`] before an
+    /// outgoing `Frame` unmounts never removes `--gds-*` / `--zui-*` tokens from the active window.
+    /// Returns `true` when a window document host is active, or `false` in headless contexts.
     pub fn install_window_sheet(&self) -> bool {
-        let Some(sheet) = Stylesheet::install(
-            theme::APPEARANCE_SHEET,
-            &self.full_stylesheet_css_untracked(),
-        ) else {
+        let Some(host) = current_host() else {
             return false;
         };
-        let appearance = self.clone();
-        let effect = RenderEffect::new(move |previous: Option<()>| {
-            let css = appearance.full_stylesheet_css();
-            if previous.is_some() {
-                sheet.replace(&css);
+        let already_installed = {
+            let mut entries = self.sheets.borrow_mut();
+            if let Some(entry) = entries.iter_mut().find(|entry| entry.host.ptr_eq(&host)) {
+                entry.refs += 1;
+                true
+            } else {
+                false
+            }
+        };
+        if !already_installed {
+            let initial_css = self.full_stylesheet_css_untracked();
+            let Some(sheet) = Stylesheet::install(theme::APPEARANCE_SHEET, &initial_css) else {
+                return false;
+            };
+            let appearance = self.clone();
+            let host_for_effect = host.clone();
+            let scope = self.owner.with(Mounted::new);
+            scope.with(|| {
+                let effect = RenderEffect::new(move |previous: Option<()>| {
+                    let css = appearance.full_stylesheet_css();
+                    if previous.is_some() {
+                        host_for_effect.install_stylesheet(theme::APPEARANCE_SHEET, &css);
+                    }
+                });
+                on_cleanup_local(move || drop(effect));
+            });
+            self.sheets.borrow_mut().push(WindowSheet {
+                host: host.clone(),
+                refs: 1,
+                scope,
+                sheet,
+            });
+        }
+        let sheets = Rc::clone(&self.sheets);
+        let host_for_cleanup = host;
+        on_cleanup_local(move || {
+            let removed = {
+                let mut entries = sheets.borrow_mut();
+                if let Some(pos) = entries
+                    .iter()
+                    .position(|entry| entry.host.ptr_eq(&host_for_cleanup))
+                {
+                    entries[pos].refs -= 1;
+                    if entries[pos].refs == 0 {
+                        Some(entries.swap_remove(pos))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            if let Some(entry) = removed {
+                entry.scope.unmount();
+                drop(entry.sheet);
             }
         });
-        on_cleanup_local(move || drop(effect));
         true
     }
 }
@@ -291,12 +352,14 @@ impl Typography {
 #[derive(Clone, Copy)]
 pub struct Motion {
     policy: RwSignal<motion::Policy, LocalStorage>,
+    following: RwSignal<bool, LocalStorage>,
 }
 
 impl Motion {
     fn new() -> Self {
         Self {
             policy: RwSignal::new_local(motion::Policy::default()),
+            following: RwSignal::new_local(false),
         }
     }
 
@@ -308,11 +371,19 @@ impl Motion {
         self.policy.with(|policy| policy.reduced())
     }
 
+    pub fn reduced_untracked(&self) -> bool {
+        self.policy.with_untracked(|policy| policy.reduced())
+    }
+
     pub fn set_enabled(&self, enabled: bool) {
         self.policy.update(|policy| policy.enabled = enabled);
     }
 
     pub fn follow_system(&self) {
+        if self.following.get_untracked() {
+            return;
+        }
+        self.following.set(true);
         #[cfg(target_os = "linux")]
         super::Gds::current().with(crate::appearance::portal::follow);
     }

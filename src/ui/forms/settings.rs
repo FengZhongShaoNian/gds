@@ -60,6 +60,7 @@ pub fn NumberControl(
     #[prop(optional)] on_change: Option<UnsyncCallback<f64>>,
     #[prop(into, default = Signal::stored_local(false))] disabled: Signal<bool, LocalStorage>,
     #[prop(into, optional)] label: Option<String>,
+    #[prop(optional)] labelled_by: Option<NodeRef>,
     #[prop(optional)] node_ref: Option<NodeRef>,
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
@@ -74,6 +75,7 @@ pub fn NumberControl(
                 step = f64::from(range.step),
                 disabled = disabled,
                 label = label,
+                labelled_by = labelled_by,
                 node_ref = node_ref,
                 on_change = on_change
             )

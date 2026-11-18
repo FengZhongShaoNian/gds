@@ -2,6 +2,7 @@
 
 use zgui::prelude::*;
 use zgui::reactive::LocalStorage;
+use zgui::vocab::Role;
 use zgui::{component, view};
 
 use super::{Shortcut, ShortcutBadgeProps};
@@ -49,7 +50,12 @@ pub fn ShortcutHeading(
     children: Children,
 ) -> impl IntoView {
     view! {
-        text(class = "gds-shortcut-heading", class = class, {..attrs}) {
+        text(
+            class = "gds-shortcut-heading",
+            a11y:role = Role::Heading,
+            class = class,
+            {..attrs}
+        ) {
             {children.into_view_once()}
         }
     }
@@ -68,12 +74,49 @@ pub fn ShortcutRow(
             row(class = "gds-shortcut-row__keys") {
                 ShortcutBadge(shortcut = shortcut) {}
                 {range_end.map(|end| view! {
-                    row {
-                        text {"–"}
+                    row(class = "gds-shortcut-hint") {
+                        text {"\u{2013}"}
                         ShortcutBadge(shortcut = end)
                     }
                 })}
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zgui::reactive::{Mounted, install};
+    use zgui::view;
+
+    use super::{
+        HelpPageProps, OpenHelp, Shortcut, ShortcutHeadingProps, ShortcutRowProps,
+        ShortcutSectionProps,
+    };
+
+    #[test]
+    fn help_components_build_sections_and_shortcut_ranges() {
+        install().ok();
+        let scope = Mounted::new();
+        scope.with(|| {
+            let _token = OpenHelp;
+            let _view = view! {
+                HelpPage {
+                    ShortcutSection {
+                        ShortcutHeading { "Navigation" }
+                        ShortcutRow(
+                            label = "Back",
+                            shortcut = Shortcut::parse("Alt+Left").expect("valid Alt+Left shortcut"),
+                        )
+                        ShortcutRow(
+                            label = "Switch tab",
+                            shortcut = Shortcut::parse("Ctrl+1").expect("valid Ctrl+1 shortcut"),
+                            range_end = Shortcut::parse("Ctrl+9"),
+                        )
+                    }
+                }
+            };
+        });
+        scope.unmount();
     }
 }

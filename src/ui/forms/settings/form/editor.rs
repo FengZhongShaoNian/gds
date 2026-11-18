@@ -1,20 +1,24 @@
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, RwSignal, UnsyncCallback};
+use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, UnsyncCallback, on_cleanup_local};
+use zgui::view::ShowProps;
 use zgui::{component, view};
 use zgui_ui::{
-    ComboboxContentProps, ComboboxEmptyProps, ComboboxInputProps, ComboboxItemProps, ComboboxProps,
-    InputProps, SelectContentProps, SelectItemProps, SelectProps, SelectTriggerProps,
-    SelectValueProps, SwitchProps, TextareaProps,
+    SelectContentProps, SelectItemProps, SelectProps, SelectTriggerProps, SelectValueProps,
+    SwitchProps,
 };
 use zgui_ui_primitives::{Binding, Controllable};
 
 use super::{Choice, Field, Kind, Model};
 use crate::app::Gds;
 use crate::ui::button::IconButtonProps;
+use crate::ui::forms::field::{
+    FieldLabelProps, InputFieldProps, SearchChoiceFieldProps, SearchOption, TextareaFieldProps,
+};
 use crate::ui::icon::IconName;
 use crate::ui::settings::{
     NumberControlProps, SettingActionsProps, SettingControlProps, SettingDescriptionProps,
@@ -32,6 +36,7 @@ pub struct Editor<T: Model> {
     value: Binding<T>,
     on_change: Option<UnsyncCallback<Changed<T>>>,
     disabled: Signal<bool, LocalStorage>,
+    filter: Signal<String, LocalStorage>,
     reset_focus: Option<NodeRef>,
 }
 
@@ -42,6 +47,7 @@ impl<T: Model> Editor<T> {
             value: value.into(),
             on_change: None,
             disabled: Signal::stored_local(false),
+            filter: Signal::stored_local(String::new()),
             reset_focus: None,
         }
     }
@@ -55,6 +61,14 @@ impl<T: Model> Editor<T> {
     #[must_use]
     pub fn disabled(mut self, disabled: impl Into<Signal<bool, LocalStorage>>) -> Self {
         self.disabled = disabled.into();
+        self
+    }
+
+    /// Filter rendered fields by matching case-insensitive query tokens against field
+    /// labels, descriptions, groups, and identifiers.
+    #[must_use]
+    pub fn filter(mut self, query: impl Into<Signal<String, LocalStorage>>) -> Self {
+        self.filter = query.into();
         self
     }
 
@@ -77,6 +91,7 @@ impl<T: Model> Editor<T> {
             EditorBody(
                 state = state,
                 disabled = self.disabled,
+                filter = self.filter,
                 reset_focus = self.reset_focus,
             )
         })
@@ -91,40 +106,109 @@ impl<T: Model + Serialize + DeserializeOwned> IntoView for Editor<T> {
     }
 }
 
+pub(super) fn field_matches_query<T: Model>(field: &Field<T>, query: &str) -> bool {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let gds = Gds::current();
+    let i18n = gds.i18n();
+    let label = i18n.text(field.label).to_lowercase();
+    let help = if field.help.is_empty() {
+        String::new()
+    } else {
+        i18n.text(field.help).to_lowercase()
+    };
+    let group = if field.group.is_empty() {
+        String::new()
+    } else {
+        i18n.text(field.group).to_lowercase()
+    };
+    let id = field.id.to_lowercase();
+
+    trimmed.split_whitespace().all(|token| {
+        let needle = token.to_lowercase();
+        label.contains(&needle)
+            || help.contains(&needle)
+            || group.contains(&needle)
+            || id.contains(&needle)
+    })
+}
+
 #[component]
 fn EditorBody<T: Model + Serialize + DeserializeOwned>(
     state: Controllable<T>,
     disabled: Signal<bool, LocalStorage>,
+    filter: Signal<String, LocalStorage>,
     reset_focus: Option<NodeRef>,
 ) -> impl IntoView {
     crate::ui::styles::install_ui_stylesheets();
     let defaults = Rc::new(T::default());
-    let mut rows: Vec<AnyView> = Vec::new();
-    let mut active_group = "";
+
+    let mut groups: Vec<(&'static str, Vec<Rc<Field<T>>>)> = Vec::new();
     for field in T::fields() {
-        if field.group != active_group {
-            active_group = field.group;
-            if !active_group.is_empty() {
-                let group = active_group;
-                rows.push(AnyView::new(view! {
-                    text(class = "gds-setting-group") {{move || Gds::current().i18n().text(group)}}
-                }));
-            }
+        let field = Rc::new(field);
+        if let Some((last_group, items)) = groups.last_mut()
+            && *last_group == field.group
+        {
+            items.push(field);
+        } else {
+            groups.push((field.group, vec![field]));
         }
-        rows.push(AnyView::new(view! {
-            EditorFieldRow(
-                state = state,
-                field = Rc::new(field),
-                defaults = Rc::clone(&defaults),
-                disabled = disabled,
-                reset_focus = reset_focus,
-            )
-        }));
     }
 
+    let sections: Vec<AnyView> = groups
+        .into_iter()
+        .map(|(group, fields)| {
+            let group_fields = Rc::new(fields);
+            let section_fields = Rc::clone(&group_fields);
+            let group_visible = Signal::derive_local(move || {
+                let query = filter.get();
+                section_fields
+                    .iter()
+                    .any(|field| field_matches_query(field, &query))
+            });
+
+            let row_views: Vec<AnyView> = group_fields
+                .iter()
+                .map(|field| {
+                    let field_filter = Rc::clone(field);
+                    let row_visible = move || field_matches_query(&field_filter, &filter.get());
+                    let field_row = Rc::clone(field);
+                    let defaults_row = Rc::clone(&defaults);
+                    AnyView::new(view! {
+                        Show(when = row_visible, fallback = || ()) {
+                            EditorFieldRow(
+                                state = state,
+                                field = Rc::clone(&field_row),
+                                defaults = Rc::clone(&defaults_row),
+                                disabled = disabled,
+                                reset_focus = reset_focus,
+                            )
+                        }
+                    })
+                })
+                .collect();
+
+            AnyView::new(view! {
+                column(class = "gds-setting-section") {
+                    {(!group.is_empty()).then(|| view! {
+                        Show(when = move || group_visible.get(), fallback = || ()) {
+                            text(class = "gds-setting-group") {{move || Gds::current().i18n().text(group)}}
+                        }
+                    }.into_view())}
+                    {row_views}
+                }
+            })
+        })
+        .collect();
+
     view! {
-        column(class = "gds-setting-form") {
-            {rows}
+        column(
+            class = "gds-setting-form",
+            attr:data-disabled = move || disabled.get().then(|| "true".to_owned()),
+        ) {
+            {sections}
         }
     }
 }
@@ -140,10 +224,28 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
     let error: RwSignal<Option<String>, LocalStorage> = RwSignal::new_local(None);
     let label_key = field.label;
     let help_key = field.help;
+    let field_id = field.id;
+    let title_ref = NodeRef::new();
+
+    // Clear stale validation errors when an external signal update changes this field's value,
+    // without clearing errors produced by rejecting an invalid local edit.
+    let field_sync = Rc::clone(&field);
+    let last_json = RefCell::new((field_sync.get)(&state.get_untracked()));
+    let sync_error = RenderEffect::new(move |_| {
+        let current = (field_sync.get)(&state.get());
+        if *last_json.borrow() != current {
+            *last_json.borrow_mut() = current;
+            error.set(None);
+        }
+    });
+    on_cleanup_local(move || drop(sync_error));
 
     let apply_json = {
         let field = Rc::clone(&field);
         move |json: Value| {
+            if disabled.get_untracked() {
+                return;
+            }
             let mut next = state.get_untracked();
             if let Err(err) = (field.set)(&mut next, json) {
                 error.set(Some(err));
@@ -168,6 +270,9 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
         let field = Rc::clone(&field);
         let defaults = Rc::clone(&defaults);
         move |_: &mut zgui::view::EventCx<'_, zgui::view::events::Click>| {
+            if disabled.get_untracked() {
+                return;
+            }
             let default_json = (field.get)(&defaults);
             let mut next = state.get_untracked();
             if (field.set)(&mut next, default_json).is_ok() && next.validate().is_ok() {
@@ -180,18 +285,18 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
         }
     };
 
-    let control_view = render_field_control(state, &field, disabled, error, apply_json);
+    let control_view = render_field_control(state, &field, disabled, error, title_ref, apply_json);
 
     view! {
-        SettingRow {
+        SettingRow(attr:data-field = field_id) {
             SettingLabel {
-                text(class = "gds-setting-title") {{move || Gds::current().i18n().text(label_key)}}
+                FieldLabel(node_ref = title_ref) {{move || Gds::current().i18n().text(label_key)}}
                 if move || !help_key.is_empty() {
                     SettingDescription {{move || Gds::current().i18n().text(help_key)}}
                 } else {}
                 {move || error.get().map(|msg| view! {
                     text(class = "gds-setting-error") {{msg}}
-                })}
+                }.into_view())}
             }
             SettingActions {
                 SettingControl {
@@ -227,10 +332,10 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
     field: &Rc<Field<T>>,
     disabled: Signal<bool, LocalStorage>,
     error: RwSignal<Option<String>, LocalStorage>,
+    title_ref: NodeRef,
     apply_json: impl Fn(Value) + Clone + 'static,
 ) -> AnyView {
-    let field_id = field.id;
-    let label_key = field.label;
+    let _ = field.label;
     match field.kind {
         Kind::Toggle => {
             let field = Rc::clone(field);
@@ -240,7 +345,9 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
                 }),
                 move |next: bool| apply_json(Value::Bool(next)),
             );
-            AnyView::new(view! { Switch(checked = binding, disabled = disabled) })
+            AnyView::new(view! {
+                Switch(checked = binding, disabled = disabled, labelled_by = Some(title_ref))
+            })
         }
         Kind::Number(number) => {
             let range = number.range();
@@ -251,6 +358,9 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
             });
             let apply_for_slider = apply_json.clone();
             let binding = Binding::controlled(read_display, move |display: f64| {
+                if disabled.get_untracked() {
+                    return;
+                }
                 match number.value(display) {
                     Ok(val) => apply_for_slider(val),
                     Err(msg) => error.set(Some(msg)),
@@ -262,7 +372,7 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
                         value = binding,
                         range = range,
                         disabled = disabled,
-                        label = Gds::current().i18n().text(label_key),
+                        labelled_by = Some(title_ref),
                     )
                     text(class = "gds-setting-number-value") {{move || number.label(read_display.get())}}
                 }
@@ -288,11 +398,11 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
             );
             let invalid = Signal::derive_local(move || error.get().is_some());
             AnyView::new(view! {
-                Input(
+                InputField(
                     value = binding,
                     disabled = disabled,
                     invalid = invalid,
-                    label = Gds::current().i18n().text(label_key),
+                    labelled_by = Some(title_ref),
                 )
             })
         }
@@ -314,7 +424,6 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
                 move |text: String| {
                     let list: Vec<Value> = text
                         .lines()
-                        .map(str::trim)
                         .filter(|line| !line.is_empty())
                         .map(|line| Value::String(line.to_owned()))
                         .collect();
@@ -323,18 +432,18 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
             );
             let invalid = Signal::derive_local(move || error.get().is_some());
             AnyView::new(view! {
-                Textarea(
+                TextareaField(
                     value = binding,
                     disabled = disabled,
                     invalid = invalid,
-                    label = Gds::current().i18n().text(label_key),
+                    labelled_by = Some(title_ref),
                 )
             })
         }
         Kind::Font | Kind::Language | Kind::Choice(_) => {
             let field_read = Rc::clone(field);
             let field_choices = Rc::clone(field);
-            let choices = field_choices.choices(&state.get_untracked());
+            let choices = Signal::derive_local(move || field_choices.choices(&state.get()));
             let value_binding = Binding::controlled(
                 Signal::derive_local(move || (field_read.get)(&state.get()).to_string()),
                 move |encoded: String| {
@@ -343,31 +452,44 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
                     }
                 },
             );
-            if matches!(field.kind, Kind::Font) {
-                let list = Signal::stored_local(choices);
-                let placeholder = Gds::current().i18n().text(label_key);
-                let empty_label = Signal::stored_local(format!("No options for {field_id}"));
+
+            let searchable = matches!(field.kind, Kind::Font | Kind::Language)
+                || choices
+                    .get_untracked()
+                    .iter()
+                    .any(|choice| !choice.terms().is_empty());
+
+            if searchable {
+                let search_options = Signal::derive_local(move || {
+                    choices
+                        .get()
+                        .into_iter()
+                        .map(|choice| {
+                            let terms = choice.terms().split_whitespace();
+                            SearchOption::new(choice.value.to_string(), choice.title)
+                                .with_keywords(terms)
+                        })
+                        .collect()
+                });
                 AnyView::new(view! {
-                    Combobox(value = value_binding) {
-                        ComboboxInput(placeholder = placeholder.clone(), disabled = disabled, label = placeholder) {}
-                        ComboboxContent {
-                            for choice in move || list.get(), key = |c| c.value.to_string() {
-                                {combobox_choice_item(choice)}
-                            }
-                            ComboboxEmpty {{move || empty_label.get()}}
-                        }
-                    }
+                    SearchChoiceField(
+                        value = value_binding,
+                        options = search_options,
+                        disabled = disabled,
+                        labelled_by = Some(title_ref),
+                    )
                 })
             } else {
-                let list = Signal::stored_local(choices);
-                let label_text = Gds::current().i18n().text(label_key);
                 AnyView::new(view! {
                     Select(value = value_binding) {
-                        SelectTrigger(disabled = disabled, label = label_text) {
+                        SelectTrigger(
+                            disabled = disabled,
+                            labelled_by = Some(title_ref),
+                        ) {
                             SelectValue()
                         }
                         SelectContent {
-                            for choice in move || list.get(), key = |c| c.value.to_string() {
+                            for choice in move || choices.get(), key = |c| (c.value.to_string(), c.title.clone()) {
                                 {select_choice_item(choice)}
                             }
                         }
@@ -376,17 +498,6 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
             }
         }
     }
-}
-
-fn combobox_choice_item(choice: Choice) -> AnyView {
-    let encoded = choice.value.to_string();
-    let title = choice.title;
-    let title_sig = Signal::stored_local(title.clone());
-    AnyView::new(view! {
-        ComboboxItem(value = encoded, text = title) {
-            {move || title_sig.get()}
-        }
-    })
 }
 
 fn select_choice_item(choice: Choice) -> AnyView {

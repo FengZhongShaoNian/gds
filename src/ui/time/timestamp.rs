@@ -1,11 +1,14 @@
 use std::time::SystemTime;
 
 use zgui::prelude::*;
-use zgui::reactive::LocalStorage;
+use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, on_cleanup_local};
 use zgui::{component, view};
+use zgui_ui::{TooltipContentProps, TooltipProps, TooltipTriggerProps};
 
-use super::{Format, Presentation, format, now, tick_signal};
+use super::{Format, Presentation, format, now, precise, tick_signal};
 use crate::app::Gds;
+use crate::i18n::FluentArgs;
+use crate::ui::tooltip::{TOOLTIP_DELAY, TooltipTextProps};
 
 /// Timestamp builder usable directly inside `view!` expressions or via [`TimestampView`].
 #[derive(Clone, Copy, Debug)]
@@ -46,31 +49,67 @@ impl IntoView for Timestamp {
     }
 }
 
-/// Reactive timestamp component rendering localized relative or absolute dates.
+/// Reactive timestamp component rendering localized relative or absolute dates with a
+/// precise timestamp tooltip whenever the timestamp is known.
 #[component]
 pub fn TimestampView(
     #[prop(into)] value: Signal<Option<SystemTime>, LocalStorage>,
     #[prop(optional)] override_format: Option<Format>,
+    #[prop(optional)] node_ref: Option<NodeRef>,
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
 ) -> impl IntoView {
+    crate::ui::styles::install_ui_stylesheets();
     let ticks = tick_signal();
-    view! {
-        text(class = "gds-timestamp", class = class, {..attrs}) {{move || {
-            let _ = ticks.get();
-            let fmt = override_format.unwrap_or_else(format);
-            format_presentation(fmt.presentation(value.get(), now()))
-        }}}
+    let has_value = RwSignal::new_local(value.get_untracked().is_some());
+    let sync_has_value = RenderEffect::new(move |_| {
+        let next = value.get().is_some();
+        if has_value.get_untracked() != next {
+            has_value.set(next);
+        }
+    });
+    on_cleanup_local(move || drop(sync_has_value));
+    let tooltip_text = Signal::derive_local(move || value.get().map(precise).unwrap_or_default());
+    let label_ref = node_ref.unwrap_or_default();
+
+    move || {
+        let label_class = class.clone();
+        let label_attrs = attrs.clone();
+        let label = view! {
+            text(class = "gds-timestamp", node_ref = label_ref, class = label_class, {..label_attrs}) {{move || {
+                let fmt = override_format.unwrap_or_else(format);
+                if fmt == Format::Relative {
+                    let _ = ticks.get();
+                }
+                format_presentation(fmt.presentation(value.get(), now()))
+            }}}
+        };
+
+        if has_value.get() {
+            AnyView::new(view! {
+                Tooltip(delay = TOOLTIP_DELAY) {
+                    TooltipTrigger {{label}}
+                    TooltipContent {
+                        TooltipText(text = tooltip_text)
+                    }
+                }
+            })
+        } else {
+            AnyView::new(label)
+        }
     }
 }
 
-fn format_presentation(presentation: Presentation) -> String {
+pub(super) fn format_presentation(presentation: Presentation) -> String {
     let gds = Gds::try_current();
     match presentation {
-        Presentation::Missing => "—".to_owned(),
+        Presentation::Missing => gds.as_ref().map_or_else(
+            || "\u{2014}".to_owned(),
+            |g| g.i18n().text("time-placeholder"),
+        ),
         Presentation::Epoch => gds
             .as_ref()
-            .map_or_else(|| "Epoch".to_owned(), |g| g.i18n().text("time-epoch")),
+            .map_or_else(|| "Unix epoch".to_owned(), |g| g.i18n().text("time-epoch")),
         Presentation::JustNow => gds
             .as_ref()
             .map_or_else(|| "Just now".to_owned(), |g| g.i18n().text("time-just-now")),
@@ -78,12 +117,38 @@ fn format_presentation(presentation: Presentation) -> String {
             || format!("{n}m ago"),
             |g| g.i18n().count("time-minutes-ago", n as usize),
         ),
-        Presentation::Today { time } => time,
-        Presentation::Yesterday { time } => format!("Yesterday {time}"),
-        Presentation::Days(n) => format!("{n}d ago"),
-        Presentation::Weeks(n) => format!("{n}w ago"),
-        Presentation::Months(n) => format!("{n}mo ago"),
-        Presentation::Years(n) => format!("{n}y ago"),
+        Presentation::Today { time } => gds.as_ref().map_or_else(
+            || time.clone(),
+            |g| {
+                let mut args = FluentArgs::new();
+                args.set("time", time.as_str());
+                g.i18n().format("time-today", Some(&args))
+            },
+        ),
+        Presentation::Yesterday { time } => gds.as_ref().map_or_else(
+            || format!("Yesterday {time}"),
+            |g| {
+                let mut args = FluentArgs::new();
+                args.set("time", time.as_str());
+                g.i18n().format("time-yesterday", Some(&args))
+            },
+        ),
+        Presentation::Days(n) => gds.as_ref().map_or_else(
+            || format!("{n}d ago"),
+            |g| g.i18n().count("time-days-ago", n as usize),
+        ),
+        Presentation::Weeks(n) => gds.as_ref().map_or_else(
+            || format!("{n}w ago"),
+            |g| g.i18n().count("time-weeks-ago", n as usize),
+        ),
+        Presentation::Months(n) => gds.as_ref().map_or_else(
+            || format!("{n}mo ago"),
+            |g| g.i18n().count("time-months-ago", n as usize),
+        ),
+        Presentation::Years(n) => gds.as_ref().map_or_else(
+            || format!("{n}y ago"),
+            |g| g.i18n().count("time-years-ago", n as usize),
+        ),
         Presentation::Absolute { text } => text,
     }
 }

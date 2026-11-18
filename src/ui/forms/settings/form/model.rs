@@ -46,6 +46,11 @@ impl Choice {
     }
 
     #[must_use]
+    pub const fn terms(&self) -> &'static str {
+        self.search_terms
+    }
+
+    #[must_use]
     pub fn matches(&self, query: &str) -> bool {
         let query = query.to_lowercase();
         self.title.to_lowercase().contains(&query)

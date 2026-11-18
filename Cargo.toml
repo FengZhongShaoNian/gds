@@ -208,7 +208,7 @@ toasty-driver-sqlite = { version = "=0.11.0", optional = true }
 toasty-core = { version = "=0.11.0", optional = true }
 
 # Terminal backend.
-# Published MIT PTY transport and Apache-2.0 terminal emulator; no GPUI forks.
+# Published MIT PTY transport and Apache-2.0 terminal emulator.
 portable-pty = { version = "=0.9.0", optional = true }
 alacritty_terminal = { version = "=0.26.0", optional = true }
 
@@ -222,7 +222,7 @@ md-5 = { version = "=0.10.6", optional = true }
 png = { version = "=0.18.1", optional = true }
 resvg = { version = "=0.46.0", optional = true }
 # Header-only dimension/colour probing needs these decoders; every feature here
-# is already enabled by GPUI, so the resolved dependency set does not change.
+# matches the decoders already enabled by `zgui-image`.
 image = { version = "0.25.10", optional = true, default-features = false, features = [
     "bmp",
     "gif",
@@ -250,13 +250,13 @@ fluent-syntax = { version = "0.12", optional = true }
 unic-langid = { version = "0.9", optional = true }
 
 # Shared UI.
-zgui = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", features = ["tokio"], optional = true }
-zgui-ui = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
-zgui-ui-tokens = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
-zgui-ui-primitives = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
-zgui-ui-icons = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
-zgui-image = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
-zgui-platform-headless = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
+zgui = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", features = ["tokio"], optional = true }
+zgui-ui = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
+zgui-ui-tokens = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
+zgui-ui-primitives = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
+zgui-ui-icons = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
+zgui-image = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
+zgui-platform-headless = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", optional = true }
 gds-settings-derive = { path = "macros/gds-settings-derive", optional = true }
 rust-embed = { version = "8", optional = true, features = ["debug-embed"] }
 unicode-segmentation = { version = "1", optional = true }
@@ -309,7 +309,7 @@ futures-lite = "2"
 regex = "1"
 serde_json = "1"
 tempfile = "3"
-zgui-platform-headless = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400" }
+zgui-platform-headless = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0" }
 bas = { package = "bas-client", git = "https://github.com/GanDesktop/bas", branch = "main" }
 bas-server = { git = "https://github.com/GanDesktop/bas", branch = "main" }
 # Runtime-generated TLS fixtures for the imported connection tests.

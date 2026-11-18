@@ -129,27 +129,26 @@ pub fn window_options() -> WindowOptions {
     workspace_options("", None)
 }
 
-/// Temporary Phase 2/3B shim until `GanDesktop/zgui` Commit 2 implements `xdg-foreign-v2` + `xdg-dialog-v1`.
+/// Parents `window` under an external desktop handle (`"wayland:<token>"` or `"x11:<xid>"`).
 pub fn set_external_parent(window: &WindowHandle, parent: &str, modal: bool) {
-    tracing::debug!(%parent, modal, "set_external_parent shim falling back to window focus");
-    window.focus();
+    if parent.is_empty() {
+        return;
+    }
+    if let Err(error) = window.set_external_parent(parent, modal) {
+        tracing::debug!(%parent, modal, %error, "failed to apply external window parent");
+    }
 }
 
-/// Temporary Phase 2/3B shim until `GanDesktop/zgui` Commit 2 wires `xdg_activation_v1`.
+/// Passes an external activation token (`xdg-activation-v1` / desktop startup ID) to `window`.
 pub fn activate_with_token(window: &WindowHandle, token: &str) {
-    tracing::debug!(%token, "activate_with_token shim falling back to focus/attention");
-    window.focus();
-    window.request_attention(true);
+    if !token.is_empty() {
+        window.activate_with_token(token);
+    }
 }
 
-/// Temporary Phase 2/3B shim until `GanDesktop/zgui` Commit 2 exposes `XdgToplevel::show_window_menu`.
+/// Opens the desktop's native window menu at window-local `pos`, in CSS pixels.
 pub fn show_window_menu(window: &WindowHandle, pos: Point<CssPx, Css>) {
-    let _ = window;
-    tracing::debug!(
-        x = pos.x.0,
-        y = pos.y.0,
-        "show_window_menu is unavailable on this zgui revision"
-    );
+    window.show_window_menu(pos);
 }
 
 pub(crate) fn session_hides_controls(desktop: Option<&str>, has_niri_socket: bool) -> bool {

@@ -126,19 +126,35 @@ impl Host {
             .map(|request| request.title.clone())
             .filter(|title| !title.is_empty())
             .unwrap_or_else(|| gds::i18n::text("app-title"));
-        let parent = portal.map(|request| (request.parent_window.clone(), request.modal));
+        let parent = portal
+            .map(|request| (request.parent_window.clone(), request.modal))
+            .filter(|(parent, _)| !parent.is_empty());
         let picking = launch.picker.is_some();
         let startup_token = self.0.startup_token.borrow_mut().take();
+        let activation_token = command
+            .as_ref()
+            .and_then(|cmd| (!cmd.startup_id.is_empty()).then(|| cmd.startup_id.clone()))
+            .or_else(|| {
+                if command.is_none() {
+                    startup_token
+                } else {
+                    None
+                }
+            });
         let app_id = if picking { PICKER_APP_ID } else { APP_ID };
-        let options = gds::ui::window::workspace_options(title, Some(app_id));
+        let mut options = gds::ui::window::workspace_options(title, Some(app_id));
+        if let Some((parent, modal)) = parent {
+            options = options.with_external_parent(parent, modal);
+        }
+        if let Some(token) = activation_token {
+            options = options.with_activation_token(token);
+        }
 
         let host = self.clone();
         self.0.state.borrow_mut().pending += 1;
 
         let launch_slot = RefCell::new(Some(launch));
         let command_slot = RefCell::new(command);
-        let parent_slot = RefCell::new(parent);
-        let token_slot = RefCell::new(startup_token);
 
         windows.open(options, move || {
             let launch = launch_slot
@@ -170,17 +186,8 @@ impl Host {
             for notice in notices {
                 browser.report_notice(notice);
             }
-            if let Some((parent, modal)) = parent_slot
-                .borrow_mut()
-                .take()
-                .filter(|(parent, _)| !parent.is_empty())
-            {
-                gds::ui::window::set_external_parent(&window, &parent, modal);
-            }
             if let Some(command) = command_slot.borrow_mut().take() {
                 browser.apply_desktop_command(command);
-            } else if let Some(token) = token_slot.borrow_mut().take() {
-                gds::ui::window::activate_with_token(&window, &token);
             }
             on_cleanup_local(move || cleanup_host.closed(id, picking));
             browser.view()

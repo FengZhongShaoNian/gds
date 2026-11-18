@@ -1,4 +1,5 @@
 mod watching;
+#[allow(unused_imports)]
 pub(crate) use watching::Watching;
 mod children;
 mod content;

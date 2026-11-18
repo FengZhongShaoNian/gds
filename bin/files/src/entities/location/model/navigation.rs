@@ -146,6 +146,7 @@ pub enum Error {
 }
 
 impl Error {
+    #[allow(dead_code)]
     pub fn is_cancelled(&self) -> bool {
         matches!(self, Self::Load(error) if error.is_cancelled())
     }
@@ -309,6 +310,18 @@ impl<V: Default> Navigation<V> {
     pub fn pending_location(&self) -> Option<&Location> {
         self.pending.as_ref().map(LoadRequest::location)
     }
+    #[allow(dead_code)]
+    pub fn pending_path(&self) -> Option<&Path> {
+        self.pending.as_ref().and_then(LoadRequest::path)
+    }
+    #[allow(dead_code)]
+    pub(crate) fn present_collection(&mut self, request: &LoadRequest) {
+        if self.is_current_request(request) && !self.pending_committed && request.path().is_none() {
+            self.commit_destination(request);
+            self.directory = None;
+            self.pending_committed = true;
+        }
+    }
     pub fn back_location(&self) -> Option<&Location> {
         self.history_index
             .checked_sub(1)
@@ -384,6 +397,7 @@ impl<V: Default> Navigation<V> {
             .as_ref()
             .is_some_and(|pending| pending.id == request.id)
     }
+    #[cfg(test)]
     pub fn had_partial_commit(&self, request: &LoadRequest) -> bool {
         self.is_current_request(request) && self.pending_committed
     }

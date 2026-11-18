@@ -1,24 +1,31 @@
-//! File clipboard interchange through the application window's native selection.
-//! Other platforms retain a clearly limited GPUI same-process fallback.
+//! File clipboard interchange through `zgui`'s text clipboard shim and an in-process cache.
+//! Phase 3B uses local `Snapshot` tracking paired with `# gds-files-v1:` text fallback
+//! via `try_use_clipboard()` until multi-MIME clipboard support lands in Phase 4.
 
 mod fallback;
 mod protocol;
 mod state;
-#[cfg(target_os = "linux")]
-mod wayland;
 
 use std::{
+    cell::RefCell,
     collections::HashSet,
+    future::Future,
     path::{Component, Path, PathBuf},
-    sync::Arc,
-    sync::atomic::{AtomicU64, Ordering},
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::SystemTime,
 };
 
-use gpui_kit::{App, Task};
+use fallback::TextCodec;
+use gds::app::Gds;
 use protocol::Formats;
 use serde::{Deserialize, Serialize};
 use state::Cache;
+use zgui::prelude::{ClipboardKind, LocalStorage, RwSignal, try_use_clipboard};
+use zgui::reactive::{on_cleanup_local, prelude::*};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -28,7 +35,7 @@ pub enum Mode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Identity(Option<String>);
+pub struct Identity(pub(super) Option<String>);
 
 impl Identity {
     fn fresh() -> Self {
@@ -149,313 +156,294 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("file clipboard data could not be encoded or decoded: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("platform clipboard read failed: {0}")]
-    PlatformRead(#[from] gpui_kit::ClipboardReadError),
-    #[cfg(target_os = "linux")]
-    #[error(transparent)]
-    Native(#[from] gpui_kit::ClipboardAccessError),
 }
 
-#[derive(Clone, Copy, Debug)]
-enum Backend {
-    #[cfg(target_os = "linux")]
-    Wayland,
-    Gpui,
+thread_local! {
+    static INSTALLED: RefCell<Option<Clipboard>> = const { RefCell::new(None) };
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Bridge {
-    backend: Backend,
+#[allow(dead_code)]
+pub(crate) enum Payload {
+    Empty,
+    Local(Snapshot),
+    Uris { mode: Mode, uris: Vec<String> },
 }
 
-const REMOTE_URI_METADATA: &str = "gds-remote-uris";
+#[derive(Clone)]
+pub(crate) struct Clipboard(Rc<ClipboardState>);
 
-impl Bridge {
-    /// # Errors
-    /// Reports invalid URI lists or an unavailable clipboard provider.
-    fn write_uris(&self, uris: Vec<String>, cx: &mut App) -> Task<Result<(), Error>> {
-        let checked = Formats::parse_uri_list(&uris.join("\n"));
-        let copyable = checked
-            .as_ref()
-            .is_ok_and(|uris| Formats::copyable_uris(uris));
-        let write = match self.backend {
-            #[cfg(target_os = "linux")]
-            Backend::Wayland => {
-                Task::ready(checked.and_then(|uris| wayland::Clipboard::write_uris(uris, cx)))
-            }
-            Backend::Gpui => {
-                if let Ok(uris) = &checked {
-                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string_with_metadata(
-                        uris.join("\n"),
-                        REMOTE_URI_METADATA.into(),
-                    ));
-                }
-                Task::ready(checked.map(|_| ()))
-            }
-        };
-        cx.spawn(async move |cx| {
-            write.await?;
-            cx.update(|cx| {
-                Cache::record_uri_copy_in(copyable, cx);
+struct ClipboardState {
+    cache: RefCell<Cache>,
+    revision: RwSignal<u64, LocalStorage>,
+}
+
+impl Clipboard {
+    pub fn current() -> Self {
+        if let Some(clipboard) = INSTALLED.with(|slot| slot.borrow().clone()) {
+            return clipboard;
+        }
+        let install = || {
+            let clipboard = Self(Rc::new(ClipboardState {
+                cache: RefCell::new(Cache::default()),
+                revision: RwSignal::new_local(0),
+            }));
+            INSTALLED.with(|slot| *slot.borrow_mut() = Some(clipboard.clone()));
+            on_cleanup_local(|| {
+                INSTALLED.with(|slot| slot.borrow_mut().take());
             });
-            Ok(())
+            clipboard
+        };
+        match Gds::try_current() {
+            Some(gds) => gds.with(install),
+            None => install(),
+        }
+    }
+
+    fn changed(&self) {
+        self.0
+            .revision
+            .update(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    pub fn snapshot(&self) -> Option<Arc<Snapshot>> {
+        self.0.revision.get();
+        self.0.cache.borrow().current()
+    }
+
+    pub fn is_cut(&self, path: &Path) -> bool {
+        self.0.revision.get();
+        self.0.cache.borrow().is_cut(path)
+    }
+
+    pub fn can_paste(&self) -> bool {
+        self.0.revision.get();
+        self.0.cache.borrow().can_paste()
+    }
+
+    pub fn refresh(&self) {
+        let Some(clip) = try_use_clipboard() else {
+            return;
+        };
+        let Some(generation) = self.0.cache.borrow_mut().begin_refresh() else {
+            return;
+        };
+        let weak = Rc::downgrade(&self.0);
+        let cancel = Gds::try_current().map(|gds| gds.tasks().scope().token());
+        clip.read_text(ClipboardKind::Standard, move |text| {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            if cancel.as_ref().is_some_and(|token| token.is_cancelled()) {
+                return;
+            }
+            let clipboard = Clipboard(state);
+            let parsed = TextCodec::decode_uris(text.as_deref());
+            let (result, remote) = match (TextCodec::decode_snapshot(text.as_deref()), parsed) {
+                (Ok(snapshot), Ok(Some((mode, uris)))) => {
+                    let remote_copy =
+                        snapshot.is_none() && mode == Mode::Copy && Formats::copyable_uris(&uris);
+                    (Ok(snapshot), remote_copy)
+                }
+                (Ok(snapshot), Ok(None)) => (Ok(snapshot), false),
+                (Err(Error::InvalidUri(_)), Ok(Some((mode, uris)))) => {
+                    let remote_copy = mode == Mode::Copy && Formats::copyable_uris(&uris);
+                    (Ok(None), remote_copy)
+                }
+                (Err(error), _) | (_, Err(error)) => (Err(error), false),
+            };
+            let changed = clipboard
+                .0
+                .cache
+                .borrow_mut()
+                .reconcile(generation, result, remote);
+            if changed {
+                clipboard.changed();
+            }
+        });
+    }
+
+    /// # Errors
+    /// Reports invalid selections or clipboard serialization failures.
+    #[allow(dead_code)]
+    pub async fn write(&self, mode: Mode, paths: Vec<PathBuf>) -> Result<Snapshot, Error> {
+        let snapshot = Snapshot::new(mode, paths)?;
+        let encoded = TextCodec::encode_snapshot(&snapshot)?;
+        if let Some(clip) = try_use_clipboard() {
+            clip.set_text(ClipboardKind::Standard, encoded);
+        }
+        self.0.cache.borrow_mut().record_write(&snapshot);
+        self.changed();
+        Ok(snapshot)
+    }
+
+    /// # Errors
+    /// Reports invalid file clipboard payloads.
+    #[allow(dead_code)]
+    pub async fn read(&self) -> Result<Option<Snapshot>, Error> {
+        if let Some(text) = read_system_clipboard_text().await {
+            return TextCodec::decode_snapshot(Some(&text));
+        }
+        Ok(self.0.cache.borrow().current().map(|s| (*s).clone()))
+    }
+
+    /// # Errors
+    /// Reports invalid file or remote URI payloads.
+    #[allow(dead_code)]
+    pub async fn read_payload(&self) -> Result<Payload, Error> {
+        if let Some(text) = read_system_clipboard_text().await {
+            return match TextCodec::decode_snapshot(Some(&text)) {
+                Ok(Some(snapshot)) => Ok(Payload::Local(snapshot)),
+                Ok(None) => match TextCodec::decode_uris(Some(&text))? {
+                    Some((mode, uris)) => Ok(Payload::Uris { mode, uris }),
+                    None => Ok(Payload::Empty),
+                },
+                Err(Error::InvalidUri(_)) => match TextCodec::decode_uris(Some(&text))? {
+                    Some((mode, uris)) => Ok(Payload::Uris { mode, uris }),
+                    None => Ok(Payload::Empty),
+                },
+                Err(error) => Err(error),
+            };
+        }
+        Ok(match self.0.cache.borrow().current() {
+            Some(snapshot) => Payload::Local((*snapshot).clone()),
+            None => Payload::Empty,
         })
     }
 
     /// # Errors
-    /// The task reports malformed URI lists or clipboard access failures.
-    fn read_uris(&self, cx: &mut App) -> Task<Result<Option<(Mode, Vec<String>)>, Error>> {
-        match self.backend {
-            #[cfg(target_os = "linux")]
-            Backend::Wayland => wayland::Clipboard::read_uris(cx),
-            Backend::Gpui => Task::ready(fallback::Clipboard::decode_uris(
-                cx.read_from_clipboard().as_ref(),
-            )),
-        }
+    /// Reports invalid remaining paths or serialization failures.
+    #[allow(dead_code)]
+    pub async fn remove(&self, expected: Arc<Snapshot>, paths: Vec<PathBuf>) -> Result<(), Error> {
+        let result = self.remove_paths(expected, paths, true).await;
+        self.refresh();
+        result
     }
 
-    fn new(cx: &App) -> Self {
-        #[cfg(target_os = "linux")]
-        if cx.supports_clipboard_mime() {
-            return Self {
-                backend: Backend::Wayland,
-            };
-        }
-        Self {
-            backend: Backend::Gpui,
-        }
-    }
-
-    /// Publish from the GPUI thread using the focused window's selection serial.
-    ///
     /// # Errors
-    /// The task reports invalid paths, encoding or unavailable clipboard protocols.
-    fn write(
+    /// Reports malformed URI lists or serialization failures.
+    #[allow(dead_code)]
+    pub async fn read_uris(&self) -> Result<Option<(Mode, Vec<String>)>, Error> {
+        if let Some(text) = read_system_clipboard_text().await {
+            return TextCodec::decode_uris(Some(&text));
+        }
+        let cached = self.0.cache.borrow().current();
+        let Some(snapshot) = cached else {
+            return Ok(None);
+        };
+        let uris = snapshot
+            .paths
+            .iter()
+            .map(|path| {
+                url::Url::from_file_path(path)
+                    .map(|uri| uri.to_string())
+                    .map_err(|_| Error::InvalidPath(path.clone()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some((snapshot.mode, uris)))
+    }
+
+    /// # Errors
+    /// Reports invalid or uncopyable remote URIs.
+    #[allow(dead_code)]
+    pub async fn write_uris(&self, uris: Vec<String>) -> Result<(), Error> {
+        let checked = Formats::parse_uri_list(&uris.join("\n"))?;
+        let copyable = Formats::copyable_uris(&checked);
+        let encoded = TextCodec::encode_uris(&checked)?;
+        if let Some(clip) = try_use_clipboard() {
+            clip.set_text(ClipboardKind::Standard, encoded);
+        }
+        self.0.cache.borrow_mut().record_uri_copy(copyable);
+        self.changed();
+        Ok(())
+    }
+
+    /// # Errors
+    /// Reports clipboard update failures while leaving completed filesystem moves intact.
+    #[allow(dead_code)]
+    pub async fn finish_cut(
         &self,
-        mode: Mode,
-        paths: Vec<PathBuf>,
-        cx: &mut App,
-    ) -> Task<Result<Snapshot, Error>> {
-        match self.backend {
-            #[cfg(target_os = "linux")]
-            Backend::Wayland => Task::ready(
-                Snapshot::new(mode, paths)
-                    .and_then(|snapshot| wayland::Clipboard::write(&snapshot, cx)),
-            ),
-            Backend::Gpui => Task::ready(fallback::Clipboard::write(mode, paths, cx)),
-        }
-    }
-
-    /// Read supported file clipboard formats, never infer files from ordinary text.
-    ///
-    /// # Errors
-    /// The task reports malformed, non-local or inaccessible file clipboard data.
-    fn read(&self, cx: &mut App) -> Task<Result<Option<Snapshot>, Error>> {
-        match self.backend {
-            #[cfg(target_os = "linux")]
-            Backend::Wayland => wayland::Clipboard::read(cx),
-            Backend::Gpui => fallback::Clipboard::read(cx),
-        }
-    }
-
-    /// Remove completed cut entries only from an unchanged GDS-owned snapshot.
-    /// Foreign owners and newly copied contents are left untouched. Wayland cleanup
-    /// compares the captured offer revision immediately before publication.
-    ///
-    /// # Errors
-    /// The task reports clipboard access or update failures; filesystem results are unaffected.
-    fn finish_cut(
-        &self,
-        snapshot: Snapshot,
+        expected: Snapshot,
         succeeded: Vec<PathBuf>,
-        cx: &mut App,
-    ) -> Task<Result<(), Error>> {
-        self.remove_cut_paths(snapshot, succeeded, cx)
+    ) -> Result<(), Error> {
+        let snapshot = expected.clone();
+        let removed = succeeded.clone();
+        let result = self
+            .remove_paths(Arc::new(expected), succeeded, false)
+            .await;
+        if result.is_ok() {
+            self.0.cache.borrow_mut().note_pasted(&snapshot, &removed);
+            self.changed();
+            self.refresh();
+        }
+        result
     }
 
-    /// Remove an explicitly chosen entry, only while the platform offer matches the displayed snapshot.
-    ///
-    /// # Errors
-    /// Reports clipboard read or publication failures.
-    fn remove_path(
+    #[allow(dead_code)]
+    pub fn cancel_cut(&self) -> Option<impl Future<Output = Result<(), Error>> + 'static> {
+        let expected = self.0.cache.borrow_mut().begin_cancel()?;
+        let clipboard = self.clone();
+        Some(async move {
+            let result = clipboard
+                .remove_paths(expected.clone(), expected.paths.clone(), false)
+                .await;
+            clipboard
+                .0
+                .cache
+                .borrow_mut()
+                .finish_cancel(&expected, result.is_ok());
+            clipboard.changed();
+            clipboard.refresh();
+            result
+        })
+    }
+
+    async fn remove_paths(
         &self,
-        snapshot: Arc<Snapshot>,
-        path: PathBuf,
-        cx: &mut App,
-    ) -> Task<Result<(), Error>> {
-        match self.backend {
-            #[cfg(target_os = "linux")]
-            Backend::Wayland => wayland::Clipboard::remove_paths(snapshot, vec![path], true, cx),
-            Backend::Gpui => fallback::Clipboard::remove_paths(snapshot, vec![path], true, cx),
+        expected: Arc<Snapshot>,
+        removed: Vec<PathBuf>,
+        explicit: bool,
+    ) -> Result<(), Error> {
+        let current = if let Some(text) = read_system_clipboard_text().await {
+            TextCodec::decode_snapshot(Some(&text))?
+        } else {
+            self.0.cache.borrow().current().map(|s| (*s).clone())
+        };
+        let Some(current) = current else {
+            return Ok(());
+        };
+        let remaining = if explicit {
+            expected.excluding(&current, &removed)
+        } else {
+            expected.remaining_after(&current, &removed)
+        };
+        let Some(remaining) = remaining else {
+            return Ok(());
+        };
+        if remaining.is_empty() {
+            if let Some(clip) = try_use_clipboard() {
+                clip.clear(ClipboardKind::Standard);
+            }
+            self.0.cache.borrow_mut().clear();
+        } else {
+            let next = Snapshot::new(expected.mode, remaining)?;
+            let encoded = TextCodec::encode_snapshot(&next)?;
+            if let Some(clip) = try_use_clipboard() {
+                clip.set_text(ClipboardKind::Standard, encoded);
+            }
+            self.0.cache.borrow_mut().record_write(&next);
         }
-    }
-
-    /// # Errors
-    /// The task reports clipboard read or publication failures.
-    fn remove_cut_paths(
-        &self,
-        snapshot: Snapshot,
-        paths: Vec<PathBuf>,
-        cx: &mut App,
-    ) -> Task<Result<(), Error>> {
-        if !snapshot.can_cancel() || paths.is_empty() {
-            return Task::ready(Ok(()));
-        }
-        let snapshot = Arc::new(snapshot);
-        match self.backend {
-            #[cfg(target_os = "linux")]
-            Backend::Wayland => wayland::Clipboard::remove_paths(snapshot, paths, false, cx),
-            Backend::Gpui => fallback::Clipboard::finish_cut(snapshot, paths, cx),
-        }
+        self.changed();
+        Ok(())
     }
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct Accessor<C> {
-    cx: C,
-}
-
-pub(crate) trait ClipboardExt {
-    type Context<'a>: gds::app::Context
-    where
-        Self: 'a;
-
-    fn clipboard(&mut self) -> Accessor<Self::Context<'_>>;
-}
-
-impl<C: gds::app::Context> ClipboardExt for gds::app::Gds<C> {
-    type Context<'a>
-        = C::Reborrowed<'a>
-    where
-        C: 'a;
-
-    fn clipboard(&mut self) -> Accessor<C::Reborrowed<'_>> {
-        Accessor {
-            cx: self.reborrow().into_inner(),
-        }
-    }
-}
-
-impl<C: std::ops::Deref<Target = App>> Accessor<C> {
-    /// Whether `path` is one of the sources of the current in-application cut.
-    ///
-    /// This reads only the cached intent; no clipboard or filesystem I/O happens
-    /// during rendering. The cache changes only when a clipboard operation
-    /// completes or [`Self::refresh`] validates it.
-    pub(crate) fn is_cut(&self, path: &Path) -> bool {
-        Cache::is_cut_in(path, &self.cx)
-    }
-
-    /// Last known file contents, shared by all windows without clipboard I/O in render.
-    pub(crate) fn current(&self) -> Option<Arc<Snapshot>> {
-        Cache::current_in(&self.cx)
-    }
-
-    /// Whether the last validated offer contains local files or copyable remote URIs.
-    pub(crate) fn can_paste(&self) -> bool {
-        Cache::can_paste_in(&self.cx)
-    }
-}
-
-impl Accessor<&mut App> {
-    /// Re-read file contents on activation or returning from a file interaction.
-    ///
-    /// Callers invoke this on window activation or on a returning file-row click;
-    /// it never polls. One read is in flight at a time, and a read that started
-    /// before a newer copy/cut cannot replace that newer intent.
-    pub(crate) fn refresh(&mut self) {
-        Cache::refresh(self.cx);
-    }
-
-    /// Forget file contents when a known text or other payload replaces them.
-    pub(crate) fn clear(&mut self) {
-        Cache::clear_in(self.cx);
-    }
-
-    /// Cancel an owned cut, clearing the platform offer only while it still matches.
-    /// A later clipboard write is preserved. Repeated Escape presses share the
-    /// pending cancellation; errors leave the cut visible and available to retry.
-    ///
-    /// # Errors
-    /// The task reports clipboard access or update failures.
-    pub(crate) fn cancel_cut(&mut self) -> Option<Task<Result<(), Error>>> {
-        Cache::cancel_cut(self.cx)
-    }
-
-    /// Publish from the GPUI thread using the focused window's selection serial.
-    ///
-    /// # Errors
-    /// The task reports invalid paths, encoding or unavailable clipboard protocols.
-    pub(crate) fn write(
-        &mut self,
-        mode: Mode,
-        paths: Vec<PathBuf>,
-    ) -> Task<Result<Snapshot, Error>> {
-        Bridge::new(self.cx).write(mode, paths, self.cx)
-    }
-
-    /// Read supported file clipboard formats, never infer files from ordinary text.
-    ///
-    /// # Errors
-    /// The task reports malformed, non-local or inaccessible file clipboard data.
-    pub(crate) fn read(&mut self) -> Task<Result<Option<Snapshot>, Error>> {
-        Bridge::new(self.cx).read(self.cx)
-    }
-
-    /// # Errors
-    /// Reports invalid URI lists or an unavailable clipboard provider.
-    pub(crate) fn write_uris(&mut self, uris: Vec<String>) -> Task<Result<(), Error>> {
-        Bridge::new(self.cx).write_uris(uris, self.cx)
-    }
-
-    /// # Errors
-    /// The task reports malformed URI lists or clipboard access failures.
-    pub(crate) fn read_uris(&mut self) -> Task<Result<Option<(Mode, Vec<String>)>, Error>> {
-        Bridge::new(self.cx).read_uris(self.cx)
-    }
-
-    /// Remove completed cut entries only from an unchanged GDS-owned snapshot.
-    /// Foreign owners and newly copied contents are left untouched. Wayland cleanup
-    /// compares the captured offer revision immediately before publication.
-    ///
-    /// # Errors
-    /// The task reports clipboard access or update failures; filesystem results are unaffected.
-    pub(crate) fn finish_cut(
-        &mut self,
-        snapshot: Snapshot,
-        succeeded: Vec<PathBuf>,
-    ) -> Task<Result<(), Error>> {
-        Bridge::new(self.cx).finish_cut(snapshot, succeeded, self.cx)
-    }
-
-    /// Remove an explicitly chosen entry, only while the platform offer matches the displayed snapshot.
-    ///
-    /// # Errors
-    /// Reports clipboard read or publication failures.
-    pub(crate) fn remove_path(
-        &mut self,
-        snapshot: Arc<Snapshot>,
-        path: PathBuf,
-    ) -> Task<Result<(), Error>> {
-        Bridge::new(self.cx).remove_path(snapshot, path, self.cx)
-    }
-
-    /// Record a clipboard write only after it actually succeeded.
-    pub(crate) fn note_write(&mut self, written: &Snapshot) {
-        Cache::note_write(written, self.cx);
-    }
-
-    /// Drop the sources a cut paste moved, keeping any entry it did not move.
-    pub(crate) fn note_cut_paste(&mut self, pasted: &Snapshot, succeeded: &[PathBuf]) {
-        Cache::note_cut_paste(pasted, succeeded, self.cx);
-    }
-}
-
-pub(crate) fn observe<V: 'static>(
-    cx: &mut gpui_kit::Context<V>,
-    on_change: impl Fn(&mut V, &mut gpui_kit::Context<V>) + 'static,
-) -> gpui_kit::Subscription {
-    Cache::observe(cx, on_change)
+async fn read_system_clipboard_text() -> Option<String> {
+    let clip = try_use_clipboard()?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    clip.read_text(ClipboardKind::Standard, move |text| {
+        let _ = sender.send(text);
+    });
+    receiver.await.ok().flatten()
 }
 
 #[cfg(test)]

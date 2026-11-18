@@ -1,130 +1,153 @@
-use super::*;
-use crate::entities::tags::{Commands, CommandsEditor};
-use gds::ui::button::Button;
-use gds::ui::settings::form;
-use gpui_kit::{base::Disableable, component::Sizable};
+use gds::ui::settings::{
+    SettingActionsProps, SettingControlProps, SettingLabelProps, SettingRowProps,
+};
+use gds::{app::Gds, i18n};
+use zgui::prelude::*;
+use zgui::reactive::{LocalStorage, ReadSignal, RenderEffect, RwSignal, on_cleanup_local};
+use zgui::view;
+use zgui::view::install_stylesheet;
+use zgui_ui::{ButtonProps, ButtonSize, ButtonVariant, SwitchProps, SwitchSize};
+use zgui_ui_primitives::Binding;
 
-pub(super) enum CheckState {
-    Checking { commands: Commands, _task: Task<()> },
-    Ready(Commands),
-    Failed { commands: Commands, error: String },
+use super::{Preferences, View};
+use crate::entities::tags;
+
+const TAGS_SHEET: &str = "gds-files-settings-tags";
+const TAGS_CSS: &str = r#"
+.gds-settings-tags {
+    display: flex;
+    flex-direction: column;
 }
 
-pub(super) struct Controls {
-    pub editor: Entity<CommandsEditor>,
-    pub state: CheckState,
+.gds-settings-tags__title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 16px;
+}
+
+.gds-settings-tags__probe {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 0;
+}
+
+.gds-settings-tags__status {
+    flex: 1 1 0%;
+    min-width: 0;
+    color: var(--gds-muted-foreground);
+}
+"#;
+
+#[derive(Clone)]
+enum State {
+    Checking,
+    Ready,
+    Failed(String),
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Probe {
+    state: RwSignal<State, LocalStorage>,
+    refresh: RwSignal<u64, LocalStorage>,
+}
+
+impl Probe {
+    pub(super) fn new(preferences: ReadSignal<Preferences, LocalStorage>) -> Self {
+        let state = RwSignal::new_local(State::Checking);
+        let refresh = RwSignal::new_local(0_u64);
+        let fx = RenderEffect::new(move |_| {
+            let _ = refresh.get();
+            let commands = preferences.with(|p| p.tags.commands.clone());
+            state.set(State::Checking);
+            Gds::current().tasks().spawn_ui(
+                "Check tag backend",
+                async move { tags::connect(&commands).await },
+                move |result| {
+                    state.set(match result {
+                        Ok(Ok(_)) => State::Ready,
+                        Ok(Err(error)) => State::Failed(error),
+                        Err(error) => State::Failed(error.to_string()),
+                    });
+                },
+            );
+        });
+        on_cleanup_local(move || drop(fx));
+        Self { state, refresh }
+    }
+
+    fn ready(self) -> bool {
+        self.state.with(|state| matches!(state, State::Ready))
+    }
+
+    fn checking(self) -> bool {
+        self.state.with(|state| matches!(state, State::Checking))
+    }
+
+    fn status(self) -> String {
+        self.state.with(|state| match state {
+            State::Checking => i18n::text("tags-checking"),
+            State::Ready => i18n::text("tags-ready"),
+            State::Failed(error) => error.clone(),
+        })
+    }
 }
 
 impl View {
-    pub fn tags_available(&self) -> bool {
-        matches!(
-            &self.tags.state,
-            CheckState::Ready(checked) if *checked == self.preferences.tags.commands
-        )
-    }
-
-    pub(super) fn probe_tags(&mut self, cx: &mut Context<Self>) {
-        let commands = self.preferences.tags.commands.clone();
-        let work_commands = commands.clone();
-        let work = gds::service::task_manager::Task::cancel_on_drop(
-            self.tasks.spawn_named("Check tag backend", async move {
-                crate::entities::tags::connect(&work_commands).await
-            }),
-        );
-        let probe_commands = commands.clone();
-        let task = cx.spawn(async move |this, cx| {
-            let result = work.await;
-            let _ = this.update(cx, |this, cx| {
-                if this.preferences.tags.commands != probe_commands {
-                    return;
+    pub(super) fn extensions(&self) -> AnyView {
+        install_stylesheet(TAGS_SHEET, TAGS_CSS);
+        let probe = self.tags;
+        let preferences = self.preferences;
+        let view = self.clone();
+        let enabled = Binding::controlled(
+            Signal::derive_local(move || preferences.with(|p| p.tags.enabled)),
+            move |enabled: bool| {
+                if !enabled || probe.ready() {
+                    view.apply(|p| p.tags.enabled = enabled);
                 }
-                this.tags.state = match result {
-                    Ok(Ok(_)) => CheckState::Ready(probe_commands),
-                    Ok(Err(error)) => CheckState::Failed {
-                        commands: probe_commands,
-                        error: error.to_string(),
-                    },
-                    Err(error) => CheckState::Failed {
-                        commands: probe_commands,
-                        error: error.to_string(),
-                    },
-                };
-                cx.notify();
-            });
-        });
-        self.tags.state = CheckState::Checking {
-            commands,
-            _task: task,
-        };
-        cx.notify();
-    }
-
-    pub(super) fn on_tags_edited(
-        &mut self,
-        _: &Entity<CommandsEditor>,
-        event: &form::Changed<Commands>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if event.value == self.preferences.tags.commands {
-            return;
-        }
-        self.change(window, cx, |preferences| {
-            preferences.tags.commands = event.value.clone();
-            true
-        });
-        self.probe_tags(cx);
-    }
-
-    pub(super) fn render_tags_settings(&self, cx: &mut Context<Self>) -> Div {
-        let available = self.tags_available();
-        let enabled = self.preferences.tags.enabled;
-        let pending = matches!(
-            &self.tags.state,
-            CheckState::Checking { commands, .. } if *commands == self.preferences.tags.commands
+            },
         );
-        let status: SharedString = match &self.tags.state {
-            CheckState::Checking { commands, .. }
-                if *commands == self.preferences.tags.commands =>
-            {
-                t!(@cx, "tags-checking")
-            }
-            CheckState::Checking { .. } => t!(@cx, "tags-unavailable"),
-            CheckState::Ready(checked) if *checked == self.preferences.tags.commands => {
-                t!(@cx, "tags-ready")
-            }
-            CheckState::Ready(_) => t!(@cx, "tags-unavailable"),
-            CheckState::Failed { commands, error }
-                if *commands == self.preferences.tags.commands =>
-            {
-                error.clone().into()
-            }
-            CheckState::Failed { .. } => t!(@cx, "tags-unavailable"),
-        };
-        let enabled_row = self.toggle_row(Field::TagsEnabled, !available && !enabled, cx);
-        let detect_label = t!(@cx, "tags-detect");
-        let on_detect = cx.listener(Self::on_detect_tags);
-        el! { .div { flex; flex_col; gap_3; mt_4; } [
-            enabled_row,
-            .div { flex; items_start; gap_3; } [
-                .div {
-                    flex_1; min_w_0; text_sm; whitespace_normal;
-                    text_color: $(cx.theme().muted_foreground);
-                } [status],
-                "tags-detect".Button::new {
-                    label: $(detect_label.clone());
-                    small;
-                    flex_shrink_0;
-                    disabled: pending;
-                    tooltip: detect_label;
-                    on_click: on_detect;
-                },
-            ],
-            $(self.tags.editor.clone()),
-        ] }
-    }
+        let switch_disabled =
+            Signal::derive_local(move || !preferences.with(|p| p.tags.enabled) && !probe.ready());
+        let reset = self.reset(
+            "tags-enabled",
+            |p| p.tags.enabled,
+            |p, v| p.tags.enabled = v,
+        );
+        let commands = self
+            .subform(|p| p.tags.commands.clone(), |p, v| p.tags.commands = v)
+            .view();
 
-    fn on_detect_tags(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.probe_tags(cx);
+        AnyView::new(view! {
+            column(class = "gds-settings-tags") {
+                text(class = "gds-settings-tags__title") {{move || i18n::text("tags-title")}}
+                SettingRow {
+                    SettingLabel {
+                        text {{move || i18n::text("tags-enabled")}}
+                    }
+                    SettingActions {
+                        {reset}
+                        SettingControl {
+                            Switch(
+                                checked = enabled,
+                                disabled = switch_disabled,
+                                size = SwitchSize::Sm,
+                            )
+                        }
+                    }
+                }
+                row(class = "gds-settings-tags__probe") {
+                    text(class = "gds-settings-tags__status") {{move || probe.status()}}
+                    Button(
+                        variant = ButtonVariant::Outline,
+                        size = ButtonSize::Sm,
+                        disabled = Signal::derive_local(move || probe.checking()),
+                        on:click = move |_| probe.refresh.update(|n| *n = n.wrapping_add(1)),
+                    ) {{move || i18n::text("tags-detect")}}
+                }
+                {commands}
+            }
+        })
     }
 }

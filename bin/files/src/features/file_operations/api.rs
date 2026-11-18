@@ -182,6 +182,7 @@ impl Batch {
 
 #[derive(Debug)]
 pub struct ItemResult {
+    #[allow(dead_code)]
     pub path: PathBuf,
     pub result: Result<(), Error>,
 }
@@ -195,6 +196,7 @@ pub struct Report {
 }
 
 impl Report {
+    #[allow(dead_code)]
     pub fn succeeded_paths(&self) -> Vec<PathBuf> {
         self.items
             .iter()

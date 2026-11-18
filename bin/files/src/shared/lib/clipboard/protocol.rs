@@ -3,11 +3,24 @@ use url::Url;
 
 use super::{Error, Identity, Mode, Snapshot};
 
+#[expect(
+    dead_code,
+    reason = "Multi-MIME Wayland constants retained for Phase 4 multi-MIME support"
+)]
 pub(super) const URI_LIST: &str = "text/uri-list";
+#[expect(
+    dead_code,
+    reason = "Multi-MIME Wayland constants retained for Phase 4 multi-MIME support"
+)]
 pub(super) const GNOME_FILES: &str = "x-special/gnome-copied-files";
+#[expect(
+    dead_code,
+    reason = "Multi-MIME Wayland constants retained for Phase 4 multi-MIME support"
+)]
 pub(super) const KDE_CUT: &str = "application/x-kde-cutselection";
 pub(super) const MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
+#[allow(dead_code)]
 pub(super) struct Formats {
     pub uri_list: Vec<u8>,
     pub gnome: Vec<u8>,
@@ -17,6 +30,7 @@ pub(super) struct Formats {
 impl Formats {
     /// # Errors
     /// Reports unrepresentable paths or oversized payloads.
+    #[allow(dead_code)]
     pub fn encode(snapshot: &Snapshot) -> Result<Self, Error> {
         let uri_list = Self::encode_uris(&snapshot.paths)?;
         let mut gnome = match snapshot.mode {
@@ -103,6 +117,7 @@ impl Formats {
 
     /// # Errors
     /// Requires a copy/cut intent and a valid local URI list.
+    #[allow(dead_code)]
     pub fn decode_gnome(bytes: &[u8]) -> Result<Snapshot, Error> {
         let mut lines = bytes.splitn(2, |byte| *byte == b'\n');
         let intent = lines.next().expect("splitn yields at least one slice");
@@ -125,6 +140,7 @@ impl Formats {
 
     /// # Errors
     /// Requires a recognized KDE copy/cut marker.
+    #[allow(dead_code)]
     pub fn kde_mode(bytes: &[u8]) -> Result<Mode, Error> {
         let marker = bytes
             .trim_ascii()

@@ -94,6 +94,7 @@ impl Snapshot {
     }
 
     /// A reconnect needs a unique stable identity; duplicated UUIDs are not proof.
+    #[allow(dead_code)]
     pub fn reconnect(&self, id: &VolumeId) -> Option<&Volume> {
         if let Some(volume) = self.volume(id) {
             return Some(volume);
@@ -191,6 +192,7 @@ impl DeviceAction {
 
 #[derive(Debug)]
 pub struct OperationOutcome {
+    #[allow(dead_code)]
     pub mount_point: Option<PathBuf>,
 }
 

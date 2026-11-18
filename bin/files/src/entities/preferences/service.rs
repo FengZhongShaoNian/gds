@@ -64,7 +64,7 @@ impl Service {
     }
 
     pub fn snapshot(&self) -> Preferences {
-        self.0.current.get()
+        self.0.current.get_untracked()
     }
 
     pub fn state(&self) -> ReadSignal<Preferences, LocalStorage> {

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! A window-owned workspace. Services finish on Tokio; `zgui` owners receive results.
 
 use std::{
@@ -13,7 +12,6 @@ use std::{
 use gds::{
     app::Gds,
     appearance::tokens::COLLAPSED_SIDEBAR_WIDTH,
-    i18n,
     service::task_manager::{Owner as TaskOwner, Scope},
 };
 use zgui::prelude::*;
@@ -302,7 +300,8 @@ impl Browser {
         browser.observe_services();
         browser.observe_terminals();
         browser.initialize_picker();
-        let ids = browser.read(|state| state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>());
+        let ids =
+            browser.read_untracked(|state| state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>());
         for id in ids {
             browser.refresh_tab(id);
         }
@@ -311,7 +310,7 @@ impl Browser {
     }
 
     pub(super) fn focus_content_after_mount(&self) {
-        if self.pane() == Pane::Files
+        if self.pane_untracked() == Pane::Files
             && matches!(
                 self.0.address_presentation.get_untracked(),
                 AddressPresentation::Breadcrumbs
@@ -325,7 +324,7 @@ impl Browser {
         let handle = self.0.owner.with(|| {
             request_frame(move |_| {
                 if let Some(browser) = weak.upgrade()
-                    && browser.pane() == Pane::Files
+                    && browser.pane_untracked() == Pane::Files
                     && matches!(
                         browser.0.address_presentation.get_untracked(),
                         AddressPresentation::Breadcrumbs
@@ -350,6 +349,10 @@ impl Browser {
         self.0.pages.with(Pages::current)
     }
 
+    pub(super) fn pane_untracked(&self) -> Pane {
+        self.0.pages.with_untracked(Pages::current)
+    }
+
     pub(super) fn show_files(&self) {
         self.0.pages.update(|pages| pages.open(Pane::Files));
         self.focus_content_after_mount();
@@ -367,7 +370,7 @@ impl Browser {
     }
 
     fn focus_page_after_mount(&self) {
-        if self.pane() == Pane::Files {
+        if self.pane_untracked() == Pane::Files {
             self.focus_content_after_mount();
         } else {
             let node = self.0.settings_node;
@@ -377,7 +380,7 @@ impl Browser {
     }
 
     pub(super) fn toggle_settings(&self) {
-        if self.pane() == Pane::Settings {
+        if self.pane_untracked() == Pane::Settings {
             self.back_page();
         } else {
             self.show_settings();
@@ -405,6 +408,10 @@ impl Browser {
 
     pub(super) fn read<R>(&self, read: impl FnOnce(&State) -> R) -> R {
         self.track();
+        read(&self.0.state.borrow())
+    }
+
+    pub(super) fn read_untracked<R>(&self, read: impl FnOnce(&State) -> R) -> R {
         read(&self.0.state.borrow())
     }
 
@@ -512,10 +519,6 @@ impl Browser {
         }
     }
 
-    pub(super) fn confirm(&self, title: String, message: String, accept: impl Fn() + 'static) {
-        self.confirm_labelled(title, message, i18n::text("dialog-confirm"), accept);
-    }
-
     pub(super) fn confirm_labelled(
         &self,
         title: String,
@@ -595,7 +598,7 @@ impl Browser {
         let previous = RefCell::new(self.0.preferences.snapshot());
         let browser = self.clone();
         let pref_fx = RenderEffect::new(move |_| {
-            let preferences = browser.0.preferences.snapshot();
+            let preferences = browser.0.preferences.state().get();
             let prior = previous.replace(preferences.clone());
             browser.apply_terminal_preferences(&preferences);
             if prior.files.preview != preferences.files.preview {

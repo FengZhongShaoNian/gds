@@ -29,7 +29,7 @@ impl Prepared {
             .then(|| {
                 preferences
                     .appearance
-                    .prepare(Gds::current().appearance().theme().mode())
+                    .prepare(Gds::current().appearance().theme().mode_untracked())
             })
             .transpose()?;
         let font = (preferences.font != previous.font)

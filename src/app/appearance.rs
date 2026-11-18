@@ -75,9 +75,21 @@ impl Appearance {
     /// Install and reactively update `"gds-appearance"` inside the current `zgui` window scope.
     ///
     /// Returns `true` when a window document host is active, or `false` in headless contexts.
+    /// Construct the combined `:root` Stylo CSS sheet without subscribing a reactive observer.
+    pub fn full_stylesheet_css_untracked(&self) -> String {
+        let policy = self.motion.policy.get_untracked();
+        self.typography.current.with_untracked(|typo| {
+            self.theme
+                .prepared
+                .with_untracked(|prepared| prepared.full_stylesheet_css(typo, policy))
+        })
+    }
+
     pub fn install_window_sheet(&self) -> bool {
-        let Some(sheet) = Stylesheet::install(theme::APPEARANCE_SHEET, &self.full_stylesheet_css())
-        else {
+        let Some(sheet) = Stylesheet::install(
+            theme::APPEARANCE_SHEET,
+            &self.full_stylesheet_css_untracked(),
+        ) else {
             return false;
         };
         let appearance = self.clone();
@@ -126,6 +138,10 @@ impl Theme {
 
     pub fn mode(&self) -> theme::Mode {
         self.prepared.with(theme::Prepared::mode)
+    }
+
+    pub fn mode_untracked(&self) -> theme::Mode {
+        self.prepared.with_untracked(theme::Prepared::mode)
     }
 
     pub fn colors(&self) -> theme::Colors {
@@ -238,8 +254,16 @@ impl Typography {
         self.current.with(|value| value.size)
     }
 
+    pub fn size_untracked(&self) -> f32 {
+        self.current.with_untracked(|value| value.size)
+    }
+
     pub fn scaled(&self, base: f32) -> f32 {
         base * self.size() / typography::DEFAULT_SIZE
+    }
+
+    pub fn scaled_untracked(&self, base: f32) -> f32 {
+        base * self.size_untracked() / typography::DEFAULT_SIZE
     }
 
     pub fn installed_families(&self) -> Vec<String> {

@@ -25,7 +25,7 @@ use zgui::geom::{DevicePx, Point};
 use zgui::prelude::*;
 use zgui::reactive::{RenderEffect, RwSignal, UnsyncCallback, on_cleanup_local};
 use zgui::view;
-use zgui::view::{ScrollBehavior, ScrollTarget, current_host, events};
+use zgui::view::{Scoped, ScrollBehavior, ScrollTarget, current_host, events};
 use zgui::vocab::{Key, Modifiers, NamedKey, Orientation, PointerButton, Role, SharedString};
 use zgui_ui::{InputProps, SpinnerProps};
 use zgui_ui_primitives::Binding;
@@ -281,7 +281,7 @@ impl Browser {
             let mut menu = MenuModel::new();
             for &(index, ref location) in &visits {
                 let target_location = location.clone();
-                let label = menu_browser.resolve_path(location).map_or_else(
+                let label = menu_browser.resolve_path_untracked(location).map_or_else(
                     || menu_browser.location_title(location),
                     |path| path.display().to_string(),
                 );
@@ -438,63 +438,66 @@ impl Browser {
     }
 
     fn breadcrumbs(&self, location: &Location, path: Option<&Path>) -> AnyView {
-        let scroller = NodeRef::new();
-        let size_obs = scroller.observe_border_size();
-        let scroll_fx = RenderEffect::new(move |_| {
-            let _ = size_obs.get();
-            scroller.scroll_to(
-                ScrollTarget::Offset(Point::new(DevicePx(f32::MAX), DevicePx(0.0))),
-                ScrollBehavior::Instant,
-            );
-        });
-        on_cleanup_local(move || drop(scroll_fx));
-
+        let browser = self.clone();
         let segments = Breadcrumb::for_location(location, path);
-        let crumbs = segments
-            .into_iter()
-            .map(|crumb| {
-                let open_click = self.clone();
-                let target_loc = crumb.location.clone();
-                let label = crumb.label;
-                let a11y_label = label.clone();
-                view! {
-                    box(
-                        class = "gds-files-crumb",
-                        attr:data-current = crumb.current.then(|| "true".to_owned()),
-                        tabindex = Focus::Sequential,
-                        a11y:role = Role::Button,
-                        a11y:label = a11y_label,
-                        on:click = move |ev: &mut EventCx<'_, events::Click>| {
-                            ev.stop_propagation();
-                            open_click.open(target_loc.clone());
-                            open_click.focus_content_after_mount();
+        AnyView::new(Scoped::new(move || {
+            let scroller = NodeRef::new();
+            let size_obs = scroller.observe_border_size();
+            let scroll_fx = RenderEffect::new(move |_| {
+                let _ = size_obs.get();
+                scroller.scroll_to(
+                    ScrollTarget::Offset(Point::new(DevicePx(f32::MAX), DevicePx(0.0))),
+                    ScrollBehavior::Instant,
+                );
+            });
+            on_cleanup_local(move || drop(scroll_fx));
+
+            let crumbs = segments
+                .into_iter()
+                .map(|crumb| {
+                    let open_click = browser.clone();
+                    let target_loc = crumb.location.clone();
+                    let label = crumb.label;
+                    let a11y_label = label.clone();
+                    view! {
+                        box(
+                            class = "gds-files-crumb",
+                            attr:data-current = crumb.current.then(|| "true".to_owned()),
+                            tabindex = Focus::Sequential,
+                            a11y:role = Role::Button,
+                            a11y:label = a11y_label,
+                            on:click = move |ev: &mut EventCx<'_, events::Click>| {
+                                ev.stop_propagation();
+                                open_click.open(target_loc.clone());
+                                open_click.focus_content_after_mount();
+                            }
+                        ) {
+                            text(class = "gds-files-crumb-text") {{label}}
                         }
-                    ) {
-                        text(class = "gds-files-crumb-text") {{label}}
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            let handle = request_frame(move |_| {
+                scroller.scroll_to(
+                    ScrollTarget::Offset(Point::new(DevicePx(f32::MAX), DevicePx(0.0))),
+                    ScrollBehavior::Instant,
+                );
+            });
+            on_cleanup_local(move || drop(handle));
+
+            view! {
+                scroll(node_ref = scroller, class = "gds-files-breadcrumbs") {
+                    row(class = "gds-files-breadcrumbs-track") {
+                        {crumbs}
                     }
                 }
-            })
-            .collect::<Vec<_>>();
-
-        let handle = request_frame(move |_| {
-            scroller.scroll_to(
-                ScrollTarget::Offset(Point::new(DevicePx(f32::MAX), DevicePx(0.0))),
-                ScrollBehavior::Instant,
-            );
-        });
-        on_cleanup_local(move || drop(handle));
-
-        AnyView::new(view! {
-            scroll(node_ref = scroller, class = "gds-files-breadcrumbs") {
-                row(class = "gds-files-breadcrumbs-track") {
-                    {crumbs}
-                }
             }
-        })
+        }))
     }
 
     pub(super) fn start_address_edit(&self) {
-        let value = self.read(|state| {
+        let value = self.read_untracked(|state| {
             let navigation = &state.tab().navigation;
             if let Some(pending) = navigation.pending_location() {
                 Self::location_address(pending, navigation.pending_path())
@@ -547,7 +550,7 @@ impl Browser {
             UnsyncCallback::new({
                 let browser = self.clone();
                 move |()| {
-                    if !browser.filter_available() {
+                    if !browser.filter_available_untracked() {
                         return;
                     }
                     filter_node.focus();
@@ -613,7 +616,24 @@ impl Browser {
             })
     }
 
-    pub(super) fn sidebar(&self, _presentation: SidebarPresentation) -> AnyView {
+    pub(super) fn filter_available_untracked(&self) -> bool {
+        self.pane_untracked() == Pane::Files
+            && self.read_untracked(|state| match state.tab().navigation.location() {
+                Location::Recent | Location::Favorites | Location::Tags(_) => {
+                    !self.compact_untracked()
+                }
+                Location::Remote(_) => self.compact_untracked(),
+                Location::Directory(_) | Location::Volume { .. } => true,
+                Location::Network | Location::Volumes | Location::Trash => false,
+            })
+    }
+
+    pub(super) fn sidebar(&self, presentation: SidebarPresentation) -> AnyView {
+        let browser = self.clone();
+        AnyView::new(Scoped::new(move || browser.sidebar_scoped(presentation)))
+    }
+
+    fn sidebar_scoped(&self, _presentation: SidebarPresentation) -> AnyView {
         let collapsed = Signal::derive_local({
             let browser = self.clone();
             move || !browser.sidebar_expanded()
@@ -623,7 +643,7 @@ impl Browser {
         let sections = local_memo({
             let browser = self.clone();
             move || {
-                let preferences = browser.0.preferences.snapshot();
+                let preferences = browser.0.preferences.state().get();
                 (
                     preferences.files.sidebar.show_volumes
                         || browser.0.sidebar_reveal_volumes.get(),
@@ -684,10 +704,8 @@ impl Browser {
                 let volumes_collapsed = browser
                     .0
                     .preferences
-                    .snapshot()
-                    .files
-                    .sidebar
-                    .volumes_collapsed
+                    .state()
+                    .with(|p| p.files.sidebar.volumes_collapsed)
                     && browser.0.sidebar_region.get() != Some(SidebarRegion::Volumes);
                 if !show_volumes || volumes_collapsed {
                     return None;
@@ -810,10 +828,8 @@ impl Browser {
                         let volumes_collapsed = volumes_toggle
                             .0
                             .preferences
-                            .snapshot()
-                            .files
-                            .sidebar
-                            .volumes_collapsed
+                            .state()
+                            .with(|p| p.files.sidebar.volumes_collapsed)
                             && volumes_toggle.0.sidebar_region.get() != Some(SidebarRegion::Volumes);
                         show_volumes && !volumes_collapsed && !collapsed.get()
                     }) {
@@ -914,7 +930,9 @@ impl Browser {
                             let vol_collapsed = Signal::derive_local({
                                 let b = volumes_browser.clone();
                                 move || {
-                                    b.0.preferences.snapshot().files.sidebar.volumes_collapsed
+                                    b.0.preferences
+                                        .state()
+                                        .with(|p| p.files.sidebar.volumes_collapsed)
                                         && b.0.sidebar_region.get() != Some(SidebarRegion::Volumes)
                                 }
                             });
@@ -1012,7 +1030,9 @@ impl Browser {
                         let loc_collapsed = Signal::derive_local({
                             let b = locs_browser.clone();
                             move || {
-                                b.0.preferences.snapshot().files.sidebar.locations_collapsed
+                                b.0.preferences
+                                    .state()
+                                    .with(|p| p.files.sidebar.locations_collapsed)
                                     && b.0.sidebar_region.get() != Some(SidebarRegion::Locations)
                             }
                         });

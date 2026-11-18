@@ -5,10 +5,12 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import tempfile
 import time
+import zlib
 
 CHECKPOINTS = [
     "01-open",
@@ -31,6 +33,98 @@ def wait_for(predicate, timeout_secs: float, message: str) -> None:
             return
         time.sleep(0.05)
     raise SystemExit(message)
+
+
+def png_center_rows(path: Path) -> list[bytes]:
+    raw = path.read_bytes()
+    pos = 8
+    width = 0
+    height = 0
+    color_type = 6
+    idat = bytearray()
+    while pos + 8 <= len(raw):
+        length = struct.unpack(">I", raw[pos : pos + 4])[0]
+        kind = raw[pos + 4 : pos + 8]
+        chunk = raw[pos + 8 : pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height, _bit_depth, color_type = struct.unpack(">IIBB", chunk[:10])
+        elif kind == b"IDAT":
+            idat.extend(chunk)
+        elif kind == b"IEND":
+            break
+    bpp = {2: 3, 6: 4}.get(color_type)
+    if width == 0 or height == 0 or not idat or bpp is None:
+        raise SystemExit(f"Unsupported Weston PNG format in {path}: {width}x{height} color_type={color_type}")
+    decompressed = zlib.decompress(bytes(idat))
+    row_bytes = width * bpp
+    stride = row_bytes + 1
+    if len(decompressed) < height * stride:
+        raise SystemExit(f"Truncated PNG scanlines in {path}")
+    y0 = height // 4
+    y1 = (height * 3) // 4
+    x0 = (width // 4) * bpp
+    x1 = ((width * 3) // 4) * bpp
+    prev = bytearray(row_bytes)
+    rows: list[bytes] = []
+    for y in range(y1):
+        base = y * stride
+        ftype = decompressed[base]
+        scan = decompressed[base + 1 : base + 1 + row_bytes]
+        cur = bytearray(row_bytes)
+        if ftype == 0:
+            cur[:] = scan
+        elif ftype == 1:
+            for i in range(row_bytes):
+                left = cur[i - bpp] if i >= bpp else 0
+                cur[i] = (scan[i] + left) & 0xFF
+        elif ftype == 2:
+            for i in range(row_bytes):
+                cur[i] = (scan[i] + prev[i]) & 0xFF
+        elif ftype == 3:
+            for i in range(row_bytes):
+                left = cur[i - bpp] if i >= bpp else 0
+                cur[i] = (scan[i] + ((left + prev[i]) >> 1)) & 0xFF
+        elif ftype == 4:
+            for i in range(row_bytes):
+                a = cur[i - bpp] if i >= bpp else 0
+                b = prev[i]
+                c = prev[i - bpp] if i >= bpp else 0
+                p = a + b - c
+                pa = abs(p - a)
+                pb = abs(p - b)
+                pc = abs(p - c)
+                pr = a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+                cur[i] = (scan[i] + pr) & 0xFF
+        else:
+            cur[:] = scan
+        prev = cur
+        if y >= y0:
+            rows.append(bytes(cur[x0:x1]))
+    return rows
+
+
+def capture_weston_png(screenshooter: Path, artifacts: Path, env: dict[str, str]) -> Path:
+    before = set(artifacts.glob("wayland-screenshot*.png"))
+    shot_res = subprocess.run(
+        [str(screenshooter)],
+        cwd=artifacts,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    if shot_res.returncode != 0:
+        raise SystemExit(f"weston-screenshooter failed ({shot_res.returncode}): {shot_res.stderr}")
+    after = set(artifacts.glob("wayland-screenshot*.png")) - before
+    if not after:
+        after = set(artifacts.glob("*.png")) - {artifacts / f"{name}.png" for name in CHECKPOINTS}
+    if not after:
+        raise SystemExit(f"weston-screenshooter produced no PNG in {artifacts}")
+    newest = max(after, key=lambda p: p.stat().st_mtime)
+    if newest.stat().st_size == 0:
+        raise SystemExit(f"Captured Wayland PNG is empty: {newest}")
+    return newest
 
 
 def build_base_env(
@@ -147,6 +241,23 @@ def run_wayland_smoke(
             app_env = base_env.copy()
             app_env["WAYLAND_DISPLAY"] = socket_name
             app_env["GDS_E2E_MODE"] = "wayland"
+            app_env["RUST_LOG"] = "gds_files=info,zgui_render_wgpu::renderer::builder=info,warn"
+
+            baseline_rows: list[bytes] = []
+            prev_rows: list[bytes] = []
+            desktop_deadline = time.monotonic() + 8.0
+            while time.monotonic() < desktop_deadline:
+                shot = capture_weston_png(screenshooter, artifacts, app_env)
+                rows = png_center_rows(shot)
+                shot.unlink(missing_ok=True)
+                non_empty = any(any(row) for row in rows)
+                if non_empty and rows == prev_rows:
+                    baseline_rows = rows
+                    break
+                prev_rows = rows
+                time.sleep(0.2)
+            if not baseline_rows:
+                baseline_rows = prev_rows
 
             with app_log_path.open("w", encoding="utf-8") as app_log:
                 app_proc = subprocess.Popen(
@@ -157,13 +268,18 @@ def run_wayland_smoke(
                     start_new_session=True,
                 )
                 try:
+                    def wayland_ready() -> bool:
+                        if app_proc.poll() is not None:
+                            return True
+                        log_text = app_log_path.read_text(encoding="utf-8", errors="replace")
+                        return "Files ready" in log_text and (
+                            "graphics device opened" in log_text
+                            or "no graphics card on this machine" in log_text
+                        )
+
                     wait_for(
-                        lambda: (
-                            app_proc.poll() is not None
-                            or "Files ready"
-                            in app_log_path.read_text(encoding="utf-8", errors="replace")
-                        ),
-                        20.0,
+                        wayland_ready,
+                        25.0,
                         f"Native Wayland Files session did not become ready; inspect {app_log_path}",
                     )
                     if app_proc.poll() is not None:
@@ -171,34 +287,27 @@ def run_wayland_smoke(
                             f"Native Wayland app exited early ({app_proc.returncode}); inspect {app_log_path}"
                         )
 
-                    time.sleep(0.3)
-
-                    shot_env = app_env.copy()
-                    before = set(artifacts.glob("wayland-screenshot*.png"))
-                    shot_res = subprocess.run(
-                        [str(screenshooter)],
-                        cwd=artifacts,
-                        env=shot_env,
-                        capture_output=True,
-                        text=True,
-                        timeout=15,
-                    )
-                    if shot_res.returncode != 0:
-                        raise SystemExit(
-                            f"weston-screenshooter failed ({shot_res.returncode}): {shot_res.stderr}"
-                        )
-                    after = set(artifacts.glob("wayland-screenshot*.png")) - before
-                    if not after:
-                        after = set(artifacts.glob("*.png")) - {
-                            artifacts / f"{name}.png" for name in CHECKPOINTS
-                        }
-                    if not after:
-                        raise SystemExit(f"weston-screenshooter produced no PNG in {artifacts}")
-                    newest = max(after, key=lambda p: p.stat().st_mtime)
                     wayland_png = artifacts / "wayland-window.png"
-                    shutil.copy2(newest, wayland_png)
-                    if wayland_png.stat().st_size == 0:
-                        raise SystemExit(f"Captured Wayland PNG is empty: {wayland_png}")
+                    window_painted = False
+                    deadline = time.monotonic() + 20.0
+                    while time.monotonic() < deadline:
+                        if app_proc.poll() is not None:
+                            raise SystemExit(
+                                f"Native Wayland app exited early ({app_proc.returncode}); inspect {app_log_path}"
+                            )
+                        shot = capture_weston_png(screenshooter, artifacts, app_env)
+                        current_rows = png_center_rows(shot)
+                        diff_rows = sum(a != b for a, b in zip(baseline_rows, current_rows))
+                        if diff_rows >= 100:
+                            shutil.move(str(shot), str(wayland_png))
+                            window_painted = True
+                            break
+                        shot.unlink(missing_ok=True)
+                        time.sleep(0.4)
+                    if not window_painted:
+                        raise SystemExit(
+                            f"Native Wayland window did not paint onto Weston within 20s; inspect {app_log_path}"
+                        )
                 finally:
                     if app_proc.poll() is None:
                         app_proc.send_signal(signal.SIGTERM)
@@ -243,17 +352,6 @@ def main() -> None:
     (home / ".local/share").mkdir(parents=True)
     (home / ".local/state").mkdir(parents=True)
     (home / ".cache").mkdir()
-    runtime = artifacts / "runtime"
-    runtime.mkdir(mode=0o700)
-
-    (artifacts / "dbus.conf").write_text(
-        f'''<busconfig>
-  <type>session</type><listen>unix:tmpdir={runtime}</listen>
-  <policy context="default"><allow send_destination="*"/><allow receive_sender="*"/><allow own="*"/></policy>
-</busconfig>
-''',
-        encoding="utf-8",
-    )
     (work / "original.txt").write_bytes(b"original payload\n")
     (home / ".config/gds/app/files/settings.toml").write_text(
         'language = "en-US"\nanimations_enabled = false\n[appearance]\nsource = "builtin"\nmode = "dark"\n',
@@ -306,10 +404,23 @@ def main() -> None:
     )
 
     print(f"Files E2E artifacts: {artifacts}", flush=True)
-    base_env = build_base_env(home, runtime, artifacts, weston)
+    # Unix domain sockets used by D-Bus and Weston are limited by UNIX_PATH_MAX (108 bytes),
+    # which long worktree artifact paths exceed, so host XDG_RUNTIME_DIR in a short temp dir.
+    with tempfile.TemporaryDirectory(prefix="gds-e2e-") as runtime_dir:
+        runtime = Path(runtime_dir)
+        runtime.chmod(0o700)
+        (artifacts / "dbus.conf").write_text(
+            f'''<busconfig>
+  <type>session</type><listen>unix:tmpdir={runtime}</listen>
+  <policy context="default"><allow send_destination="*"/><allow receive_sender="*"/><allow own="*"/></policy>
+</busconfig>
+''',
+            encoding="utf-8",
+        )
+        base_env = build_base_env(home, runtime, artifacts, weston)
 
-    driven_passed = run_driven(binary, work, artifacts, base_env)
-    wayland_png = run_wayland_smoke(binary, weston, work, runtime, artifacts, base_env)
+        driven_passed = run_driven(binary, work, artifacts, base_env)
+        wayland_png = run_wayland_smoke(binary, weston, work, runtime, artifacts, base_env)
 
     summary = (
         driven_passed.read_text(encoding="utf-8", errors="replace").rstrip()

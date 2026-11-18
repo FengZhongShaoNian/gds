@@ -59,7 +59,6 @@ pub(crate) struct Summary {
     pub undo: Vec<history::Step>,
     pub committed: Vec<PathBuf>,
     pub failures: Vec<String>,
-    #[allow(dead_code)]
     pub clipboard_error: Option<String>,
 }
 

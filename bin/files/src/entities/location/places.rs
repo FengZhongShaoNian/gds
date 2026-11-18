@@ -145,19 +145,6 @@ impl Save {
 }
 
 impl Places {
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn for_tests(pinned: Vec<Location>, recent: Vec<Location>) -> Self {
-        Self {
-            snapshot: Snapshot {
-                pinned,
-                recent,
-                ..Snapshot::default()
-            },
-            ..Self::default()
-        }
-    }
-
     /// Keep accepted edits alive until the closing window has drained them.
     pub(crate) fn drain_on_close(
         &self,
@@ -186,11 +173,6 @@ impl Places {
         })
     }
 
-    pub(crate) fn reload(&self) -> Option<impl Future<Output = Result<Snapshot, Error>> + use<>> {
-        let store = self.store.clone()?;
-        Some(async move { store.read().await })
-    }
-
     fn change(&mut self, change: Change) {
         change.apply(&mut self.snapshot);
         self.pending.lock().expect("place edits lock").push(change);
@@ -199,7 +181,6 @@ impl Places {
     pub(crate) fn record(&mut self, location: impl Into<Location>) {
         self.change(Change::Recent(location.into()));
     }
-    #[allow(dead_code)]
     pub(crate) fn toggle_remote_favorite(&mut self, address: gds::service::remote::Address) {
         self.toggle_favorite(Location::Remote(address));
     }
@@ -220,16 +201,6 @@ impl Places {
     }
     pub(crate) fn set_favorite(&mut self, location: Location, present: bool) {
         self.change(Change::Favorite { location, present });
-    }
-    pub(crate) fn reorder_pinned(&mut self, locations: Vec<Location>) {
-        self.change(Change::PinOrder(locations));
-    }
-
-    pub(crate) fn set_pinned(&mut self, location: &Location, present: bool) {
-        self.change(Change::Pin {
-            location: location.clone(),
-            present,
-        });
     }
     pub(crate) fn set_columns(&mut self, location: impl Into<Location>, layout: Layout) {
         self.change(Change::Columns {
@@ -284,15 +255,6 @@ impl Places {
             change.apply(&mut snapshot);
         }
         self.snapshot = snapshot;
-    }
-
-    pub(crate) fn refresh_favorites(&mut self, fresh: Snapshot) {
-        self.snapshot.favorites = fresh.favorites;
-        for change in self.pending.lock().expect("place edits lock").iter() {
-            if matches!(change, Change::Favorite { .. }) {
-                change.apply(&mut self.snapshot);
-            }
-        }
     }
 }
 

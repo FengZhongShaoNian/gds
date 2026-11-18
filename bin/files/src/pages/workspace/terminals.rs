@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Multi-tab embedded terminal dock synced with active folder tabs.
 
 use std::{
@@ -340,10 +339,13 @@ impl Browser {
     }
 
     fn default_terminal_cwd(&self) -> Option<PathBuf> {
-        self.active_local_directory().or_else(|| {
-            let home = self.0.state.borrow().home.clone();
-            home.is_dir().then_some(home)
-        })
+        let location = self.0.state.borrow().tab().navigation.location().clone();
+        self.resolve_path_untracked(&location)
+            .filter(|path| path.is_dir())
+            .or_else(|| {
+                let home = self.0.state.borrow().home.clone();
+                home.is_dir().then_some(home)
+            })
     }
 
     fn close_terminal_session(&self, id: u64) {
@@ -478,7 +480,7 @@ impl Browser {
 
     pub(super) fn new_terminal(&self) {
         let Some(cwd) = self.default_terminal_cwd() else {
-            self.report_notice(i18n::text("files-terminal-cwd-unavailable"));
+            self.report_notice(i18n::text_untracked("files-terminal-cwd-unavailable"));
             return;
         };
         self.new_terminal_at(cwd);
@@ -489,7 +491,7 @@ impl Browser {
             return;
         }
         if !path.is_dir() {
-            self.report_notice(i18n::text("files-terminal-cwd-unavailable"));
+            self.report_notice(i18n::text_untracked("files-terminal-cwd-unavailable"));
             return;
         }
         self.0.terminal.set(true);
@@ -568,7 +570,7 @@ impl Browser {
                 let active_id = browser.0.terminals.active.get();
                 let _rev = browser.0.terminals.inner.revision.get();
 
-                if !open || !browser.0.preferences.snapshot().terminal_enabled() {
+                if !open || !browser.0.preferences.state().with(|p| p.terminal_enabled()) {
                     return;
                 }
                 let Some(target_dir) = browser.active_local_directory() else {
@@ -705,14 +707,18 @@ impl Browser {
             box(
                 class = "gds-files-terminal-dock",
                 style:display = move || {
-                    if open_sig.get() && b_disp.0.preferences.snapshot().terminal_enabled() {
+                    if open_sig.get()
+                        && b_disp.0.preferences.state().with(|p| p.terminal_enabled())
+                    {
                         Some("flex".to_owned())
                     } else {
                         Some("none".to_owned())
                     }
                 },
                 style:height = move || {
-                    if open_sig.get() && b_height.0.preferences.snapshot().terminal_enabled() {
+                    if open_sig.get()
+                        && b_height.0.preferences.state().with(|p| p.terminal_enabled())
+                    {
                         Some(format!("{:.1}px", dock_for_height.effective_height()))
                     } else {
                         Some("0px".to_owned())
@@ -773,7 +779,18 @@ impl Browser {
                                     label = i18n::text("files-terminal-switch-directory"),
                                     disabled = cwd_disabled,
                                     on:click = move |_| {
-                                        if let Some(dir) = b_cwd.active_local_directory() {
+                                        let location = b_cwd
+                                            .0
+                                            .state
+                                            .borrow()
+                                            .tab()
+                                            .navigation
+                                            .location()
+                                            .clone();
+                                        if let Some(dir) = b_cwd
+                                            .resolve_path_untracked(&location)
+                                            .filter(|path| path.is_dir())
+                                        {
                                             b_cwd.new_terminal_at(dir);
                                         }
                                     },

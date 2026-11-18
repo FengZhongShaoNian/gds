@@ -11,7 +11,6 @@ pub(super) struct Cache {
     cut_paths: HashSet<PathBuf>,
     generation: u64,
     refreshing: bool,
-    cancelling: bool,
     local_fallback: bool,
     local_uris: Option<Vec<String>>,
     fallback_revision: Option<u64>,
@@ -28,12 +27,6 @@ impl Cache {
 
     pub(super) fn is_cut(&self, path: &Path) -> bool {
         self.cut_paths.contains(path)
-    }
-
-    pub(super) fn has_cut(&self) -> bool {
-        self.snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.mode == Mode::Cut)
     }
 
     pub(super) fn is_local_fallback(&self) -> bool {
@@ -95,7 +88,6 @@ impl Cache {
         self.fallback_revision = None;
         self.generation = self.generation.wrapping_add(1);
         self.refreshing = false;
-        self.cancelling = false;
         self.cut_paths = snapshot
             .as_ref()
             .filter(|snapshot| snapshot.mode == Mode::Cut)
@@ -129,7 +121,7 @@ impl Cache {
     }
 
     pub(super) fn begin_refresh(&mut self) -> Option<u64> {
-        if self.refreshing || self.cancelling {
+        if self.refreshing {
             return None;
         }
         self.refreshing = true;
@@ -166,27 +158,5 @@ impl Cache {
         self.replace(current);
         self.remote_copy = remote_copy;
         true
-    }
-
-    pub(super) fn begin_cancel(&mut self) -> Option<Arc<Snapshot>> {
-        if !self.has_cut() || self.cancelling {
-            return None;
-        }
-        let snapshot = self.current().filter(|snapshot| snapshot.can_cancel())?;
-        self.generation = self.generation.wrapping_add(1);
-        self.refreshing = false;
-        self.cancelling = true;
-        Some(snapshot)
-    }
-
-    pub(super) fn finish_cancel(&mut self, expected: &Snapshot, success: bool) {
-        if self.snapshot.as_deref() != Some(expected) || !self.cancelling {
-            return;
-        }
-        if success {
-            self.clear();
-        } else {
-            self.cancelling = false;
-        }
     }
 }

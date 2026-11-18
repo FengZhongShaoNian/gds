@@ -157,7 +157,7 @@ impl Connector {
         completed: impl Fn(Result<Address, String>) + 'static,
     ) {
         if !matches!(self.0.dialog.get_untracked(), DialogState::Closed) {
-            completed(Err(i18n::text("remote-task-running")));
+            completed(Err(i18n::text_untracked("remote-task-running")));
             return;
         }
         self.0.owner.with(|| {
@@ -192,7 +192,7 @@ impl Connector {
                 attempt
             }
         };
-        (attempt.completed)(Err(i18n::text("remote-cancelled")));
+        (attempt.completed)(Err(i18n::text_untracked("remote-cancelled")));
     }
 
     fn submit(&self) {
@@ -204,14 +204,14 @@ impl Connector {
             Err(error) => self.0.dialog.set(DialogState::Form {
                 form,
                 attempt,
-                error: Some(i18n::text(error.label())),
+                error: Some(i18n::text_untracked(error.label())),
             }),
         }
     }
 
     fn begin(&self, request: Request, attempt: Attempt) {
         let Some(dirs) = directories::BaseDirs::new() else {
-            (attempt.completed)(Err(i18n::text("remote-state-unavailable")));
+            (attempt.completed)(Err(i18n::text_untracked("remote-state-unavailable")));
             self.0.dialog.set(DialogState::Closed);
             return;
         };

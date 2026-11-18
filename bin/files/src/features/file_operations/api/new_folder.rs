@@ -4,7 +4,6 @@ use super::names;
 use std::{ffi::OsString, fs, io, path::PathBuf};
 
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub(crate) enum Error {
     #[error("operation cancelled")]
     Cancelled,
@@ -66,7 +65,6 @@ impl Request {
 }
 
 impl Request {
-    #[allow(dead_code)]
     pub fn spawn(
         self,
         tasks: &gds::service::task_manager::Scope,

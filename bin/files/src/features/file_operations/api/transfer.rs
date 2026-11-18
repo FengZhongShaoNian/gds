@@ -191,15 +191,6 @@ impl Batch {
         Ok(batch)
     }
 
-    #[allow(dead_code)]
-    pub fn paths(&self) -> &[PathBuf] {
-        &self.request.paths
-    }
-    #[allow(dead_code)]
-    pub fn destination(&self) -> &Path {
-        &self.request.destination
-    }
-
     /// Run on a background executor. Each item retains its own outcome and original paths.
     pub fn execute_cancellable(mut self, cancel: tokio_util::sync::CancellationToken) -> Report {
         self.cancel = cancel;
@@ -289,25 +280,6 @@ pub struct Item {
 pub struct Report {
     pub mode: Mode,
     pub items: Vec<Item>,
-}
-
-impl Report {
-    #[allow(dead_code)]
-    pub fn succeeded_sources(&self) -> Vec<PathBuf> {
-        self.items
-            .iter()
-            .filter(|item| item.result.is_ok())
-            .map(|item| item.source.clone())
-            .collect()
-    }
-    #[allow(dead_code)]
-    pub fn committed_destinations(&self) -> Vec<PathBuf> {
-        self.items
-            .iter()
-            .filter(|item| item.destination_committed)
-            .map(|item| item.destination.clone())
-            .collect()
-    }
 }
 
 #[cfg(target_os = "linux")]

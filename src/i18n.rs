@@ -193,6 +193,11 @@ pub fn text(id: &str) -> String {
 }
 
 #[cfg(feature = "app")]
+pub fn text_untracked(id: &str) -> String {
+    crate::app::Gds::current().i18n().text_untracked(id)
+}
+
+#[cfg(feature = "app")]
 #[doc(hidden)]
 pub fn deferred(
     callback: impl FnOnce(&crate::app::Gds) -> String,
@@ -206,8 +211,20 @@ pub fn format(id: &str, arguments: Option<&FluentArgs<'_>>) -> String {
 }
 
 #[cfg(feature = "app")]
+pub fn format_untracked(id: &str, arguments: Option<&FluentArgs<'_>>) -> String {
+    crate::app::Gds::current()
+        .i18n()
+        .format_untracked(id, arguments)
+}
+
+#[cfg(feature = "app")]
 pub fn count(id: &str, count: usize) -> String {
     crate::app::Gds::current().i18n().count(id, count)
+}
+
+#[cfg(feature = "app")]
+pub fn count_untracked(id: &str, count: usize) -> String {
+    crate::app::Gds::current().i18n().count_untracked(id, count)
 }
 
 #[cfg(test)]

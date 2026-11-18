@@ -79,7 +79,7 @@ const PICKER_CSS: &str = css!(
 
 impl Browser {
     pub(super) fn initialize_picker(&self) {
-        let initial = self.read(|state| {
+        let initial = self.read_untracked(|state| {
             state
                 .picker
                 .as_ref()
@@ -92,7 +92,7 @@ impl Browser {
     }
 
     pub(super) fn picker_footer(&self) -> AnyView {
-        if self.read(|state| state.picker.is_none()) {
+        if self.read_untracked(|state| state.picker.is_none()) {
             return AnyView::new(view! { box() });
         }
         if zgui::view::current_host().is_some() {
@@ -100,20 +100,20 @@ impl Browser {
         }
 
         let revision = self.0.revision;
-        let is_save = self.read(|state| {
+        let is_save = self.read_untracked(|state| {
             state
                 .picker
                 .as_ref()
                 .is_some_and(|picker| picker.options.is_save())
         });
-        let show_read_only = self.read(|state| {
+        let show_read_only = self.read_untracked(|state| {
             state.picker.as_ref().is_some_and(|picker| {
                 !picker.options.directory
                     && !picker.options.is_save()
                     && self.0.picker_result.is_none()
             })
         });
-        let filters: Vec<(String, String)> = self.read(|state| {
+        let filters: Vec<(String, String)> = self.read_untracked(|state| {
             state
                 .picker
                 .as_ref()
@@ -134,14 +134,14 @@ impl Browser {
                 .unwrap_or_default()
         });
         let show_filters = filters.len() > 1
-            || self.read(|state| {
+            || self.read_untracked(|state| {
                 state
                     .picker
                     .as_ref()
                     .is_some_and(|picker| !picker.options.directory && !picker.filters().is_empty())
             });
 
-        let choices_data = self.read(|state| {
+        let choices_data = self.read_untracked(|state| {
             state
                 .picker
                 .as_ref()
@@ -149,7 +149,7 @@ impl Browser {
                 .unwrap_or_default()
         });
 
-        let confirm_label = self.read(|state| {
+        let confirm_label = self.read_untracked(|state| {
             let Some(picker) = state.picker.as_ref() else {
                 return i18n::text("picker-confirm");
             };
@@ -457,7 +457,7 @@ impl Browser {
     }
 
     pub(super) fn activate_picker_path(&self, path: PathBuf) {
-        let already_busy = self.read(|state| {
+        let already_busy = self.read_untracked(|state| {
             state
                 .picker
                 .as_ref()
@@ -476,7 +476,7 @@ impl Browser {
                     browser.open(location);
                 }
                 Ok(Ok(ActivatedPath::File)) => {
-                    let is_save = browser.read(|state| {
+                    let is_save = browser.read_untracked(|state| {
                         state
                             .picker
                             .as_ref()
@@ -549,7 +549,7 @@ impl Browser {
                 };
                 if !Options::valid_name(&file_name) {
                     drop(state);
-                    self.report_notice(i18n::text("rename-error-invalid"));
+                    self.report_notice(i18n::text_untracked("rename-error-invalid"));
                     return;
                 }
                 let target = dir.join(file_name);
@@ -763,7 +763,7 @@ impl Browser {
     }
 
     pub(super) fn picker_key(&self, event: &zgui::vocab::KeyEvent) -> bool {
-        if self.read(|state| state.picker.is_none()) {
+        if self.read_untracked(|state| state.picker.is_none()) {
             return false;
         }
         match event.key {

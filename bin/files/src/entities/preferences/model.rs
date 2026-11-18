@@ -218,10 +218,6 @@ impl WatchingPreferences {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }
-
-    pub fn debounce(&self) -> std::time::Duration {
-        std::time::Duration::from_millis(self.debounce_ms)
-    }
 }
 
 /// Configurable I/O buffer sizes for local and remote file transfers.

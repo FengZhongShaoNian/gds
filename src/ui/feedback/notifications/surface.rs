@@ -165,7 +165,7 @@ pub(super) fn render_notification(queue: NotificationQueue, entry: Notification)
                 view! {
                     column(
                         class = "gds-notification-details",
-                        style:max_height = max_content_px.clone(),
+                        style:max-height = max_content_px.clone(),
                     ) {
                         for entry_line in move || {
                             let limit = if queue.is_expanded(id) {

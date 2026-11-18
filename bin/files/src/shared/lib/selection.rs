@@ -190,10 +190,6 @@ impl<T> Selection<T> {
         }
     }
 
-    #[expect(
-        dead_code,
-        reason = "Selection exposes explicit materialization when a consumer needs owned items"
-    )]
     pub(crate) fn to_vec(&self) -> Vec<T>
     where
         T: Clone,

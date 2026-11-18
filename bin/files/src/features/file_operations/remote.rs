@@ -2,7 +2,6 @@
 mod resource;
 mod transfer;
 pub(crate) use resource::Resource;
-#[allow(unused_imports)]
 pub(crate) use transfer::{CopyOptions, Progress, copy, delete};
 
 #[derive(Debug, thiserror::Error)]

@@ -176,13 +176,13 @@ impl From<Command> for Shortcut {
 }
 
 /// Ordered sequence of one or more [`Shortcut`] strokes representing a key chord.
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct KeyChord {
     pub strokes: Vec<Shortcut>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 impl KeyChord {
     /// Creates a chord from one or more strokes, returning `None` if `strokes` is empty.
     #[must_use]
@@ -212,15 +212,6 @@ impl KeyChord {
         Self::new(strokes)
     }
 
-    /// Returns flattened keycap tokens across every stroke in this chord.
-    #[must_use]
-    pub fn display_tokens(&self) -> Vec<String> {
-        self.strokes
-            .iter()
-            .flat_map(Shortcut::display_tokens)
-            .collect()
-    }
-
     /// Formats this chord as space-separated shortcut labels.
     #[must_use]
     pub fn label(&self) -> String {
@@ -238,12 +229,14 @@ impl KeyChord {
     }
 }
 
+#[cfg(test)]
 impl From<Shortcut> for KeyChord {
     fn from(stroke: Shortcut) -> Self {
         Self::single(stroke)
     }
 }
 
+#[cfg(test)]
 impl From<Command> for KeyChord {
     fn from(command: Command) -> Self {
         Self::single(Shortcut::command(command))

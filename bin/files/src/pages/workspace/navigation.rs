@@ -36,8 +36,6 @@ use crate::{
 
 pub(super) enum Loaded {
     Unavailable(String),
-    #[allow(dead_code)]
-    Directory(Option<Arc<directory::DirectorySnapshot>>),
     Places(Vec<Location>),
     Network(Vec<PathBuf>),
     Trash(Vec<recycle::Entry>),
@@ -51,10 +49,24 @@ pub(super) enum Loaded {
 
 impl Browser {
     pub(super) fn resolve_path(&self, location: &Location) -> Option<PathBuf> {
+        self.resolve_path_with(location, |identity| self.volume_at_location(identity))
+    }
+
+    pub(super) fn resolve_path_untracked(&self, location: &Location) -> Option<PathBuf> {
+        self.resolve_path_with(location, |identity| {
+            self.volume_at_location_untracked(identity)
+        })
+    }
+
+    fn resolve_path_with(
+        &self,
+        location: &Location,
+        find_volume: impl FnOnce(&VolumeIdentity) -> Option<volumes::Volume>,
+    ) -> Option<PathBuf> {
         match location {
             Location::Directory(path) => Some(path.into()),
             Location::Volume { identity, relative } => {
-                let volume = self.volume_at_location(identity)?;
+                let volume = find_volume(identity)?;
                 let preferred = volume.id.stable.as_ref().and_then(|id| {
                     self.0
                         .preferences
@@ -85,7 +97,20 @@ impl Browser {
     }
 
     pub(super) fn volume_at_location(&self, identity: &VolumeIdentity) -> Option<volumes::Volume> {
-        let snapshot = self.0.volumes.snapshot();
+        Self::find_volume_in_snapshot(self.0.volumes.snapshot(), identity)
+    }
+
+    pub(super) fn volume_at_location_untracked(
+        &self,
+        identity: &VolumeIdentity,
+    ) -> Option<volumes::Volume> {
+        Self::find_volume_in_snapshot(self.0.volumes.snapshot_untracked(), identity)
+    }
+
+    fn find_volume_in_snapshot(
+        snapshot: volumes::Snapshot,
+        identity: &VolumeIdentity,
+    ) -> Option<volumes::Volume> {
         snapshot.volumes.into_iter().find(|volume| match identity {
             VolumeIdentity::Stable(stable) => volume.id.stable.as_ref() == Some(stable),
             VolumeIdentity::Attachment(attachment) => volume.id.attachment == *attachment,
@@ -104,7 +129,6 @@ impl Browser {
         location.label()
     }
 
-    #[allow(dead_code)]
     pub(super) fn location_address(location: &Location, _path: Option<&Path>) -> String {
         location.display_address()
     }
@@ -114,7 +138,7 @@ impl Browser {
     }
 
     pub(super) fn open(&self, location: Location) {
-        let id = self.read(|state| state.tab().id);
+        let id = self.read_untracked(|state| state.tab().id);
         self.open_in_tab(id, location);
     }
 
@@ -123,7 +147,7 @@ impl Browser {
         self.0
             .address_presentation
             .set(AddressPresentation::Breadcrumbs);
-        let resolved = self.resolve_path(&location);
+        let resolved = self.resolve_path_untracked(&location);
         let show_hidden = self.0.preferences.snapshot().files.show_hidden;
         enum Dispatch {
             Remote(LoadRequest, gds::service::remote::Address),
@@ -142,7 +166,7 @@ impl Browser {
             tab.initial = InitialVisit::Explicit;
             if matches!(location, Location::Volume { .. }) && resolved.is_none() {
                 tab.navigation.cancel_pending();
-                tab.contents = Contents::Unavailable(i18n::text("device-not-mounted"));
+                tab.contents = Contents::Unavailable(i18n::text_untracked("device-not-mounted"));
                 tab.rows.clear();
                 tab.backing = SelectionBacking::from_items(std::iter::empty());
                 Dispatch::UnavailableVolume { is_active }
@@ -152,9 +176,7 @@ impl Browser {
                     .prepare_open(location.clone(), resolved, options);
                 match scheme::browse(&location) {
                     scheme::Browse::Remote(address) => Dispatch::Remote(request, address.clone()),
-                    scheme::Browse::Location | scheme::Browse::Tags(_) => {
-                        Dispatch::Standard(request)
-                    }
+                    scheme::Browse::Location | scheme::Browse::Tags => Dispatch::Standard(request),
                 }
             }
         };
@@ -175,7 +197,6 @@ impl Browser {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn open_address(&self) {
         let raw = self.0.address.get_untracked();
         let trimmed = raw.trim();
@@ -186,7 +207,7 @@ impl Browser {
         let target = if scheme::recognizes(trimmed) {
             scheme::parse(trimmed).map_err(|error| error.to_string())
         } else {
-            let (current_dir, home) = self.read(|state| {
+            let (current_dir, home) = self.read_untracked(|state| {
                 let dir = state
                     .tab()
                     .navigation
@@ -214,19 +235,19 @@ impl Browser {
     }
 
     pub(super) fn refresh(&self) {
-        let id = self.read(|state| state.tab().id);
+        let id = self.read_untracked(|state| state.tab().id);
         self.refresh_tab(id);
     }
 
     pub(super) fn reveal_paths(&self, paths: Vec<PathBuf>) {
-        let active_id = self.read(|state| state.tab().id);
+        let active_id = self.read_untracked(|state| state.tab().id);
         self.update(|state| state.tab_mut().reveal = paths);
         self.reproject(active_id);
     }
 
     pub(super) fn refresh_tab(&self, id: u64) {
         self.save_active_scroll_if(id);
-        let Some(location) = self.read(|state| {
+        let Some(location) = self.read_untracked(|state| {
             state
                 .tabs
                 .iter()
@@ -235,7 +256,7 @@ impl Browser {
         }) else {
             return;
         };
-        let resolved = self.resolve_path(&location);
+        let resolved = self.resolve_path_untracked(&location);
         let show_hidden = self.0.preferences.snapshot().files.show_hidden;
         enum Dispatch {
             Remote(LoadRequest, gds::service::remote::Address),
@@ -252,7 +273,7 @@ impl Browser {
             tab.enrichment = None;
             if matches!(location, Location::Volume { .. }) && resolved.is_none() {
                 tab.navigation.cancel_pending();
-                tab.contents = Contents::Unavailable(i18n::text("device-not-mounted"));
+                tab.contents = Contents::Unavailable(i18n::text_untracked("device-not-mounted"));
                 tab.rows.clear();
                 tab.backing = SelectionBacking::from_items(std::iter::empty());
                 Dispatch::UnavailableVolume
@@ -269,9 +290,7 @@ impl Browser {
                 };
                 match scheme::browse(&location) {
                     scheme::Browse::Remote(address) => Dispatch::Remote(request, address.clone()),
-                    scheme::Browse::Location | scheme::Browse::Tags(_) => {
-                        Dispatch::Standard(request)
-                    }
+                    scheme::Browse::Location | scheme::Browse::Tags => Dispatch::Standard(request),
                 }
             }
         };
@@ -289,7 +308,7 @@ impl Browser {
     }
 
     pub(super) fn history(&self, forward: bool) {
-        let target = self.read(|state| {
+        let target = self.read_untracked(|state| {
             let tab = state.tab();
             let index = tab.navigation.history_index();
             let target_index = if forward {
@@ -310,7 +329,7 @@ impl Browser {
         self.0
             .address_presentation
             .set(AddressPresentation::Breadcrumbs);
-        let resolved = self.resolve_path(location);
+        let resolved = self.resolve_path_untracked(location);
         let show_hidden = self.0.preferences.snapshot().files.show_hidden;
         enum Dispatch {
             Remote(LoadRequest, gds::service::remote::Address),
@@ -328,7 +347,7 @@ impl Browser {
                 tab.work = None;
                 tab.enrichment = None;
                 tab.navigation.cancel_pending();
-                tab.contents = Contents::Unavailable(i18n::text("device-not-mounted"));
+                tab.contents = Contents::Unavailable(i18n::text_untracked("device-not-mounted"));
                 tab.rows.clear();
                 tab.backing = SelectionBacking::from_items(std::iter::empty());
                 Dispatch::UnavailableVolume
@@ -337,9 +356,7 @@ impl Browser {
                 tab.enrichment = None;
                 match scheme::browse(location) {
                     scheme::Browse::Remote(address) => Dispatch::Remote(request, address.clone()),
-                    scheme::Browse::Location | scheme::Browse::Tags(_) => {
-                        Dispatch::Standard(request)
-                    }
+                    scheme::Browse::Location | scheme::Browse::Tags => Dispatch::Standard(request),
                 }
             } else {
                 Dispatch::Noop
@@ -360,7 +377,6 @@ impl Browser {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn cancel_location_load(&self) {
         self.update(|state| {
             let tab = state.tab_mut();
@@ -372,7 +388,7 @@ impl Browser {
     }
 
     pub(super) fn parent(&self) {
-        let parent = self.read(|state| scheme::parent(state.tab().navigation.location()));
+        let parent = self.read_untracked(|state| scheme::parent(state.tab().navigation.location()));
         if let Some(location) = parent {
             self.open(location);
         }
@@ -424,7 +440,7 @@ impl Browser {
     }
 
     pub(super) fn tab_index(&self, id: u64) -> Option<usize> {
-        self.read(|state| state.tabs.iter().position(|tab| tab.id == id))
+        self.read_untracked(|state| state.tabs.iter().position(|tab| tab.id == id))
     }
 
     pub(super) fn close_tab(&self, index: usize) {
@@ -468,7 +484,6 @@ impl Browser {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn toggle_pin(&self, index: usize) {
         let changed = self.update(|state| {
             if index >= state.tabs.len() {
@@ -490,7 +505,6 @@ impl Browser {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn reorder_tab(&self, from: usize, to: usize) {
         let changed = self.update(|state| {
             let len = state.tabs.len();
@@ -520,9 +534,8 @@ impl Browser {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn sortable_columns(&self) -> Vec<Column> {
-        self.read(|state| match &state.tab().contents {
+        self.read_untracked(|state| match &state.tab().contents {
             Contents::Directory => Column::ALL.to_vec(),
             Contents::Tags { entries, .. } if !entries.is_empty() => Column::ALL.to_vec(),
             Contents::Trash(_) => vec![Column::Name, Column::Size, Column::Modified],
@@ -539,7 +552,7 @@ impl Browser {
     }
 
     pub(super) fn reproject(&self, id: u64) {
-        let volumes_snapshot = self.0.volumes.snapshot().volumes;
+        let volumes_snapshot = self.0.volumes.snapshot_untracked().volumes;
         let reveal_scroll_idx = {
             let mut state = self.0.state.borrow_mut();
             let picker_projection = state.picker.as_ref().map(|picker| picker.projection());
@@ -728,7 +741,8 @@ impl Browser {
         };
 
         self.changed();
-        if self.read(|state| state.tabs.get(state.active).is_some_and(|tab| tab.id == id)) {
+        if self.read_untracked(|state| state.tabs.get(state.active).is_some_and(|tab| tab.id == id))
+        {
             self.update_selection(|_| {});
             self.sync_address();
             if let Some(row_idx) = reveal_scroll_idx {
@@ -738,7 +752,8 @@ impl Browser {
     }
 
     pub(super) fn sync_address(&self) {
-        let address = self.read(|state| state.tab().navigation.location().display_address());
+        let address =
+            self.read_untracked(|state| state.tab().navigation.location().display_address());
         self.0.address.set(address);
     }
 
@@ -801,10 +816,10 @@ impl Browser {
     }
 
     pub(super) fn scroll_row_into_view(&self, index: usize) {
-        let row_h = self.row_height().max(1.0);
-        let grid = self.grid_geometry();
+        let row_h = self.row_height_untracked().max(1.0);
+        let grid = self.grid_geometry_untracked();
         let scale = self.0.list.scale().max(1.0);
-        let mode = self.read(|state| state.tab().mode);
+        let mode = self.read_untracked(|state| state.tab().mode);
         let (item_top, item_bottom) = match mode {
             ViewMode::List => {
                 let top = index as f32 * row_h;
@@ -845,14 +860,14 @@ impl Browser {
     }
 
     fn save_active_scroll_if(&self, id: u64) {
-        let is_active = self.read(|state| state.tab().id == id);
+        let is_active = self.read_untracked(|state| state.tab().id == id);
         if is_active {
             self.save_active_scroll();
         }
     }
 
     fn restore_active_scroll(&self) {
-        let top = self.read(|state| state.tab().navigation.view().scroll.max(0.0));
+        let top = self.read_untracked(|state| state.tab().navigation.view().scroll.max(0.0));
         let scale = self.0.list.scale().max(1.0);
         self.0.list.scroll_to(
             ScrollTarget::Offset(Point::new(DevicePx(0.0), DevicePx(top * scale))),
@@ -861,7 +876,7 @@ impl Browser {
     }
 
     fn sync_active_chrome(&self) {
-        let (address, filter, details, widths) = self.read(|state| {
+        let (address, filter, details, widths) = self.read_untracked(|state| {
             let tab = state.tab();
             let loc = tab.navigation.location();
             let widths: HashMap<Column, f32> = state
@@ -903,7 +918,7 @@ impl Browser {
     }
 
     fn refresh_favorites_tabs(&self) {
-        let ids: Vec<u64> = self.read(|state| {
+        let ids: Vec<u64> = self.read_untracked(|state| {
             state
                 .tabs
                 .iter()
@@ -925,11 +940,11 @@ impl Browser {
         }
         match location {
             Location::Recent => {
-                let places = self.read(|state| state.places.recent.clone());
+                let places = self.read_untracked(|state| state.places.recent.clone());
                 self.finish_collection_load(id, &request, Loaded::Places(places));
             }
             Location::Favorites => {
-                let places = self.read(|state| state.places.favorites.clone());
+                let places = self.read_untracked(|state| state.places.favorites.clone());
                 self.finish_collection_load(id, &request, Loaded::Places(places));
             }
             Location::Volumes => {
@@ -939,7 +954,7 @@ impl Browser {
             Location::Network => {
                 let work = self.0.tasks.named_child("Load network mounts");
                 let scope = (*work).clone();
-                let is_active = self.read(|state| state.tab().id == id);
+                let is_active = self.read_untracked(|state| state.tab().id == id);
                 {
                     let mut state = self.0.state.borrow_mut();
                     if let Some(tab) = state.tab_by_id(id) {
@@ -1016,7 +1031,7 @@ impl Browser {
                     self.finish_collection_load(
                         id,
                         &request,
-                        Loaded::Unavailable(i18n::text("tags-unavailable")),
+                        Loaded::Unavailable(i18n::text_untracked("tags-unavailable")),
                     );
                     return;
                 }
@@ -1088,7 +1103,7 @@ impl Browser {
                 self.finish_collection_load(
                     id,
                     &request,
-                    Loaded::Unavailable(i18n::text("device-not-mounted")),
+                    Loaded::Unavailable(i18n::text_untracked("device-not-mounted")),
                 );
             }
             Location::Remote(address) => {
@@ -1166,6 +1181,16 @@ impl Browser {
                                 match finish {
                                     Ok(LoadOutcome::Stale) => None,
                                     Ok(LoadOutcome::Applied) => {
+                                        if let Some(snapshot) = tab.navigation.directory() {
+                                            for warning in &snapshot.warnings {
+                                                tracing::warn!(
+                                                    path = %warning.path.display(),
+                                                    operation = ?warning.operation,
+                                                    error = %warning.source,
+                                                    "directory scan entry warning"
+                                                );
+                                            }
+                                        }
                                         tab.work = None;
                                         tab.contents = Contents::Directory;
                                         let loc = tab.navigation.location().clone();
@@ -1223,11 +1248,7 @@ impl Browser {
             let Some(tab) = state.tab_by_id(id) else {
                 return;
             };
-            let result = match &loaded {
-                Loaded::Directory(snapshot) => Ok(snapshot.clone()),
-                _ => Ok(None),
-            };
-            match tab.navigation.finish_load(request, result) {
+            match tab.navigation.finish_load(request, Ok(None)) {
                 Ok(LoadOutcome::Stale) | Err(_) => return,
                 Ok(LoadOutcome::Applied) => {}
             }
@@ -1235,7 +1256,6 @@ impl Browser {
             tab.enrichment = None;
             tab.contents = match loaded {
                 Loaded::Unavailable(message) => Contents::Unavailable(message),
-                Loaded::Directory(_) => Contents::Directory,
                 Loaded::Places(places) => Contents::Places(places),
                 Loaded::Network(mounts) => Contents::Network {
                     mounts,
@@ -1271,7 +1291,7 @@ impl Browser {
     fn start_watch(&self, id: u64) {
         let key = (Rc::as_ptr(&self.0) as usize, id);
         let watch_prefs = self.0.preferences.snapshot().files.watching;
-        let path = self.read(|state| {
+        let path = self.read_untracked(|state| {
             let tab = state.tabs.iter().find(|tab| tab.id == id)?;
             if !matches!(tab.contents, Contents::Directory) {
                 return None;
@@ -1336,7 +1356,7 @@ impl Browser {
                     let Some(browser) = weak.upgrade() else {
                         break;
                     };
-                    let target = browser.read(|state| {
+                    let target = browser.read_untracked(|state| {
                         let tab = state.tabs.iter().find(|tab| tab.id == id)?;
                         if !matches!(tab.contents, Contents::Directory) {
                             return None;

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Value formatting for the preview panel's label/value rows.
 //!
 //! Formatting is pure so it can be checked without a window: the panel decides

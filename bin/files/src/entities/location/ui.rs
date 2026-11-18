@@ -71,7 +71,6 @@ pub(crate) enum LocationTarget {
 }
 
 impl LocationTarget {
-    #[allow(dead_code)]
     pub const ALL: [Self; 7] = [
         Self::Home,
         Self::Collection(Collection::Tags),

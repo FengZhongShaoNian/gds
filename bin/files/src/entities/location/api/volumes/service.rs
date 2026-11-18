@@ -132,13 +132,15 @@ impl Service {
         self.0.revision.get();
     }
 
-    #[allow(dead_code)]
     pub fn snapshot(&self) -> Snapshot {
         self.track();
         self.0.observation.borrow().discovery.snapshot().clone()
     }
 
-    #[allow(dead_code)]
+    pub fn snapshot_untracked(&self) -> Snapshot {
+        self.0.observation.borrow().discovery.snapshot().clone()
+    }
+
     pub fn error(&self) -> Option<String> {
         self.track();
         match &self.0.observation.borrow().discovery {
@@ -147,7 +149,6 @@ impl Service {
         }
     }
 
-    #[allow(dead_code)]
     pub fn discovering(&self) -> bool {
         self.track();
         matches!(
@@ -156,9 +157,12 @@ impl Service {
         )
     }
 
-    #[allow(dead_code)]
     pub fn is_busy(&self, id: &VolumeId) -> bool {
         self.track();
+        self.is_busy_untracked(id)
+    }
+
+    pub fn is_busy_untracked(&self, id: &VolumeId) -> bool {
         self.0
             .busy
             .lock()
@@ -166,7 +170,6 @@ impl Service {
             .contains_key(id)
     }
 
-    #[allow(dead_code)]
     pub fn capacity(&self, id: &VolumeId) -> Option<CapacityState> {
         self.track();
         self.0.usage.borrow().get(id).cloned()
@@ -182,7 +185,6 @@ impl Service {
             .any(|root| path.starts_with(root))
     }
 
-    #[allow(dead_code)]
     pub fn refresh(&self) {
         {
             let mut state = self.0.observation.borrow_mut();
@@ -216,7 +218,6 @@ impl Service {
         self.refresh_capacity();
     }
 
-    #[allow(dead_code)]
     pub fn refresh_capacity(&self) {
         self.0.usage.borrow_mut().invalidate();
         self.sample_capacity();
@@ -282,11 +283,10 @@ impl Service {
     /// # Errors
     /// Rejects disconnected devices and overlapping operations. Backend errors
     /// preserve their system explanation, including busy/authorization failures.
-    #[allow(dead_code)]
     pub fn operate(
         &self,
         action: DeviceAction,
-    ) -> Result<impl Future<Output = Result<OperationOutcome, Error>> + 'static, Error> {
+    ) -> Result<impl Future<Output = Result<(), Error>> + 'static, Error> {
         let expected = self.0.observation.borrow().discovery.snapshot().clone();
         if expected.volume(action.volume()).is_none() {
             return Err(Error::Disconnected);
@@ -356,9 +356,9 @@ impl Service {
             let refresh_result = observation.result.clone();
             service.apply(observation);
             service.changed();
-            let mount_point = mount_point?;
+            let _ = mount_point?;
             refresh_result?;
-            Ok(OperationOutcome { mount_point })
+            Ok(())
         })
     }
 }

@@ -30,7 +30,6 @@ pub(super) enum Enrichment {
         revision: u64,
         need: EnrichmentNeed,
         _work: TaskOwner,
-        #[allow(dead_code)]
         queue: Arc<Mutex<EnrichQueue>>,
     },
     Complete {
@@ -66,7 +65,6 @@ pub(super) struct EnrichQueue {
     backlog: VecDeque<Entry>,
     /// Paths already popped by [`Self::pop_batch`] and handed to worker tasks.
     dispatched: HashSet<PathBuf>,
-    #[allow(dead_code)]
     priority_limit: usize,
     batch_size: usize,
 }
@@ -138,7 +136,6 @@ impl EnrichQueue {
         self.priority.is_empty() && self.backlog.is_empty()
     }
 
-    #[allow(dead_code)]
     fn prioritize_viewport(&mut self, rows: &[Entry], need: EnrichmentNeed) {
         let cap = self.priority_limit.max(rows.len());
         for entry in rows.iter().rev() {
@@ -228,11 +225,10 @@ impl Browser {
         self.start_enrichment(id, initial_scroll, false);
     }
 
-    #[allow(dead_code)]
     pub(super) fn viewport_changed(&self, position: Point<zgui::geom::CssPx, zgui::geom::Css>) {
         let top = position.y.0.max(0.0);
-        let grid = self.grid_geometry();
-        let row_h = self.row_height();
+        let grid = self.grid_geometry_untracked();
+        let row_h = self.row_height_untracked();
         let scale = self.0.list.scale().max(1.0);
         let viewport_h = self.viewport_height_css();
         let details_open = self.0.details.get_untracked();
@@ -299,8 +295,8 @@ impl Browser {
     }
 
     fn current_scroll_top_css(&self, id: u64) -> f32 {
-        let is_active =
-            self.read(|state| state.tabs.get(state.active).is_some_and(|tab| tab.id == id));
+        let is_active = self
+            .read_untracked(|state| state.tabs.get(state.active).is_some_and(|tab| tab.id == id));
         if is_active {
             let scale = self.0.list.scale().max(1.0);
             let offset = self.0.list.scroll_offset().y.0 / scale;
@@ -308,7 +304,7 @@ impl Browser {
                 return offset;
             }
         }
-        self.read(|state| {
+        self.read_untracked(|state| {
             state
                 .tabs
                 .iter()
@@ -323,8 +319,8 @@ impl Browser {
     }
 
     fn start_enrichment(&self, id: u64, scroll_top_css: f32, viewport_only: bool) {
-        let grid = self.grid_geometry();
-        let row_h = self.row_height();
+        let grid = self.grid_geometry_untracked();
+        let row_h = self.row_height_untracked();
         let scale = self.0.list.scale().max(1.0);
         let viewport_h = self.viewport_height_css();
         let details_open = self.0.details.get_untracked();

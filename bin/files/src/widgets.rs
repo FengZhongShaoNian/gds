@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Native Files widgets assembled from shared anatomy and application services.
 
 pub(crate) mod help;

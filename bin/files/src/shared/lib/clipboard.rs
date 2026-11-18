@@ -8,7 +8,6 @@ mod state;
 use std::{
     cell::{Cell, RefCell},
     collections::HashSet,
-    future::Future,
     path::{Component, Path, PathBuf},
     rc::Rc,
     sync::{
@@ -23,7 +22,6 @@ use native::NativeClipboard;
 use protocol::Formats;
 use serde::{Deserialize, Serialize};
 use state::Cache;
-use url::Url;
 use zgui::platform::{ClipboardError, ClipboardMimeOffer};
 use zgui::prelude::{ClipboardKind, LocalStorage, RwSignal, try_use_clipboard};
 use zgui::reactive::{on_cleanup_local, prelude::*, spawn_local};
@@ -165,7 +163,6 @@ thread_local! {
     static INSTALLED: RefCell<Option<Clipboard>> = const { RefCell::new(None) };
 }
 
-#[allow(dead_code)]
 pub(crate) enum Payload {
     Empty,
     Local(Snapshot),
@@ -200,25 +197,6 @@ impl Drop for RefreshGuard {
     }
 }
 
-struct CancelGuard {
-    weak: std::rc::Weak<ClipboardState>,
-    expected: Arc<Snapshot>,
-    completed: bool,
-}
-
-impl Drop for CancelGuard {
-    fn drop(&mut self) {
-        if !self.completed
-            && let Some(state) = self.weak.upgrade()
-        {
-            state
-                .cache
-                .borrow_mut()
-                .finish_cancel(&self.expected, false);
-        }
-    }
-}
-
 fn should_use_local_fallback(error: &ClipboardError) -> bool {
     matches!(
         error,
@@ -239,19 +217,6 @@ fn select_remaining(
     } else {
         expected.remaining_after(current, removed)
     }
-}
-
-fn snapshot_to_uris(snapshot: &Snapshot) -> Result<(Mode, Vec<String>), Error> {
-    let uris = snapshot
-        .paths
-        .iter()
-        .map(|path| {
-            Url::from_file_path(path)
-                .map(|uri| uri.to_string())
-                .map_err(|_| Error::InvalidPath(path.clone()))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((snapshot.mode, uris))
 }
 
 impl Clipboard {
@@ -289,21 +254,21 @@ impl Clipboard {
         next
     }
 
-    #[allow(dead_code)]
     pub fn snapshot(&self) -> Option<Arc<Snapshot>> {
         self.0.revision.get();
         self.0.cache.borrow().current()
     }
 
-    #[allow(dead_code)]
+    pub fn snapshot_untracked(&self) -> Option<Arc<Snapshot>> {
+        self.0.cache.borrow().current()
+    }
+
     pub fn is_cut(&self, path: &Path) -> bool {
         self.0.revision.get();
         self.0.cache.borrow().is_cut(path)
     }
 
-    #[allow(dead_code)]
-    pub fn can_paste(&self) -> bool {
-        self.0.revision.get();
+    pub fn can_paste_untracked(&self) -> bool {
         self.0.cache.borrow().can_paste()
     }
 
@@ -400,7 +365,6 @@ impl Clipboard {
 
     /// # Errors
     /// Reports invalid selections, encoding limits, or platform clipboard errors.
-    #[allow(dead_code)]
     pub async fn write(&self, mode: Mode, paths: Vec<PathBuf>) -> Result<Snapshot, Error> {
         let snapshot = Snapshot::new(mode, paths)?;
         let (written, entries) = NativeClipboard::encode_snapshot(&snapshot)?;
@@ -439,44 +403,7 @@ impl Clipboard {
     }
 
     /// # Errors
-    /// Reports malformed, non-local, or inaccessible file clipboard data.
-    #[allow(dead_code)]
-    pub async fn read(&self) -> Result<Option<Snapshot>, Error> {
-        if let Some(clip) = try_use_clipboard() {
-            match NativeClipboard::read_offer(&clip).await {
-                Ok(Some(offer)) => {
-                    if let Some(snapshot) = NativeClipboard::decode_snapshot(&offer)? {
-                        return Ok(Some(snapshot));
-                    }
-                    let cache = self.0.cache.borrow();
-                    if cache.fallback_matches_platform(Some(offer.revision)) {
-                        return Ok(cache.current().map(|s| (*s).clone()));
-                    }
-                    return Ok(None);
-                }
-                Ok(None) => {
-                    let cache = self.0.cache.borrow();
-                    if cache.fallback_matches_platform(None) {
-                        return Ok(cache.current().map(|s| (*s).clone()));
-                    }
-                    return Ok(None);
-                }
-                Err(error) if should_use_local_fallback(&error) => {
-                    let cache = self.0.cache.borrow();
-                    if cache.is_local_fallback() {
-                        return Ok(cache.current().map(|s| (*s).clone()));
-                    }
-                    return Ok(None);
-                }
-                Err(error) => return Err(Error::Platform(error)),
-            }
-        }
-        Ok(self.0.cache.borrow().current().map(|s| (*s).clone()))
-    }
-
-    /// # Errors
     /// Reports invalid file or remote URI payloads.
-    #[allow(dead_code)]
     pub async fn read_payload(&self) -> Result<Payload, Error> {
         if let Some(clip) = try_use_clipboard() {
             match NativeClipboard::read_offer(&clip).await {
@@ -534,7 +461,6 @@ impl Clipboard {
 
     /// # Errors
     /// Reports invalid remaining paths, encoding failures, or clipboard write errors.
-    #[allow(dead_code)]
     pub async fn remove(&self, expected: Arc<Snapshot>, paths: Vec<PathBuf>) -> Result<(), Error> {
         let result = self.remove_paths(expected, paths, true).await;
         self.refresh();
@@ -542,52 +468,7 @@ impl Clipboard {
     }
 
     /// # Errors
-    /// Reports malformed URI lists or clipboard access failures.
-    #[allow(dead_code)]
-    pub async fn read_uris(&self) -> Result<Option<(Mode, Vec<String>)>, Error> {
-        if let Some(clip) = try_use_clipboard() {
-            match NativeClipboard::read_offer(&clip).await {
-                Ok(Some(offer)) => {
-                    if let Some(uris) = NativeClipboard::decode_uris(&offer)? {
-                        return Ok(Some(uris));
-                    }
-                    let cache = self.0.cache.borrow();
-                    if cache.fallback_matches_platform(Some(offer.revision)) {
-                        return self.fallback_uris(&cache);
-                    }
-                    return Ok(None);
-                }
-                Ok(None) => {
-                    let cache = self.0.cache.borrow();
-                    if cache.fallback_matches_platform(None) {
-                        return self.fallback_uris(&cache);
-                    }
-                    return Ok(None);
-                }
-                Err(error) if should_use_local_fallback(&error) => {
-                    let cache = self.0.cache.borrow();
-                    if cache.is_local_fallback() {
-                        return self.fallback_uris(&cache);
-                    }
-                    return Ok(None);
-                }
-                Err(error) => return Err(Error::Platform(error)),
-            }
-        }
-        let cache = self.0.cache.borrow();
-        self.fallback_uris(&cache)
-    }
-
-    fn fallback_uris(&self, cache: &Cache) -> Result<Option<(Mode, Vec<String>)>, Error> {
-        if let Some(snapshot) = cache.current() {
-            return snapshot_to_uris(&snapshot).map(Some);
-        }
-        Ok(cache.local_uris().map(|uris| (Mode::Copy, uris)))
-    }
-
-    /// # Errors
     /// Reports invalid URI lists or clipboard publication failures.
-    #[allow(dead_code)]
     pub async fn write_uris(&self, uris: Vec<String>) -> Result<(), Error> {
         let (checked, copyable, entries) = NativeClipboard::encode_uris(&uris)?;
         let seq = self.next_write_seq();
@@ -629,7 +510,6 @@ impl Clipboard {
 
     /// # Errors
     /// Reports clipboard update failures while leaving completed filesystem moves intact.
-    #[allow(dead_code)]
     pub async fn finish_cut(
         &self,
         expected: Snapshot,
@@ -646,31 +526,6 @@ impl Clipboard {
             self.refresh();
         }
         result
-    }
-
-    #[allow(dead_code)]
-    pub fn cancel_cut(&self) -> Option<impl Future<Output = Result<(), Error>> + 'static> {
-        let expected = self.0.cache.borrow_mut().begin_cancel()?;
-        let clipboard = self.clone();
-        Some(async move {
-            let mut guard = CancelGuard {
-                weak: Rc::downgrade(&clipboard.0),
-                expected: expected.clone(),
-                completed: false,
-            };
-            let result = clipboard
-                .remove_paths(expected.clone(), expected.paths.clone(), false)
-                .await;
-            guard.completed = true;
-            clipboard
-                .0
-                .cache
-                .borrow_mut()
-                .finish_cancel(&expected, result.is_ok());
-            clipboard.changed();
-            clipboard.refresh();
-            result
-        })
     }
 
     async fn remove_paths(

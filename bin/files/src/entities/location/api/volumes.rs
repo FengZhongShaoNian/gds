@@ -11,7 +11,6 @@ mod tests;
 mod usage;
 
 pub use model::*;
-#[allow(unused_imports)]
 pub use network::read_network_mounts;
 pub(crate) use service::*;
 pub use usage::CapacityState;

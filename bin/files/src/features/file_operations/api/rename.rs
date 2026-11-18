@@ -63,7 +63,6 @@ pub(crate) fn validate_name(name: impl AsRef<OsStr>, current: &OsStr) -> Result<
 }
 
 #[derive(Debug, thiserror::Error)]
-#[allow(dead_code)]
 pub(crate) enum Error {
     #[error("operation cancelled")]
     Cancelled,
@@ -183,7 +182,6 @@ impl Request {
         })
     }
 
-    #[allow(dead_code)]
     pub fn spawn(
         self,
         tasks: &gds::service::task_manager::Scope,

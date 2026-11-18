@@ -8,12 +8,11 @@ use std::{
 
 use gds::i18n as gds_i18n;
 use gds::service::desktop::{Desktop, OpenMode, OpenOutcome};
-use gds::t;
 use tokio_util::sync::CancellationToken;
 use zgui::reactive::spawn_local;
 
 use super::{
-    model::{Contents, Operation, Origin, Row},
+    model::{Contents, Operation, Row},
     name_form::{NameForm, NamePurpose},
     ui::Browser,
 };
@@ -40,13 +39,6 @@ use crate::{
 };
 
 impl Browser {
-    pub(super) fn origin(&self) -> Origin {
-        self.read(|state| Origin {
-            tab: state.tab().id,
-            location: state.tab().navigation.location().clone(),
-        })
-    }
-
     pub(super) fn refresh_affected(&self, paths: &[PathBuf]) {
         self.refresh_after_file_operation(paths, false);
     }
@@ -59,7 +51,7 @@ impl Browser {
             .iter()
             .filter_map(|path| path.parent().map(Path::to_path_buf))
             .collect();
-        self.read(|state| {
+        self.read_untracked(|state| {
             for tab in &state.tabs {
                 match tab.contents {
                     Contents::Directory => {
@@ -92,7 +84,6 @@ impl Browser {
 
     pub(super) fn begin_operation(&self, label: &str) -> Option<CancellationToken> {
         let cancel = CancellationToken::new();
-        let origin = self.origin();
         let started = self.update(|state| {
             if state.operation.busy() {
                 return false;
@@ -100,7 +91,6 @@ impl Browser {
             state.operation = Operation::Running {
                 label: label.to_owned(),
                 cancel: cancel.clone(),
-                origin,
             };
             true
         });
@@ -118,8 +108,8 @@ impl Browser {
     }
 
     pub(super) fn open_selected(&self) {
-        let in_picker = self.read(|state| state.picker.is_some());
-        let selected = self.read(|state| {
+        let in_picker = self.read_untracked(|state| state.picker.is_some());
+        let selected = self.read_untracked(|state| {
             let tab = state.tab();
             let view = tab.navigation.view();
             tab.rows
@@ -169,8 +159,8 @@ impl Browser {
     }
 
     pub(super) fn open_row(&self, index: usize, new_tab: bool) {
-        let (row, in_picker) =
-            self.read(|state| (state.tab().rows.get(index).cloned(), state.picker.is_some()));
+        let (row, in_picker) = self
+            .read_untracked(|state| (state.tab().rows.get(index).cloned(), state.picker.is_some()));
         let Some(row) = row else {
             return;
         };
@@ -229,7 +219,7 @@ impl Browser {
     }
 
     pub(super) fn new_folder(&self) {
-        let info = self.read(|state| {
+        let info = self.read_untracked(|state| {
             if state.operation.busy() {
                 return None;
             }
@@ -254,14 +244,15 @@ impl Browser {
         let Some((directory, folder_label, reserved)) = info else {
             return;
         };
-        let default_name = i18n::text("new-folder-default-name");
+        let default_name = i18n::text_untracked("new-folder-default-name");
         let suggestion = names::free_name(&directory, OsStr::new(&default_name), &reserved)
             .unwrap_or_else(|_| OsString::from(&default_name));
-        let title = t!("new-folder-title", folder = folder_label);
+        let title = gds::t_untracked!("new-folder-title", folder = folder_label);
         let form = NameForm::new(NamePurpose::NewFolder, title, suggestion);
         let browser = self.clone();
         self.name_form(form, move |name| {
-            let Some(cancel) = browser.begin_operation(&i18n::text("new-folder-working")) else {
+            let Some(cancel) = browser.begin_operation(&i18n::text_untracked("new-folder-working"))
+            else {
                 return;
             };
             let parent = directory.clone();
@@ -298,21 +289,29 @@ impl Browser {
                             }
                             browser.reveal_paths(vec![created.path.clone()]);
                             browser.refresh_affected(&[parent]);
-                            browser.report_success(t!("new-folder-done", name = label));
+                            browser
+                                .report_success(gds::t_untracked!("new-folder-done", name = label));
                             browser.focus_content();
                         }
                         Ok(Err(error)) => {
                             let message = match error {
                                 new_folder::Error::Exists { name, .. } => {
-                                    t!("new-folder-exists", name = name)
+                                    gds::t_untracked!("new-folder-exists", name = name)
                                 }
-                                other => t!("new-folder-failed", error = other.to_string()),
+                                other => {
+                                    gds::t_untracked!(
+                                        "new-folder-failed",
+                                        error = other.to_string()
+                                    )
+                                }
                             };
                             browser.report_notice(message);
                         }
                         Err(error) => {
-                            browser
-                                .report_notice(t!("new-folder-failed", error = error.to_string()));
+                            browser.report_notice(gds::t_untracked!(
+                                "new-folder-failed",
+                                error = error.to_string()
+                            ));
                         }
                     }
                 }));
@@ -321,7 +320,7 @@ impl Browser {
     }
 
     pub(super) fn rename(&self) {
-        let target = self.read(|state| {
+        let target = self.read_untracked(|state| {
             if state.operation.busy() {
                 return None;
             }
@@ -343,7 +342,7 @@ impl Browser {
                 let display = current_name.to_string_lossy().into_owned();
                 let form = NameForm::new(
                     NamePurpose::Rename,
-                    t!("rename-title", name = display),
+                    gds::t_untracked!("rename-title", name = display),
                     current_name.clone(),
                 );
                 let browser = self.clone();
@@ -352,7 +351,8 @@ impl Browser {
                         browser.focus_content();
                         return;
                     }
-                    let Some(cancel) = browser.begin_operation(&i18n::text("rename-working"))
+                    let Some(cancel) =
+                        browser.begin_operation(&i18n::text_untracked("rename-working"))
                     else {
                         return;
                     };
@@ -391,21 +391,29 @@ impl Browser {
                                     }
                                     browser.reveal_paths(vec![renamed.destination.clone()]);
                                     browser.refresh_affected(&[src, renamed.destination]);
-                                    browser.report_success(t!("rename-done", name = display_new));
+                                    browser.report_success(gds::t_untracked!(
+                                        "rename-done",
+                                        name = display_new
+                                    ));
                                     browser.focus_content();
                                 }
                                 Ok(Err(error)) => {
                                     let message = match error {
                                         rename::Error::Exists { name, .. } => {
-                                            t!("rename-target-exists", name = name)
+                                            gds::t_untracked!("rename-target-exists", name = name)
                                         }
-                                        rename::Error::Name(err) => i18n::text(err.label_id()),
-                                        other => t!("rename-failed", error = other.to_string()),
+                                        rename::Error::Name(err) => {
+                                            i18n::text_untracked(err.label_id())
+                                        }
+                                        other => gds::t_untracked!(
+                                            "rename-failed",
+                                            error = other.to_string()
+                                        ),
                                     };
                                     browser.report_notice(message);
                                 }
                                 Err(error) => {
-                                    browser.report_notice(t!(
+                                    browser.report_notice(gds::t_untracked!(
                                         "rename-failed",
                                         error = error.to_string()
                                     ));
@@ -427,7 +435,7 @@ impl Browser {
             Tags(Vec<Row>),
             Local(Vec<PathBuf>),
         }
-        let target = self.read(|state| {
+        let target = self.read_untracked(|state| {
             if state.operation.busy() {
                 return DeleteTarget::None;
             }
@@ -471,9 +479,9 @@ impl Browser {
                 let actually_permanent = permanent || !recycle::supported();
                 if actually_permanent {
                     let count = batch.paths().len();
-                    let title = gds_i18n::count("delete-confirm-title", count);
-                    let message = i18n::text("delete-confirm-message");
-                    let primary = gds_i18n::count("delete-selected", count);
+                    let title = gds_i18n::count_untracked("delete-confirm-title", count);
+                    let message = i18n::text_untracked("delete-confirm-message");
+                    let primary = gds_i18n::count_untracked("delete-selected", count);
                     let browser = self.clone();
                     let paths = batch.paths().to_vec();
                     self.confirm_labelled(title, message, primary, move || {
@@ -490,7 +498,7 @@ impl Browser {
 
     fn execute_delete(&self, batch: Batch, kind: DeleteKind) {
         let count = batch.paths().len();
-        let label = gds_i18n::count(
+        let label = gds_i18n::count_untracked(
             if kind == DeleteKind::Trash {
                 "trash-working"
             } else {
@@ -545,13 +553,13 @@ impl Browser {
                 browser.refresh_after_file_operation(&affected, report.kind == DeleteKind::Trash);
                 if !failed.is_empty() {
                     let headline = if report.kind == DeleteKind::Trash {
-                        t!(
+                        gds::t_untracked!(
                             "trash-partial",
                             succeeded = succeeded.len() as i64,
                             failed = failed.len() as i64
                         )
                     } else {
-                        t!(
+                        gds::t_untracked!(
                             "delete-partial",
                             succeeded = succeeded.len() as i64,
                             failed = failed.len() as i64
@@ -565,7 +573,7 @@ impl Browser {
                     } else {
                         "delete-done"
                     };
-                    browser.report_success(gds_i18n::count(key, succeeded.len()));
+                    browser.report_success(gds_i18n::count_untracked(key, succeeded.len()));
                 }
                 if !report.history_errors.is_empty() {
                     browser.report_notice(report.history_errors.join("; "));
@@ -591,11 +599,11 @@ impl Browser {
         let Some(entry) = entry else {
             return;
         };
-        let op_name = i18n::text(entry.kind.label_id());
+        let op_name = i18n::text_untracked(entry.kind.label_id());
         let label = if redo {
-            t!("redo-operation", operation = op_name)
+            gds::t_untracked!("redo-operation", operation = op_name)
         } else {
-            t!("undo-operation", operation = op_name)
+            gds::t_untracked!("undo-operation", operation = op_name)
         };
         let Some(cancel) = self.begin_operation(&label) else {
             self.update(|state| {
@@ -636,13 +644,14 @@ impl Browser {
                 });
                 browser.refresh_after_file_operation(&changed, trash_affected);
                 if errors.is_empty() {
-                    browser.report_success(i18n::text(if redo {
+                    browser.report_success(i18n::text_untracked(if redo {
                         "redo-done"
                     } else {
                         "undo-done"
                     }));
                 } else {
-                    let headline = i18n::text(if redo { "redo-failed" } else { "undo-failed" });
+                    let headline =
+                        i18n::text_untracked(if redo { "redo-failed" } else { "undo-failed" });
                     browser.report_notice(format!("{headline}: {}", errors.join("; ")));
                 }
                 browser.focus_content();
@@ -656,7 +665,7 @@ impl Browser {
             Remote(Vec<String>),
             Local(Vec<PathBuf>),
         }
-        let target = self.read(|state| {
+        let target = self.read_untracked(|state| {
             let tab = state.tab();
             let selected = tab.selected();
             if selected.is_empty() {
@@ -682,7 +691,7 @@ impl Browser {
             CopyTarget::Empty => {}
             CopyTarget::Remote(uris) => {
                 if cut {
-                    self.report_notice(i18n::text("remote-cut-unavailable"));
+                    self.report_notice(i18n::text_untracked("remote-cut-unavailable"));
                     return;
                 }
                 if uris.is_empty() {
@@ -698,7 +707,10 @@ impl Browser {
                         };
                         match result {
                             Ok(()) => {
-                                browser.report_success(gds_i18n::count("copy-prepared", count));
+                                browser.report_success(gds_i18n::count_untracked(
+                                    "copy-prepared",
+                                    count,
+                                ));
                                 browser.changed();
                             }
                             Err(error) => browser.report_notice(error.to_string()),
@@ -730,7 +742,10 @@ impl Browser {
                         };
                         match result {
                             Ok(_) => {
-                                browser.report_success(gds_i18n::count("copy-prepared", count));
+                                browser.report_success(gds_i18n::count_untracked(
+                                    "copy-prepared",
+                                    count,
+                                ));
                                 browser.changed();
                             }
                             Err(error) => browser.report_notice(error.to_string()),
@@ -742,7 +757,7 @@ impl Browser {
     }
 
     pub(super) fn paste(&self) {
-        let destination = self.read(|state| {
+        let destination = self.read_untracked(|state| {
             if state.operation.busy() {
                 return None;
             }
@@ -766,7 +781,7 @@ impl Browser {
                     Ok(Payload::Empty) => {}
                     Ok(Payload::Uris { mode, uris }) => {
                         if mode == clipboard::Mode::Cut {
-                            browser.report_notice(i18n::text("remote-cut-unavailable"));
+                            browser.report_notice(i18n::text_untracked("remote-cut-unavailable"));
                         } else {
                             browser.paste_uri_payload(uris, destination, false);
                         }
@@ -795,7 +810,9 @@ impl Browser {
         finish: Option<Vec<String>>,
     ) {
         let snapshot = if cut && finish.is_some() {
-            Clipboard::current().snapshot().map(|snap| (*snap).clone())
+            Clipboard::current()
+                .snapshot_untracked()
+                .map(|snap| (*snap).clone())
         } else {
             None
         };
@@ -809,7 +826,7 @@ impl Browser {
         record_history: bool,
         snapshot: Option<clipboard::Snapshot>,
     ) {
-        let Some(cancel) = self.begin_operation(&i18n::text("paste-working")) else {
+        let Some(cancel) = self.begin_operation(&i18n::text_untracked("paste-working")) else {
             return;
         };
         self.inspect_paste_step(job, cut, record_history, snapshot, cancel);
@@ -890,7 +907,7 @@ impl Browser {
         snapshot: Option<clipboard::Snapshot>,
         cancel: CancellationToken,
     ) {
-        let title = t!(
+        let title = gds::t_untracked!(
             "transfer-conflict-title",
             name = conflict.collision.target_label()
         );
@@ -924,7 +941,7 @@ impl Browser {
                 cancelled_job.pending.clear();
                 if cancelled_job.succeeded.is_empty() && cancelled_job.failures.is_empty() {
                     browser_cancel.end_operation();
-                    browser_cancel.report_notice(i18n::text("paste-cancelled"));
+                    browser_cancel.report_notice(i18n::text_untracked("paste-cancelled"));
                 } else {
                     browser_cancel.finish_paste_job(
                         cancelled_job,
@@ -1079,12 +1096,12 @@ impl Browser {
         let failed_count = summary.failures.len();
         if failed_count > 0 || summary.clipboard_error.is_some() || aborted {
             let headline = if aborted && failed_count == 0 {
-                t!(
+                gds::t_untracked!(
                     "paste-aborted-partial",
                     completed = summary.succeeded.len() as i64
                 )
             } else {
-                t!(
+                gds::t_untracked!(
                     "transfer-partial",
                     succeeded = summary.succeeded.len() as i64,
                     failed = failed_count as i64
@@ -1092,7 +1109,7 @@ impl Browser {
             };
             let mut details = summary.failures;
             if let Some(err) = summary.clipboard_error {
-                details.push(t!("clipboard-update-failed", error = err));
+                details.push(gds::t_untracked!("clipboard-update-failed", error = err));
             }
             let message = if details.is_empty() {
                 headline
@@ -1106,13 +1123,13 @@ impl Browser {
             } else {
                 "copy-done"
             };
-            self.report_success(gds_i18n::count(key, summary.succeeded.len()));
+            self.report_success(gds_i18n::count_untracked(key, summary.succeeded.len()));
         }
         self.focus_content();
     }
 
     pub(super) fn restore_trash(&self, purge: bool, all: bool) {
-        let entries: Vec<recycle::Entry> = self.read(|state| {
+        let entries: Vec<recycle::Entry> = self.read_untracked(|state| {
             if state.operation.busy() {
                 return Vec::new();
             }
@@ -1138,15 +1155,15 @@ impl Browser {
             let count = entries.len();
             let (title, message, primary) = if all {
                 (
-                    i18n::text("recycle-empty-confirm-title"),
-                    gds_i18n::count("recycle-empty-confirm-message", count),
-                    i18n::text("recycle-empty-confirm-ok"),
+                    i18n::text_untracked("recycle-empty-confirm-title"),
+                    gds_i18n::count_untracked("recycle-empty-confirm-message", count),
+                    i18n::text_untracked("recycle-empty-confirm-ok"),
                 )
             } else {
                 (
-                    gds_i18n::count("recycle-purge-confirm-title", count),
-                    i18n::text("recycle-purge-confirm-message"),
-                    i18n::text("recycle-purge-confirm-ok"),
+                    gds_i18n::count_untracked("recycle-purge-confirm-title", count),
+                    i18n::text_untracked("recycle-purge-confirm-message"),
+                    i18n::text_untracked("recycle-purge-confirm-ok"),
                 )
             };
             let browser = self.clone();
@@ -1160,7 +1177,7 @@ impl Browser {
 
     fn execute_trash_action(&self, action: recycle::Action, entries: Vec<recycle::Entry>) {
         let count = entries.len();
-        let label = gds_i18n::count(
+        let label = gds_i18n::count_untracked(
             match action {
                 recycle::Action::Restore => "recycle-restore-working",
                 recycle::Action::Purge => "recycle-purge-working",
@@ -1223,12 +1240,12 @@ impl Browser {
                 browser.refresh_after_file_operation(&changed_paths, true);
                 if !failed.is_empty() {
                     let headline = match action {
-                        recycle::Action::Restore => t!(
+                        recycle::Action::Restore => gds::t_untracked!(
                             "recycle-restore-partial",
                             succeeded = succeeded as i64,
                             failed = failed.len() as i64
                         ),
-                        recycle::Action::Purge => t!(
+                        recycle::Action::Purge => gds::t_untracked!(
                             "recycle-purge-partial",
                             succeeded = succeeded as i64,
                             failed = failed.len() as i64
@@ -1240,7 +1257,7 @@ impl Browser {
                         recycle::Action::Restore => "recycle-restore-done",
                         recycle::Action::Purge => "recycle-purge-done",
                     };
-                    browser.report_success(gds_i18n::count(key, succeeded));
+                    browser.report_success(gds_i18n::count_untracked(key, succeeded));
                 }
                 browser.focus_content();
             }));
@@ -1248,8 +1265,8 @@ impl Browser {
     }
 
     pub(super) fn open_volume(&self, id: &volumes::VolumeId, new_tab: bool) {
-        let Some(volume) = self.0.volumes.snapshot().find(id).cloned() else {
-            self.report_notice(i18n::text("device-reconnect-missing"));
+        let Some(volume) = self.0.volumes.snapshot_untracked().find(id).cloned() else {
+            self.report_notice(i18n::text_untracked("device-reconnect-missing"));
             return;
         };
         if !volume.mount_points.is_empty() {
@@ -1265,11 +1282,11 @@ impl Browser {
             return;
         }
         if volume.locked {
-            self.report_notice(i18n::text("device-unlock-unavailable"));
+            self.report_notice(i18n::text_untracked("device-unlock-unavailable"));
             return;
         }
         if !volume.mountable {
-            self.report_notice(i18n::text("device-not-mounted"));
+            self.report_notice(i18n::text_untracked("device-not-mounted"));
             return;
         }
         let Ok(future) = self
@@ -1277,7 +1294,7 @@ impl Browser {
             .volumes
             .operate(DeviceAction::Mount(volume.id.clone()))
         else {
-            self.report_notice(i18n::text("device-path-unavailable"));
+            self.report_notice(i18n::text_untracked("device-path-unavailable"));
             return;
         };
         let identity = Self::volume_identity(&volume);
@@ -1306,26 +1323,24 @@ impl Browser {
         });
     }
 
-    #[allow(dead_code)]
     pub(super) fn reconnect_volume(&self) {
-        let location = self.read(|state| state.tab().navigation.location().clone());
+        let location = self.read_untracked(|state| state.tab().navigation.location().clone());
         let Location::Volume { ref identity, .. } = location else {
             self.refresh();
             return;
         };
         self.0.volumes.refresh();
-        if let Some(volume) = self.volume_at_location(identity) {
+        if let Some(volume) = self.volume_at_location_untracked(identity) {
             if !volume.mount_points.is_empty() {
                 self.refresh();
             } else {
                 self.open_volume(&volume.id, false);
             }
         } else {
-            self.report_notice(i18n::text("device-reconnect-missing"));
+            self.report_notice(i18n::text_untracked("device-reconnect-missing"));
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn select_context(&self, index: usize) {
         let changed = self.update(|state| {
             let tab = state.tab_mut();
@@ -1348,7 +1363,6 @@ impl Browser {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn column_sort(&self, column: Column) {
         self.sort_by(column);
     }

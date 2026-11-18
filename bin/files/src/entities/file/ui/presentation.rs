@@ -118,18 +118,6 @@ impl EntryPresentation {
         i18n::text(id)
     }
 
-    /// Byte size for the details panel; a directory has no byte size there.
-    pub(crate) fn size(entry: &Entry) -> String {
-        if entry.kind == EntryKind::Directory {
-            UNKNOWN_VALUE.to_owned()
-        } else {
-            entry
-                .size
-                .map(format_size)
-                .unwrap_or_else(|| UNKNOWN_VALUE.into())
-        }
-    }
-
     /// Size cell contents: bytes for a file, the direct child count for a
     /// directory. A directory whose children could not be counted stays unknown.
     pub(crate) fn size_label(entry: &Entry) -> String {
@@ -153,7 +141,6 @@ impl EntryPresentation {
         i18n::count(id, children.count as usize)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn format_size(bytes: u64) -> String {
         format_size(bytes)
     }

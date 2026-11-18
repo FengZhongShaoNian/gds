@@ -103,7 +103,7 @@ impl View {
         let enabled = Binding::controlled(
             Signal::derive_local(move || preferences.with(|p| p.tags.enabled)),
             move |enabled: bool| {
-                if !enabled || probe.ready() {
+                if !enabled || probe.state.with_untracked(|s| matches!(s, State::Ready)) {
                     view.apply(|p| p.tags.enabled = enabled);
                 }
             },

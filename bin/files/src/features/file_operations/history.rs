@@ -270,7 +270,6 @@ pub enum Kind {
 }
 
 impl Kind {
-    #[allow(dead_code)]
     pub fn label_id(self) -> &'static str {
         match self {
             Self::Copy => "history-copy",
@@ -591,13 +590,6 @@ impl History {
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
-    }
-
-    pub fn peek(&self, direction: Direction) -> Option<&Entry> {
-        match direction {
-            Direction::Undo => self.undo.last(),
-            Direction::Redo => self.redo.last(),
-        }
     }
 
     pub fn take(&mut self, direction: Direction) -> Option<Entry> {

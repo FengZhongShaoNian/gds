@@ -3,7 +3,6 @@ mod model;
 pub(crate) use model::{Filter, Options, Outcome};
 
 mod session;
-#[allow(unused_imports)]
 pub(crate) use session::{
     ActivatedPath, Projection, SaveDecision, Session, inspect_activated_path, prepare_save_targets,
 };

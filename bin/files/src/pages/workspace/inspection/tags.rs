@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Chip creation, removal and draft typing share the original editing history.
 
 mod history;
@@ -396,7 +395,7 @@ impl TagEditor {
                 match result {
                     Ok(saved) => {
                         *target.0.original.borrow_mut() = saved;
-                        browser.report_success(i18n::text("tags-saved"));
+                        browser.report_success(i18n::text_untracked("tags-saved"));
                         browser.refresh_affected(&[refresh_path]);
                         browser.refresh_tag_tabs();
                         if let Some(callback) = done.borrow_mut().take() {

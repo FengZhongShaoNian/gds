@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Blank-space rectangle selection uses native pointer capture and tab-owned identities.
 
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
@@ -11,7 +10,7 @@ use zgui::{css, view};
 
 use super::{
     drag::take_row_pointer_down,
-    geometry::{GridMotion, virtual_row_height},
+    geometry::virtual_row_height,
     model::{Row, RowKey},
     ui::Browser,
 };
@@ -42,7 +41,7 @@ const MARQUEE_CSS: &str = css!(
 #[derive(Clone, Copy)]
 pub(super) enum Layout {
     List { viewport: NodeRef },
-    Grid(GridMotion),
+    Grid,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -92,13 +91,14 @@ impl Browser {
                     if take_row_pointer_down(&down_browser) {
                         return;
                     }
-                    if !down_browser.read(|state| state.allows_multiple()) {
+                    if !down_browser.read_untracked(|state| state.allows_multiple()) {
                         return;
                     }
                     let win_pos = (ev.position.x.0, ev.position.y.0);
                     let content_pos = to_content_coords(&down_browser, layout, surface_node, win_pos);
                     let baseline = if ev.modifiers.shift() || ev.modifiers.primary() {
-                        down_browser.read(|state| state.tab().navigation.view().selection.clone())
+                        down_browser
+                            .read_untracked(|state| state.tab().navigation.view().selection.clone())
                     } else {
                         Selection::new()
                     };
@@ -184,7 +184,7 @@ impl Browser {
 fn scroll_node_for(browser: &Browser, layout: Layout) -> NodeRef {
     match layout {
         Layout::List { viewport } => viewport,
-        Layout::Grid(_) => browser.0.list,
+        Layout::Grid => browser.0.list,
     }
 }
 
@@ -241,8 +241,8 @@ fn apply_marquee_selection(
     drag: &MarqueeDrag,
 ) {
     let (x0, y0, x1, y1) = rect;
-    let row_h = browser.row_height().max(1.0);
-    let grid = browser.grid_geometry();
+    let row_h = browser.row_height_untracked().max(1.0);
+    let grid = browser.grid_geometry_untracked();
     let scale = browser.0.list.scale().max(1.0);
 
     let changed = browser.update(|state| {
@@ -261,7 +261,7 @@ fn apply_marquee_selection(
                     (first.min(last)..last).collect()
                 }
             }
-            Layout::Grid(_) => {
+            Layout::Grid => {
                 let step_h = virtual_row_height(grid.row_height, scale).max(1.0);
                 let first = (y0.max(0.0) / step_h).floor() as usize * grid.columns;
                 let end = ((y1.max(0.0) / step_h).ceil() as usize * grid.columns).min(count);

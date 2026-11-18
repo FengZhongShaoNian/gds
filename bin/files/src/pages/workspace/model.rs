@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     path::{Path, PathBuf},
     rc::Rc,
@@ -212,18 +210,11 @@ impl Drop for Tab {
     }
 }
 
-#[derive(Clone)]
-pub(super) struct Origin {
-    pub tab: u64,
-    pub location: Location,
-}
-
 pub(super) enum Operation {
     Idle,
     Running {
         label: String,
         cancel: tokio_util::sync::CancellationToken,
-        origin: Origin,
     },
 }
 

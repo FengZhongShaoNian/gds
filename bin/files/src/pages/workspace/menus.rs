@@ -51,7 +51,7 @@ pub(super) struct DirectoryTarget {
 
 impl DirectoryTarget {
     fn current(browser: &Browser) -> Option<Self> {
-        browser.read(|state| {
+        browser.read_untracked(|state| {
             let tab = state.tab();
             tab.navigation
                 .path()
@@ -68,6 +68,12 @@ impl DirectoryTarget {
             state.tab().id == self.tab && state.tab().navigation.path() == Some(self.path.as_path())
         })
     }
+
+    fn still_current_untracked(&self, browser: &Browser) -> bool {
+        browser.read_untracked(|state| {
+            state.tab().id == self.tab && state.tab().navigation.path() == Some(self.path.as_path())
+        })
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -80,7 +86,7 @@ pub(super) struct SelectionTarget {
 
 impl SelectionTarget {
     fn current(browser: &Browser, row: RowKey) -> Self {
-        browser.read(|state| Self {
+        browser.read_untracked(|state| Self {
             tab: state.tab().id,
             location: state.tab().navigation.location().clone(),
             row,
@@ -120,19 +126,20 @@ impl DirectoryAction {
     }
 
     fn available(self, browser: &Browser, target: &DirectoryTarget) -> bool {
-        target.still_current(browser)
+        target.still_current_untracked(browser)
             && match self {
                 Self::NewFolder | Self::Paste => {
                     !browser.0.volumes.removal_in_progress(&target.path)
-                        && !browser.read(|state| {
+                        && !browser.read_untracked(|state| {
                             state.operation.busy() || state.tab().navigation.is_loading()
                         })
-                        && (!matches!(self, Self::Paste) || Clipboard::current().can_paste())
+                        && (!matches!(self, Self::Paste)
+                            || Clipboard::current().can_paste_untracked())
                 }
                 Self::InternalTerminal => {
                     !browser.0.volumes.removal_in_progress(&target.path)
                         && browser.0.preferences.snapshot().terminal_enabled()
-                        && browser.read(|state| state.picker.is_none())
+                        && browser.read_untracked(|state| state.picker.is_none())
                 }
                 Self::Terminal => {
                     !browser.0.volumes.removal_in_progress(&target.path)
@@ -143,8 +150,8 @@ impl DirectoryAction {
     }
 
     fn run(self, browser: &Browser, target: DirectoryTarget) {
-        if !target.still_current(browser) {
-            browser.report_notice(i18n::text("location-changed"));
+        if !target.still_current_untracked(browser) {
+            browser.report_notice(i18n::text_untracked("location-changed"));
             return;
         }
         if !self.available(browser, &target) {
@@ -253,7 +260,6 @@ impl Menus {
         }
     }
 
-    #[allow(dead_code)]
     pub fn is_open(&self) -> bool {
         !matches!(self.surface.get_untracked(), Surface::Closed)
     }
@@ -377,7 +383,6 @@ fn anchored_menu_surface(
 }
 
 impl Browser {
-    #[allow(dead_code)]
     pub(super) fn menu_key(&self, event: &KeyEvent) -> bool {
         if !self.0.menus.is_open() {
             return false;
@@ -411,7 +416,7 @@ impl Browser {
         action: impl Fn(&Browser) + 'static,
     ) -> MenuEntry {
         MenuEntry::Item {
-            label: i18n::text(label_id),
+            label: i18n::text_untracked(label_id),
             icon,
             shortcut: shortcut.map(Command::shortcut),
             disabled,
@@ -422,7 +427,7 @@ impl Browser {
 
     fn command_item(&self, command: Command, action: impl Fn(&Browser) + 'static) -> MenuEntry {
         MenuEntry::Item {
-            label: i18n::text(command.label_id()),
+            label: i18n::text_untracked(command.label_id()),
             icon: command_icon(command),
             shortcut: Some(command.shortcut()),
             disabled: false,
@@ -433,10 +438,10 @@ impl Browser {
 
     fn paste_item(&self) -> MenuEntry {
         MenuEntry::Item {
-            label: i18n::text(Command::Paste.label_id()),
+            label: i18n::text_untracked(Command::Paste.label_id()),
             icon: Some(IconName::ClipboardPaste),
             shortcut: Some(Command::Paste.shortcut()),
-            disabled: !Clipboard::current().can_paste(),
+            disabled: !Clipboard::current().can_paste_untracked(),
             destructive: false,
             on_select: self.menu_action(Command::Paste.label_id(), Browser::paste),
         }
@@ -445,7 +450,7 @@ impl Browser {
     fn app_entries(&self) -> Vec<MenuEntry> {
         let mut entries = vec![
             self.command_item(Command::NewWindow, |browser| {
-                let path = browser.read(|state| {
+                let path = browser.read_untracked(|state| {
                     state
                         .tab()
                         .navigation
@@ -460,7 +465,7 @@ impl Browser {
         ];
         if Gds::current().ui().logs().is_enabled() {
             entries.push(MenuEntry::Item {
-                label: i18n::text("logs-title"),
+                label: i18n::text_untracked("logs-title"),
                 icon: None,
                 shortcut: None,
                 disabled: false,
@@ -565,15 +570,15 @@ impl Browser {
         if let Some(entries) = self.special_page_entries() {
             return entries;
         }
-        let grid = self.read(|state| state.tab().mode == ViewMode::Grid);
-        let favorite =
-            self.read(|state| state.places.is_favorite(state.tab().navigation.location()));
+        let grid = self.read_untracked(|state| state.tab().mode == ViewMode::Grid);
+        let favorite = self
+            .read_untracked(|state| state.places.is_favorite(state.tab().navigation.location()));
         let columns = self.configurable_columns();
         let show_hidden = self.0.preferences.snapshot().files.show_hidden;
-        let compact = self.compact();
+        let compact = self.compact_untracked();
 
         let mut entries = vec![MenuEntry::Item {
-            label: i18n::text(if grid { "view-list" } else { "view-grid" }),
+            label: i18n::text_untracked(if grid { "view-list" } else { "view-grid" }),
             icon: Some(if grid {
                 IconName::List
             } else {
@@ -585,7 +590,7 @@ impl Browser {
             on_select: self.menu_action("view-toggle", Browser::toggle_view),
         }];
         entries.push(MenuEntry::Checkbox {
-            label: i18n::text(if favorite {
+            label: i18n::text_untracked(if favorite {
                 "favorite-remove"
             } else {
                 "favorite-add"
@@ -609,7 +614,7 @@ impl Browser {
             Browser::configure_columns,
         ));
         entries.push(MenuEntry::Checkbox {
-            label: i18n::text(Command::Hidden.label_id()),
+            label: i18n::text_untracked(Command::Hidden.label_id()),
             checked: show_hidden,
             disabled: false,
             on_toggle: {
@@ -638,7 +643,7 @@ impl Browser {
         let sort = self.sort_entries();
         if !sort.is_empty() {
             entries.push(MenuEntry::Submenu {
-                label: i18n::text("sort"),
+                label: i18n::text_untracked("sort"),
                 icon: Some(IconName::ArrowDownWideNarrow),
                 entries: sort,
             });
@@ -646,7 +651,6 @@ impl Browser {
         entries
     }
 
-    #[allow(dead_code)]
     pub(super) fn show_context_menu(&self) {
         let Some(bounds) = self.0.list.window_bounds() else {
             return;
@@ -657,7 +661,7 @@ impl Browser {
         let port_w = (bounds.size.width.0 / scale).max(1.0);
         let port_h = (bounds.size.height.0 / scale).max(1.0);
 
-        let (target, grid) = self.read(|state| {
+        let (target, grid) = self.read_untracked(|state| {
             let tab = state.tab();
             let target = tab
                 .navigation
@@ -677,7 +681,7 @@ impl Browser {
 
         if let Some((index, target)) = target {
             let tile = if grid {
-                self.grid_geometry().tile(index, scale)
+                self.grid_geometry_untracked().tile(index, scale)
             } else {
                 let row = DataListStyle::ROW_HEIGHT;
                 RectF::new(0.0, row * index as f32, 0.0, row)
@@ -692,8 +696,10 @@ impl Browser {
                 x,
                 y,
             });
-        } else if self.read(|state| matches!(state.tab().navigation.location(), Location::Trash)) {
-            let tab = self.read(|state| state.tab().id);
+        } else if self
+            .read_untracked(|state| matches!(state.tab().navigation.location(), Location::Trash))
+        {
+            let tab = self.read_untracked(|state| state.tab().id);
             self.0.menus.surface.set(Surface::Trash {
                 tab,
                 x: port_x + 11.0,
@@ -709,7 +715,7 @@ impl Browser {
     }
 
     pub(super) fn row_menu(&self, target_view: AnyView, index: usize) -> AnyView {
-        let Some(row) = self.read(|state| state.tab().rows.get(index).cloned()) else {
+        let Some(row) = self.read_untracked(|state| state.tab().rows.get(index).cloned()) else {
             return target_view;
         };
         let clicked = row.key();
@@ -720,7 +726,7 @@ impl Browser {
                 on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
                     if ev.button == Some(PointerButton::Secondary) {
                         ev.stop_propagation();
-                        let current_index = open.read(|state| {
+                        let current_index = open.read_untracked(|state| {
                             state.tab().rows.iter().position(|row| row.key() == clicked)
                         });
                         if let Some(current_index) = current_index {
@@ -761,7 +767,7 @@ impl Browser {
     pub(super) fn directory_menu(&self, target_view: AnyView) -> AnyView {
         let open = self.clone();
         let trigger = move |x: f32, y: f32| {
-            if let Some(tab) = open.read(|state| {
+            if let Some(tab) = open.read_untracked(|state| {
                 matches!(state.tab().navigation.location(), Location::Trash)
                     .then_some(state.tab().id)
             }) {
@@ -800,7 +806,7 @@ impl Browser {
             let target_run = target.clone();
             let disabled = !action.available(self, &target);
             MenuEntry::Item {
-                label: i18n::text(action.label()),
+                label: i18n::text_untracked(action.label()),
                 icon: Some(icon),
                 shortcut: command.map(Command::shortcut),
                 disabled,
@@ -829,7 +835,7 @@ impl Browser {
             MenuEntry::Separator,
         ];
         if self.0.preferences.snapshot().terminal_enabled() {
-            if self.read(|state| state.picker.is_none()) {
+            if self.read_untracked(|state| state.picker.is_none()) {
                 entries.push(item(
                     DirectoryAction::InternalTerminal,
                     IconName::Terminal,
@@ -873,21 +879,21 @@ impl Browser {
         let add = self.clone();
         vec![
             MenuEntry::Item {
-                label: i18n::text(if pinned { "unpin-tab" } else { "pin-tab" }),
+                label: i18n::text_untracked(if pinned { "unpin-tab" } else { "pin-tab" }),
                 icon: None,
                 shortcut: None,
                 disabled: false,
                 destructive: false,
                 on_select: UnsyncCallback::new(move |()| {
                     if let Some(index) =
-                        pin.read(|state| state.tabs.iter().position(|tab| tab.id == id))
+                        pin.read_untracked(|state| state.tabs.iter().position(|tab| tab.id == id))
                     {
                         pin.0.owner.with(|| pin.toggle_pin(index));
                     }
                 }),
             },
             MenuEntry::Item {
-                label: i18n::text(Command::NewTab.label_id()),
+                label: i18n::text_untracked(Command::NewTab.label_id()),
                 icon: None,
                 shortcut: Some(Command::NewTab.shortcut()),
                 disabled: false,
@@ -895,14 +901,14 @@ impl Browser {
                 on_select: UnsyncCallback::new(move |()| add.0.owner.with(|| add.new_tab(None))),
             },
             MenuEntry::Item {
-                label: i18n::text(Command::CloseTab.label_id()),
+                label: i18n::text_untracked(Command::CloseTab.label_id()),
                 icon: None,
                 shortcut: Some(Command::CloseTab.shortcut()),
                 disabled: false,
                 destructive: false,
                 on_select: UnsyncCallback::new(move |()| {
                     if let Some(index) =
-                        close.read(|state| state.tabs.iter().position(|tab| tab.id == id))
+                        close.read_untracked(|state| state.tabs.iter().position(|tab| tab.id == id))
                     {
                         close.0.owner.with(|| close.close_tab(index));
                     }
@@ -915,15 +921,15 @@ impl Browser {
         match row {
             Row::Trash(_) => self.trash_entries(true),
             Row::Volume(volume) => {
-                let busy =
-                    self.0.volumes.is_busy(&volume.id) || self.read(|state| state.operation.busy());
+                let busy = self.0.volumes.is_busy_untracked(&volume.id)
+                    || self.read_untracked(|state| state.operation.busy());
                 let rename = volume.clone();
                 let mut items = Vec::new();
                 if !volume.mount_points.is_empty() {
                     let open = volume.id.clone();
                     let new_tab = open.clone();
                     items.push(MenuEntry::Item {
-                        label: i18n::text("open"),
+                        label: i18n::text_untracked("open"),
                         icon: Some(IconName::Folder),
                         shortcut: Some(Command::Open.shortcut()),
                         disabled: busy,
@@ -933,7 +939,7 @@ impl Browser {
                         }),
                     });
                     items.push(MenuEntry::Item {
-                        label: i18n::text(Command::OpenInNewTab.label_id()),
+                        label: i18n::text_untracked(Command::OpenInNewTab.label_id()),
                         icon: Some(IconName::Folder),
                         shortcut: Some(Command::OpenInNewTab.shortcut()),
                         disabled: busy,
@@ -948,7 +954,7 @@ impl Browser {
                 }
                 if volume.can_set_label() {
                     items.push(MenuEntry::Item {
-                        label: i18n::text("rename"),
+                        label: i18n::text_untracked("rename"),
                         icon: Some(IconName::TextCursor),
                         shortcut: Some(Command::Rename.shortcut()),
                         disabled: busy,
@@ -962,7 +968,7 @@ impl Browser {
                     let id = volume.id.clone();
                     let enabled = volume.mountable && !volume.locked && !busy;
                     items.push(MenuEntry::Item {
-                        label: i18n::text("device-mount"),
+                        label: i18n::text_untracked("device-mount"),
                         icon: Some(IconName::Plug),
                         shortcut: Some(Command::MountVolume.shortcut()),
                         disabled: !enabled,
@@ -974,7 +980,7 @@ impl Browser {
                 } else if volume.can_unmount() {
                     let id = volume.id.clone();
                     items.push(MenuEntry::Item {
-                        label: i18n::text("device-unmount"),
+                        label: i18n::text_untracked("device-unmount"),
                         icon: Some(IconName::Unplug),
                         shortcut: Some(Command::UnmountVolume.shortcut()),
                         disabled: busy,
@@ -984,12 +990,12 @@ impl Browser {
                         }),
                     });
                 }
-                let snapshot = self.0.volumes.snapshot();
+                let snapshot = self.0.volumes.snapshot_untracked();
                 if let Some(drive) = volume.drive.as_ref().and_then(|id| snapshot.drive(id)) {
                     if drive.can_eject {
                         let id = volume.id.clone();
                         items.push(MenuEntry::Item {
-                            label: i18n::text("device-eject"),
+                            label: i18n::text_untracked("device-eject"),
                             icon: Some(IconName::Unplug),
                             shortcut: None,
                             disabled: busy,
@@ -1002,7 +1008,7 @@ impl Browser {
                     if drive.can_power_off {
                         let id = volume.id.clone();
                         items.push(MenuEntry::Item {
-                            label: i18n::text("device-power-off"),
+                            label: i18n::text_untracked("device-power-off"),
                             icon: None,
                             shortcut: None,
                             disabled: false,
@@ -1042,7 +1048,7 @@ impl Browser {
             ],
             Row::Place(_) => self.place_entries(row),
             Row::File(_)
-                if self.read(|state| {
+                if self.read_untracked(|state| {
                     matches!(state.tab().navigation.location(), Location::Tags(_))
                 }) =>
             {
@@ -1053,7 +1059,7 @@ impl Browser {
     }
 
     fn trash_entries(&self, selection: bool) -> Vec<MenuEntry> {
-        let (count, busy, has_rows) = self.read(|state| {
+        let (count, busy, has_rows) = self.read_untracked(|state| {
             let tab = state.tab();
             (
                 tab.navigation.view().selection.len(),
@@ -1064,14 +1070,14 @@ impl Browser {
         let mut entries = Vec::new();
         if selection {
             let restore = if count == 1 {
-                i18n::text("recycle-restore")
+                i18n::text_untracked("recycle-restore")
             } else {
-                i18n::count("recycle-restore-selected", count)
+                i18n::count_untracked("recycle-restore-selected", count)
             };
             for (label, icon, command, purge) in [
                 (restore, IconName::Undo, Command::RestoreSelection, false),
                 (
-                    i18n::count("recycle-purge-selected", count),
+                    i18n::count_untracked("recycle-purge-selected", count),
                     IconName::Trash,
                     Command::PurgeSelection,
                     true,
@@ -1121,9 +1127,9 @@ impl Browser {
             return Vec::new();
         };
         let local = location.local_path();
-        let favorite = self.read(|state| state.places.is_favorite(&location));
-        let recent =
-            self.read(|state| matches!(state.tab().navigation.location(), Location::Recent));
+        let favorite = self.read_untracked(|state| state.places.is_favorite(&location));
+        let recent = self
+            .read_untracked(|state| matches!(state.tab().navigation.location(), Location::Recent));
         let target = location.clone();
         let new_tab = location.clone();
         let mut entries = vec![
@@ -1190,7 +1196,7 @@ impl Browser {
     }
 
     fn file_entries(&self, entry: &crate::entities::file::directory::Entry) -> Vec<MenuEntry> {
-        let (selected, picker, busy, current_dir) = self.read(|state| {
+        let (selected, picker, busy, current_dir) = self.read_untracked(|state| {
             let tab = state.tab();
             (
                 tab.selected(),
@@ -1211,11 +1217,11 @@ impl Browser {
 
         let action = |command: Command, plural: &'static str, run: fn(&Browser), disabled: bool| {
             let label = if many {
-                i18n::count(plural, count)
+                i18n::count_untracked(plural, count)
             } else if command == Command::CopyPaths {
-                i18n::text("copy-path")
+                i18n::text_untracked("copy-path")
             } else {
-                i18n::text(command.label_id())
+                i18n::text_untracked(command.label_id())
             };
             MenuEntry::Item {
                 label,
@@ -1266,7 +1272,7 @@ impl Browser {
         if !many {
             let paste_disabled = busy
                 || current_dir.is_none_or(|path| self.0.volumes.removal_in_progress(&path))
-                || !Clipboard::current().can_paste();
+                || !Clipboard::current().can_paste_untracked();
             entries.push(self.menu_item_entry(
                 "paste-files",
                 Some(IconName::ClipboardPaste),
@@ -1374,7 +1380,7 @@ impl Browser {
     }
 
     pub(super) fn open_selected_tab(&self) {
-        for row in self.read(|state| state.tab().selected()) {
+        for row in self.read_untracked(|state| state.tab().selected()) {
             let location = match row {
                 Row::File(entry) if FileIcon::is_directory(&entry) => {
                     Location::from(entry.path.as_path())
@@ -1394,7 +1400,7 @@ impl Browser {
     }
 
     fn open_selected_with(&self) {
-        let paths = self.read(|state| {
+        let paths = self.read_untracked(|state| {
             state
                 .tab()
                 .selected()
@@ -1408,7 +1414,7 @@ impl Browser {
     }
 
     fn show_selected_parent(&self) {
-        let paths = self.read(|state| {
+        let paths = self.read_untracked(|state| {
             state
                 .tab()
                 .selected()
@@ -1429,7 +1435,7 @@ impl Browser {
     }
 
     fn edit_selected_tags(&self) {
-        let paths = self.read(|state| {
+        let paths = self.read_untracked(|state| {
             state
                 .tab()
                 .selected()
@@ -1451,7 +1457,7 @@ impl Browser {
     pub(super) fn copy_selected_paths(&self) {
         use crate::features::file_operations::{Batch, Error};
 
-        let (rows, collection) = self.read(|state| {
+        let (rows, collection) = self.read_untracked(|state| {
             let tab = state.tab();
             (
                 tab.selected(),
@@ -1513,8 +1519,8 @@ impl Browser {
     }
 
     pub(super) fn change_volume(&self, action: volumes::DeviceAction) {
-        if self.read(|state| state.operation.busy()) {
-            self.report_notice(i18n::text("remote-task-running"));
+        if self.read_untracked(|state| state.operation.busy()) {
+            self.report_notice(i18n::text_untracked("remote-task-running"));
             return;
         }
         let weak = self.downgrade();
@@ -1562,7 +1568,7 @@ impl Browser {
         let entries_browser = self.clone();
         let close_browser = self.clone();
         let configurable = self.configurable_columns();
-        let grid = self.read(|state| state.tab().mode == ViewMode::Grid);
+        let grid = self.read_untracked(|state| state.tab().mode == ViewMode::Grid);
         let sortable = !self.sortable_columns().is_empty();
         let open = Signal::derive_local({
             let browser = self.clone();
@@ -1609,13 +1615,13 @@ impl Browser {
     }
 
     fn sort_entries(&self) -> Vec<MenuEntry> {
-        let current_sort = self.read(|state| state.tab().sort.key);
+        let current_sort = self.read_untracked(|state| state.tab().sort.key);
         self.sortable_columns()
             .into_iter()
             .map(|column| {
                 let weak = self.downgrade();
                 MenuEntry::Checkbox {
-                    label: i18n::text(column.label_id()),
+                    label: i18n::text_untracked(column.label_id()),
                     checked: current_sort == column,
                     disabled: false,
                     on_toggle: UnsyncCallback::new(move |_| {
@@ -1642,10 +1648,12 @@ impl Browser {
     }
 
     pub(super) fn configure_columns(&self) {
-        if !self.configurable_columns() || self.read(|state| state.tab().mode == ViewMode::Grid) {
+        if !self.configurable_columns()
+            || self.read_untracked(|state| state.tab().mode == ViewMode::Grid)
+        {
             return;
         }
-        let (location, layout) = self.read(|state| {
+        let (location, layout) = self.read_untracked(|state| {
             (
                 state.tab().navigation.location().clone(),
                 state.tab().columns.clone(),
@@ -1659,7 +1667,7 @@ impl Browser {
     }
 
     fn configurable_columns(&self) -> bool {
-        self.read(|state| {
+        self.read_untracked(|state| {
             matches!(
                 state.tab().contents,
                 Contents::Directory | Contents::Tags { .. }
@@ -1749,7 +1757,7 @@ impl Browser {
             let _z = enter_non_reactive_zone();
             match surface {
                 Surface::Selection { target, x, y } => self
-                    .read(|state| {
+                    .read_untracked(|state| {
                         state
                             .tab()
                             .rows
@@ -1761,7 +1769,7 @@ impl Browser {
                 Surface::Directory { target, x, y } => Some((x, y, self.directory_entries(target))),
                 Surface::Trash { x, y, .. } => Some((x, y, self.trash_entries(false))),
                 Surface::Tab { id, x, y } => self
-                    .read(|state| {
+                    .read_untracked(|state| {
                         state
                             .tabs
                             .iter()
@@ -1995,7 +2003,8 @@ impl Browser {
         });
         self.save_places();
         self.0.menus.close();
-        let tabs = self.read(|state| state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>());
+        let tabs =
+            self.read_untracked(|state| state.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>());
         for id in tabs {
             self.reproject(id);
             self.enrich_directory(id);

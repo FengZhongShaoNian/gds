@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Native tab reordering, pointer/OS drag-and-drop, spring-loading, and lazy file drag snapshots.
 
 use std::{
@@ -23,10 +22,7 @@ use super::{
     ui::Browser,
 };
 use crate::{
-    entities::file::{
-        directory::{Entry, EntryKind},
-        ui::FileIcon,
-    },
+    entities::file::directory::Entry,
     features::file_operations::{paste::PasteJob, transfer},
     shared::{i18n, lib::selection::Selection},
 };
@@ -34,20 +30,12 @@ use crate::{
 #[derive(Clone, Debug)]
 struct DragItem {
     path: PathBuf,
-    name: String,
-    is_dir: bool,
-    icon: FileIcon,
-    directory_icon: bool,
 }
 
 impl DragItem {
     fn new(entry: &Entry) -> Self {
         Self {
             path: entry.path.clone(),
-            name: entry.display_name.clone(),
-            is_dir: entry.kind == EntryKind::Directory,
-            icon: FileIcon::for_entry(entry),
-            directory_icon: FileIcon::is_directory(entry),
         }
     }
 }
@@ -85,27 +73,6 @@ impl DragSnapshotInner {
                     .into()
             })
             .as_ref()
-    }
-
-    fn clear_source(&self) {
-        self.source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-    }
-
-    fn set_rows(&self, rows: Arc<[Entry]>) {
-        if self.entries.get().is_some() {
-            return;
-        }
-        if let Some(source) = self
-            .source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_mut()
-        {
-            source.rows = rows;
-        }
     }
 }
 
@@ -163,11 +130,6 @@ pub(super) struct DragSnapshot {
     inner: Option<Arc<DragSnapshotInner>>,
 }
 
-pub(super) struct SuspendedDrag {
-    inner: Option<Arc<DragSnapshotInner>>,
-    selected: Selection<PathBuf>,
-}
-
 impl DragSnapshot {
     pub(super) fn new(rows: &Arc<[Entry]>, selected: &Selection<PathBuf>) -> Self {
         if rows.is_empty() || selected.len() <= 1 {
@@ -181,64 +143,6 @@ impl DragSnapshot {
                 })),
                 entries: OnceLock::new(),
             })),
-        }
-    }
-
-    pub(super) fn clear_source(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            inner.clear_source();
-        }
-    }
-
-    pub(super) fn suspend_rows(&mut self) -> Option<SuspendedDrag> {
-        let inner = self.inner.take()?;
-        let source = inner
-            .source
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()?;
-        Some(SuspendedDrag {
-            inner: Some(inner),
-            selected: source.selected,
-        })
-    }
-
-    pub(super) fn restore_rows(
-        &mut self,
-        suspended: Option<SuspendedDrag>,
-        rows: &Arc<[Entry]>,
-        selected: &Selection<PathBuf>,
-    ) {
-        let Some(mut suspended) = suspended else {
-            *self = Self::new(rows, selected);
-            return;
-        };
-        if rows.is_empty() || suspended.selected.len() <= 1 {
-            self.inner = None;
-            return;
-        }
-        if let Some(inner) = suspended.inner.take() {
-            if inner.entries.get().is_none() {
-                *inner
-                    .source
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some(DragSnapshotSource {
-                        rows: Arc::clone(rows),
-                        selected: suspended.selected,
-                    });
-            }
-            self.inner = Some(inner);
-        } else {
-            *self = Self::new(rows, selected);
-        }
-    }
-
-    pub(super) fn update_rows(&mut self, rows: &Arc<[Entry]>, selected: &Selection<PathBuf>) {
-        if let Some(inner) = &self.inner {
-            inner.set_rows(Arc::clone(rows));
-        } else {
-            *self = Self::new(rows, selected);
         }
     }
 
@@ -306,7 +210,6 @@ struct RegisteredTab {
 }
 
 struct SpringLoad {
-    target_key: String,
     _timer: TimeoutHandle,
 }
 
@@ -414,11 +317,17 @@ fn coordinator_for(browser: &Browser) -> Rc<DragCoordinator> {
             });
         });
     }
+    if let Some(coord) = COORDINATORS.with(|slot| slot.borrow().get(&window_key).cloned()) {
+        return coord;
+    }
+    // DragCoordinator allocates RwSignal overlay state; anchor it to the window owner so
+    // unmounting the first list/row branch does not dispose signals cached per window.
+    let coord = browser.0.owner.with(|| Rc::new(DragCoordinator::new()));
     COORDINATORS.with(|slot| {
         Rc::clone(
             slot.borrow_mut()
                 .entry(window_key)
-                .or_insert_with(|| Rc::new(DragCoordinator::new())),
+                .or_insert_with(|| Rc::clone(&coord)),
         )
     })
 }
@@ -430,7 +339,7 @@ impl Browser {
         let browser = self.clone();
         let on_external_drop =
             UnsyncCallback::new(move |(paths, _pos): (Vec<PathBuf>, (f32, f32))| {
-                let destination = browser.read(|state| {
+                let destination = browser.read_untracked(|state| {
                     let tab = state.tab();
                     matches!(tab.contents, Contents::Directory)
                         .then(|| tab.navigation.path().map(Path::to_path_buf))
@@ -539,7 +448,7 @@ impl Browser {
                         && distance(start, pos) >= DRAG_THRESHOLD
                     {
                         let _ = armed_pinned;
-                        let title = move_browser.read(|state| {
+                        let title = move_browser.read_untracked(|state| {
                             state
                                 .tabs
                                 .iter()
@@ -662,7 +571,7 @@ impl Browser {
                         return;
                     }
                     mark_row_pointer_down(&press_browser);
-                    let tab_id = press_browser.read(|state| state.tab().id);
+                    let tab_id = press_browser.read_untracked(|state| state.tab().id);
                     *press_coord.armed.borrow_mut() = Some(ArmedDrag::File {
                         entry: row_entry.clone(),
                         tab_id,
@@ -728,7 +637,7 @@ impl Browser {
                     {
                         let destination = match target.kind {
                             TargetKind::Folder(path) => Some(path),
-                            TargetKind::Tab(tab_id) => up_browser.read(|state| {
+                            TargetKind::Tab(tab_id) => up_browser.read_untracked(|state| {
                                 state
                                     .tabs
                                     .iter()
@@ -790,7 +699,7 @@ fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
 }
 
 fn materialize_file_drag(browser: &Browser, tab_id: u64, entry: &Entry) -> Option<FileDrag> {
-    browser.read(|state| {
+    browser.read_untracked(|state| {
         let tab = state.tabs.iter().find(|tab| tab.id == tab_id)?;
         if !matches!(tab.contents, Contents::Directory | Contents::Tags { .. }) {
             return None;
@@ -832,9 +741,9 @@ fn update_file_drag_hover(browser: &Browser, coord: &Rc<DragCoordinator>, pos: (
     };
     let already_open = match &target.kind {
         TargetKind::Folder(dest) => {
-            browser.read(|state| state.tab().navigation.path() == Some(dest.as_path()))
+            browser.read_untracked(|state| state.tab().navigation.path() == Some(dest.as_path()))
         }
-        TargetKind::Tab(tab_id) => browser.read(|state| state.tab().id == *tab_id),
+        TargetKind::Tab(tab_id) => browser.read_untracked(|state| state.tab().id == *tab_id),
     };
     if already_open {
         return;
@@ -869,18 +778,18 @@ fn update_file_drag_hover(browser: &Browser, coord: &Rc<DragCoordinator>, pos: (
             }
         }
     });
-    *coord.spring.borrow_mut() = Some(SpringLoad {
-        target_key: target.key,
-        _timer: handle,
-    });
+    *coord.spring.borrow_mut() = Some(SpringLoad { _timer: handle });
 }
 
 #[cfg(test)]
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
-    use super::{DragSnapshot, Entry, EntryKind, FileDrag};
-    use crate::{entities::file::directory::EntryDetails, shared::lib::selection::Selection};
+    use super::{DragSnapshot, Entry, FileDrag};
+    use crate::{
+        entities::file::directory::{EntryDetails, EntryKind},
+        shared::lib::selection::Selection,
+    };
 
     fn sample_entry(index: usize) -> Entry {
         let name = format!("file-{index:04}.txt");

@@ -222,7 +222,7 @@ const LOGS_CSS: &str = "
     font-family: var(--gds-font-mono);
     font-size: 12px;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 .gds-logs-footer {
     padding: 4px 12px;

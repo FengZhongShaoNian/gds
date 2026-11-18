@@ -22,12 +22,12 @@ use gds::ui::{IconName, IconProps};
 use zgui::geom::{CssPx, Point};
 use zgui::prelude::*;
 use zgui::reactive::{
-    RenderEffect, RwSignal, UnsyncCallback, enter_non_reactive_zone, on_cleanup_local,
+    Owner, RenderEffect, RwSignal, UnsyncCallback, enter_non_reactive_zone, on_cleanup_local,
 };
-use zgui::view::{current_host, events, focus_is_text_entry, install_stylesheet};
+use zgui::view::{Scoped, current_host, events, focus_is_text_entry, install_stylesheet};
 use zgui::vocab::{PointerButton, Role, SharedString};
 use zgui::{css, view};
-use zgui_ui::{SpinnerProps, VirtualListProps, Virtualize};
+use zgui_ui::{ButtonProps, ButtonVariant, SpinnerProps, VirtualListProps, Virtualize};
 use zgui_ui_primitives::Binding;
 
 use super::geometry::{GRID_GAP, GRID_PADDING, GridMotion};
@@ -1015,14 +1015,32 @@ const WORKSPACE_CSS: &str = css!(
 pub(super) fn local_memo<T: PartialEq + Clone + 'static>(
     compute: impl Fn() -> T + 'static,
 ) -> Signal<T, LocalStorage> {
-    let signal = RwSignal::new_local(compute());
+    let owner = Owner::current();
+    let owner_fx = owner.clone();
+    let compute = std::rc::Rc::new(compute);
+    let compute_fx = std::rc::Rc::clone(&compute);
+    let slot: std::rc::Rc<std::cell::OnceCell<RwSignal<T, LocalStorage>>> =
+        std::rc::Rc::new(std::cell::OnceCell::new());
+    let slot_fx = std::rc::Rc::clone(&slot);
     let fx = RenderEffect::new(move |_| {
-        let next = compute();
-        if signal.with_untracked(|current| *current != next) {
-            signal.set(next);
+        let next = compute_fx();
+        if let Some(signal) = slot_fx.get() {
+            if signal.with_untracked(|current| *current != next) {
+                signal.set(next);
+            }
+        } else {
+            let signal = match &owner_fx {
+                Some(parent) => parent.with(|| RwSignal::new_local(next)),
+                None => RwSignal::new_local(next),
+            };
+            let _ = slot_fx.set(signal);
         }
     });
     on_cleanup_local(move || drop(fx));
+    let signal = *slot.get_or_init(|| match &owner {
+        Some(parent) => parent.with(|| RwSignal::new_local(compute())),
+        None => RwSignal::new_local(compute()),
+    });
     Signal::from(signal.read_only())
 }
 
@@ -1067,6 +1085,11 @@ impl Browser {
     }
 
     pub fn view(&self) -> impl IntoView + use<> {
+        let browser = self.clone();
+        Scoped::new(move || browser.view_scoped())
+    }
+
+    fn view_scoped(&self) -> impl IntoView + use<> {
         install_workspace_stylesheets();
 
         let keytip_active = RwSignal::new_local(false);
@@ -1212,6 +1235,11 @@ impl Browser {
     }
 
     fn workspace_view(&self) -> AnyView {
+        let browser = self.clone();
+        AnyView::new(Scoped::new(move || browser.workspace_view_scoped()))
+    }
+
+    fn workspace_view_scoped(&self) -> AnyView {
         let expanded_memo = local_memo({
             let browser = self.clone();
             move || browser.sidebar_expanded()
@@ -1315,7 +1343,7 @@ impl Browser {
             let browser = self.clone();
             move || {
                 browser.read(|state| state.picker.is_none())
-                    && browser.0.preferences.snapshot().terminal_enabled()
+                    && browser.0.preferences.state().with(|p| p.terminal_enabled())
             }
         });
 
@@ -1371,6 +1399,11 @@ impl Browser {
     }
 
     fn file_content(&self) -> AnyView {
+        let browser = self.clone();
+        AnyView::new(Scoped::new(move || browser.file_content_scoped()))
+    }
+
+    fn file_content_scoped(&self) -> AnyView {
         let title_browser = self.clone();
         let content_browser = self.clone();
         let details_browser = self.clone();
@@ -1419,7 +1452,7 @@ impl Browser {
         let append_search = move |browser: &Browser, inserted: &str| {
             if inserted.is_empty()
                 || inserted.chars().all(char::is_control)
-                || !browser.filter_available()
+                || !browser.filter_available_untracked()
                 || !browser.0.preferences.snapshot().files.auto_focus_search
                 || focus_is_text_entry()
             {
@@ -1575,17 +1608,24 @@ impl Browser {
     }
 
     fn location_loading(&self, location: &Location) -> AnyView {
-        let label = match location {
-            Location::Volume { identity, .. } => self
-                .volume_at_location(identity)
-                .map_or_else(|| location.label(), |volume| volume.name),
-            _ => location.label(),
+        let message = match location {
+            Location::Volume { identity, .. } => {
+                let label = self
+                    .volume_at_location(identity)
+                    .map_or_else(|| location.label(), |volume| volume.name);
+                gds::t!("loading-volume", name = label)
+            }
+            _ => i18n::text("loading"),
         };
-        let message = gds::t!("loading-volume", name = label);
+        let cancel = self.clone();
         AnyView::new(view! {
             column(class = "gds-files-state-center") {
                 Spinner()
                 text {{message}}
+                Button(
+                    variant = ButtonVariant::Outline,
+                    on:click = move |_| cancel.cancel_location_load(),
+                ) {{i18n::text("operation-cancel")}}
             }
         })
     }
@@ -1792,6 +1832,11 @@ impl Browser {
     }
 
     fn list_view(&self) -> AnyView {
+        let browser = self.clone();
+        AnyView::new(Scoped::new(move || browser.list_view_scoped()))
+    }
+
+    fn list_view_scoped(&self) -> AnyView {
         self.attach_list_scroll_observer();
 
         let list_node = self.0.list;
@@ -1814,7 +1859,7 @@ impl Browser {
                 scroll(node_ref = viewport, class = "gds-files-table-x") {
                     column(
                         class = "gds-files-table-inner",
-                        style:min_width = move || Some(format!("{:.1}px", table_browser.table_width()))
+                        style:min-width = move || Some(format!("{:.1}px", table_browser.table_width()))
                     ) {
                         {{move || {
                             if let Some(header) = header_browser.collection_header() {
@@ -1862,6 +1907,11 @@ impl Browser {
     }
 
     fn grid_view(&self) -> AnyView {
+        let browser = self.clone();
+        AnyView::new(Scoped::new(move || browser.grid_view_scoped()))
+    }
+
+    fn grid_view_scoped(&self) -> AnyView {
         self.attach_list_scroll_observer();
 
         let list_node = self.0.list;
@@ -1920,10 +1970,9 @@ impl Browser {
             }
         });
 
-        self.directory_menu(self.marquee_surface(
-            self.background_drop_target(target),
-            marquee::Layout::Grid(motion),
-        ))
+        self.directory_menu(
+            self.marquee_surface(self.background_drop_target(target), marquee::Layout::Grid),
+        )
     }
 
     fn visible_row(&self, index: usize, motion: Option<GridMotion>) -> AnyView {
@@ -2013,7 +2062,7 @@ impl Browser {
         let context_row = self.clone();
 
         if grid {
-            let geometry = self.grid_geometry();
+            let geometry = self.grid_geometry_untracked();
             let artwork = self.artwork(&row, geometry.icon_size, selection_progress);
             let a11y_label = SharedString::from(label.clone());
             let tile_tooltip = wrap_tokens(&label);
@@ -2067,8 +2116,8 @@ impl Browser {
                     ) {
                         text(
                             class = "gds-files-tile-name",
-                            style:font_size = format!("{name_size:.1}px"),
-                            style:line_height = format!("{line_height:.1}px")
+                            style:font-size = format!("{name_size:.1}px"),
+                            style:line-height = format!("{line_height:.1}px")
                         ) {{label}}
                     }
                 }
@@ -2235,7 +2284,7 @@ impl Browser {
         let grid = self.read(|state| state.tab().mode == ViewMode::Grid);
         let favorite =
             self.read(|state| state.places.is_favorite(state.tab().navigation.location()));
-        let hidden = self.0.preferences.snapshot().files.show_hidden;
+        let hidden = self.0.preferences.state().with(|p| p.files.show_hidden);
         let details = self.0.details.get();
 
         AnyView::new(view! {

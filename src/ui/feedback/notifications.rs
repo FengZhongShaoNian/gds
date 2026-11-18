@@ -206,7 +206,10 @@ impl Operation {
 pub(crate) fn more_items_label(remaining: usize) -> String {
     Gds::try_current().map_or_else(
         || format!("And {remaining} more items"),
-        |gds| gds.i18n().count("operation-more-items", remaining),
+        |gds| {
+            gds.i18n()
+                .count_untracked("operation-more-items", remaining)
+        },
     )
 }
 

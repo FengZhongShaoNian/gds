@@ -17,7 +17,6 @@ use gds::service::{
     },
     remote::{self, EntryKind},
 };
-use gds::t;
 use tokio::sync::{mpsc, watch};
 use zgui::prelude::*;
 use zgui::reactive::spawn_local;
@@ -49,14 +48,10 @@ use crate::{
         },
         pick_files,
     },
-    shared::{
-        i18n,
-        lib::clipboard::{Clipboard, Payload},
-    },
+    shared::i18n,
 };
 
 impl Browser {
-    #[allow(dead_code)]
     pub(super) fn connect_server(&self) {
         let browser = self.clone();
         self.0
@@ -158,7 +153,7 @@ impl Browser {
     }
 
     pub(super) fn activate_remote(&self, entry: remote::Entry, new_tab: bool) {
-        let in_picker = self.read(|state| state.picker.is_some());
+        let in_picker = self.read_untracked(|state| state.picker.is_some());
         match entry.kind {
             EntryKind::Directory => {
                 let location = Location::Remote(entry.address);
@@ -170,14 +165,14 @@ impl Browser {
             }
             EntryKind::File => {
                 if in_picker {
-                    self.report_notice(i18n::text("remote-picker-local"));
+                    self.report_notice(i18n::text_untracked("remote-picker-local"));
                 } else {
                     self.download_remote(vec![entry.address], true);
                 }
             }
             EntryKind::SymbolicLink | EntryKind::Other => {
                 if in_picker {
-                    self.report_notice(i18n::text("remote-picker-local"));
+                    self.report_notice(i18n::text_untracked("remote-picker-local"));
                 } else {
                     self.download_remote(vec![entry.address], true);
                 }
@@ -186,20 +181,20 @@ impl Browser {
     }
 
     pub(super) fn download_remote(&self, addresses: Vec<remote::Address>, open: bool) {
-        if addresses.is_empty() || self.read(|state| state.operation.busy()) {
+        if addresses.is_empty() || self.read_untracked(|state| state.operation.busy()) {
             return;
         }
         let Some(first) = addresses.first() else {
             return;
         };
         let session = self
-            .read(|state| match &state.tab().contents {
+            .read_untracked(|state| match &state.tab().contents {
                 Contents::Remote { session, .. } => Some(session.clone()),
                 _ => None,
             })
             .or_else(|| self.0.connector.session(first));
         let Some(session) = session else {
-            self.report_notice(i18n::text("remote-connect-source"));
+            self.report_notice(i18n::text_untracked("remote-connect-source"));
             return;
         };
 
@@ -225,7 +220,7 @@ impl Browser {
 
         let browser = self.clone();
         self.open_transfer_picker(
-            i18n::text("remote-download"),
+            i18n::text_untracked("remote-download"),
             pick_files::Options {
                 directory: true,
                 multiple: false,
@@ -248,9 +243,8 @@ impl Browser {
         );
     }
 
-    #[allow(dead_code)]
     pub(super) fn upload_remote(&self) {
-        let target = self.read(|state| match &state.tab().contents {
+        let target = self.read_untracked(|state| match &state.tab().contents {
             Contents::Remote { listing, session } => {
                 Some((listing.address.clone(), session.clone()))
             }
@@ -259,12 +253,12 @@ impl Browser {
         let Some((dest_address, session)) = target else {
             return;
         };
-        if self.read(|state| state.operation.busy()) {
+        if self.read_untracked(|state| state.operation.busy()) {
             return;
         }
         let browser = self.clone();
         self.open_transfer_picker(
-            i18n::text("remote-upload"),
+            i18n::text_untracked("remote-upload"),
             pick_files::Options {
                 allow_mixed: true,
                 multiple: true,
@@ -288,9 +282,8 @@ impl Browser {
         );
     }
 
-    #[allow(dead_code)]
     pub(super) fn download_selected_remote(&self) {
-        let addresses: Vec<remote::Address> = self.read(|state| {
+        let addresses: Vec<remote::Address> = self.read_untracked(|state| {
             state
                 .tab()
                 .selected()
@@ -304,9 +297,8 @@ impl Browser {
         self.download_remote(addresses, false);
     }
 
-    #[allow(dead_code)]
     pub(super) fn disconnect_remote(&self) {
-        let address = self.read(|state| {
+        let address = self.read_untracked(|state| {
             let tab = state.tab();
             match tab.navigation.location() {
                 Location::Remote(address) => Some(address.clone()),
@@ -324,7 +316,7 @@ impl Browser {
             .connector
             .disconnect(address, move |result| match result {
                 Ok(()) => {
-                    let on_remote = browser.read(|state| {
+                    let on_remote = browser.read_untracked(|state| {
                         matches!(state.tab().navigation.location(), Location::Remote(_))
                     });
                     if on_remote {
@@ -338,37 +330,38 @@ impl Browser {
     }
 
     pub(super) fn rename_remote(&self, entry: remote::Entry) {
-        let session = self.read(|state| match &state.tab().contents {
+        let session = self.read_untracked(|state| match &state.tab().contents {
             Contents::Remote { session, .. } => Some(session.clone()),
             _ => None,
         });
         let Some(session) = session else {
             return;
         };
-        if self.read(|state| state.operation.busy()) {
+        if self.read_untracked(|state| state.operation.busy()) {
             return;
         }
         let from = entry.address.clone();
         let current_name = entry.name.clone();
         let form = NameForm::new(
             NamePurpose::Rename,
-            t!("rename-title", name = current_name.clone()),
+            gds::t_untracked!("rename-title", name = current_name.clone()),
             OsString::from(&current_name),
         );
         let browser = self.clone();
         self.name_form(form, move |new_os_name| {
             let Some(new_name) = new_os_name.to_str() else {
-                browser.report_notice(i18n::text("rename-not-text"));
+                browser.report_notice(i18n::text_untracked("rename-not-text"));
                 return;
             };
             if new_name == current_name {
                 return;
             }
             let Ok(target) = renamed_remote_address(&from, new_name) else {
-                browser.report_notice(i18n::text("rename-error-invalid"));
+                browser.report_notice(i18n::text_untracked("rename-error-invalid"));
                 return;
             };
-            let Some(_cancel) = browser.begin_operation(&i18n::text("rename-working")) else {
+            let Some(_cancel) = browser.begin_operation(&i18n::text_untracked("rename-working"))
+            else {
                 return;
             };
             let session = session.clone();
@@ -396,10 +389,16 @@ impl Browser {
                     match result {
                         Ok(()) => {
                             browser.refresh();
-                            browser.report_success(t!("rename-done", name = display_name));
+                            browser.report_success(gds::t_untracked!(
+                                "rename-done",
+                                name = display_name
+                            ));
                         }
                         Err(error) => {
-                            browser.report_notice(t!("rename-failed", error = error.to_string()));
+                            browser.report_notice(gds::t_untracked!(
+                                "rename-failed",
+                                error = error.to_string()
+                            ));
                         }
                     }
                     browser.focus_content();
@@ -408,46 +407,9 @@ impl Browser {
         });
     }
 
-    #[allow(dead_code)]
-    pub(super) fn paste_uris(&self) {
-        let destination = self.read(|state| {
-            if state.operation.busy() {
-                return None;
-            }
-            let tab = state.tab();
-            matches!(tab.contents, Contents::Directory)
-                .then(|| tab.navigation.path().map(Path::to_path_buf))
-                .flatten()
-        });
-        let Some(destination) = destination else {
-            return;
-        };
-        let weak = self.downgrade();
-        self.0.owner.with(|| {
-            drop(spawn_local(async move {
-                let result = Clipboard::current().read_payload().await;
-                let Some(browser) = weak.upgrade() else {
-                    return;
-                };
-                match result {
-                    Ok(Payload::Uris { mode, uris }) => {
-                        browser.paste_uri_payload(
-                            uris,
-                            destination,
-                            mode == crate::shared::lib::clipboard::Mode::Cut,
-                        );
-                    }
-                    Ok(Payload::Local(_)) => browser.paste(),
-                    Ok(Payload::Empty) => {}
-                    Err(error) => browser.report_notice(error.to_string()),
-                }
-            }));
-        });
-    }
-
     pub(super) fn paste_uri_payload(&self, uris: Vec<String>, destination: PathBuf, cut: bool) {
         if cut {
-            self.report_notice(i18n::text("remote-cut-unavailable"));
+            self.report_notice(i18n::text_untracked("remote-cut-unavailable"));
             return;
         }
         let parsed = classify_uri_payload(&uris);
@@ -459,7 +421,7 @@ impl Browser {
             let mut resources = Vec::with_capacity(parsed.remote.len());
             for address in parsed.remote {
                 let Some(session) = self.0.connector.session(&address) else {
-                    self.report_notice(i18n::text("remote-connect-source"));
+                    self.report_notice(i18n::text_untracked("remote-connect-source"));
                     return;
                 };
                 resources.push(Resource::Remote { address, session });
@@ -469,10 +431,10 @@ impl Browser {
     }
 
     pub(super) fn delete_remote(&self, rows: Vec<Row>) {
-        if self.read(|state| state.operation.busy()) {
+        if self.read_untracked(|state| state.operation.busy()) {
             return;
         }
-        let session = self.read(|state| match &state.tab().contents {
+        let session = self.read_untracked(|state| match &state.tab().contents {
             Contents::Remote { session, .. } => Some(session.clone()),
             _ => None,
         });
@@ -493,12 +455,13 @@ impl Browser {
             return;
         }
         let count = resources.len();
-        let title = gds_i18n::count("delete-confirm-title", count);
-        let message = i18n::text("remote-delete-warning");
-        let primary = gds_i18n::count("delete-selected", count);
+        let title = gds_i18n::count_untracked("delete-confirm-title", count);
+        let message = i18n::text_untracked("remote-delete-warning");
+        let primary = gds_i18n::count_untracked("delete-selected", count);
         let browser = self.clone();
         self.confirm_labelled(title, message, primary, move || {
-            let Some(cancel) = browser.begin_operation(&gds_i18n::count("delete-working", count))
+            let Some(cancel) =
+                browser.begin_operation(&gds_i18n::count_untracked("delete-working", count))
             else {
                 return;
             };
@@ -525,9 +488,9 @@ impl Browser {
                     browser.end_operation();
                     browser.refresh();
                     if report.cancelled {
-                        browser.report_notice(i18n::text("remote-cancelled"));
+                        browser.report_notice(i18n::text_untracked("remote-cancelled"));
                     } else if !report.failures.is_empty() {
-                        let headline = t!(
+                        let headline = gds::t_untracked!(
                             "delete-partial",
                             succeeded = report.completed.len() as i64,
                             failed = report.failures.len() as i64
@@ -539,8 +502,10 @@ impl Browser {
                             .collect();
                         browser.report_notice(format!("{headline}\n{}", details.join("\n")));
                     } else {
-                        browser
-                            .report_success(gds_i18n::count("delete-done", report.completed.len()));
+                        browser.report_success(gds_i18n::count_untracked(
+                            "delete-done",
+                            report.completed.len(),
+                        ));
                     }
                     browser.focus_content();
                 }));
@@ -549,7 +514,7 @@ impl Browser {
     }
 
     pub(super) fn delete_tags(&self, rows: Vec<Row>) {
-        if self.read(|state| state.operation.busy()) {
+        if self.read_untracked(|state| state.operation.busy()) {
             return;
         }
         let tags_to_delete: Vec<String> = rows
@@ -562,18 +527,19 @@ impl Browser {
         if tags_to_delete.is_empty() {
             return;
         }
-        let backend = self.read(|state| match &state.tab().contents {
+        let backend = self.read_untracked(|state| match &state.tab().contents {
             Contents::Tags { backend, .. } => Some(backend.clone()),
             _ => None,
         });
         let commands = self.0.preferences.snapshot().tags.commands;
         let count = tags_to_delete.len();
-        let title = gds_i18n::count("delete-confirm-title", count);
-        let message = i18n::text("tags-delete-message");
-        let primary = gds_i18n::count("delete-selected", count);
+        let title = gds_i18n::count_untracked("delete-confirm-title", count);
+        let message = i18n::text_untracked("tags-delete-message");
+        let primary = gds_i18n::count_untracked("delete-selected", count);
         let browser = self.clone();
         self.confirm_labelled(title, message, primary, move || {
-            let Some(_cancel) = browser.begin_operation(&gds_i18n::count("delete-working", count))
+            let Some(_cancel) =
+                browser.begin_operation(&gds_i18n::count_untracked("delete-working", count))
             else {
                 return;
             };
@@ -616,7 +582,7 @@ impl Browser {
                         Ok((deleted, failures)) => {
                             browser.refresh_tag_tabs();
                             if !failures.is_empty() {
-                                let headline = t!(
+                                let headline = gds::t_untracked!(
                                     "delete-partial",
                                     succeeded = deleted as i64,
                                     failed = failures.len() as i64
@@ -624,7 +590,10 @@ impl Browser {
                                 browser
                                     .report_notice(format!("{headline}\n{}", failures.join("\n")));
                             } else {
-                                browser.report_success(gds_i18n::count("delete-done", deleted));
+                                browser.report_success(gds_i18n::count_untracked(
+                                    "delete-done",
+                                    deleted,
+                                ));
                             }
                         }
                         Err(err) => browser.report_notice(err),
@@ -636,7 +605,7 @@ impl Browser {
     }
 
     pub(super) fn refresh_tag_tabs(&self) {
-        let ids: Vec<u64> = self.read(|state| {
+        let ids: Vec<u64> = self.read_untracked(|state| {
             state
                 .tabs
                 .iter()
@@ -649,9 +618,8 @@ impl Browser {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn refresh_location(&self, location: &Location) {
-        let ids: Vec<u64> = self.read(|state| {
+        let ids: Vec<u64> = self.read_untracked(|state| {
             state
                 .tabs
                 .iter()
@@ -668,14 +636,14 @@ impl Browser {
         let browser = self.clone();
         let volume_id = volume.id.clone();
         self.prompt_name(
-            i18n::text("volume-rename"),
+            i18n::text_untracked("volume-rename"),
             volume.label,
             move |new_label| {
                 let Ok(future) = browser.0.volumes.operate(DeviceAction::SetLabel {
                     volume: volume_id.clone(),
                     label: new_label,
                 }) else {
-                    browser.report_notice(i18n::text("device-path-unavailable"));
+                    browser.report_notice(i18n::text_untracked("device-path-unavailable"));
                     return;
                 };
                 let weak = browser.downgrade();
@@ -688,7 +656,7 @@ impl Browser {
                         match result {
                             Ok(_) => {
                                 browser.0.volumes.refresh();
-                                browser.report_success(i18n::text("volume-renamed"));
+                                browser.report_success(i18n::text_untracked("volume-renamed"));
                             }
                             Err(error) => browser.report_notice(error.to_string()),
                         }
@@ -707,7 +675,8 @@ impl Browser {
         let Some(windows) = try_use_windows() else {
             return;
         };
-        let (snapshot, home) = self.read(|state| ((*state.places).clone(), state.home.clone()));
+        let (snapshot, home) =
+            self.read_untracked(|state| ((*state.places).clone(), state.home.clone()));
         let mut places = Places::default();
         places.accept(snapshot);
         let launch = LaunchOptions {
@@ -744,7 +713,9 @@ impl Browser {
         open_after: Option<PathBuf>,
     ) {
         let count = sources.len();
-        let Some(cancel) = self.begin_operation(&gds_i18n::count("transfer-working", count)) else {
+        let Some(cancel) =
+            self.begin_operation(&gds_i18n::count_untracked("transfer-working", count))
+        else {
             return;
         };
         let buffer_size = self
@@ -790,9 +761,9 @@ impl Browser {
                 }
                 browser.refresh();
                 if report.cancelled {
-                    browser.report_notice(i18n::text("remote-cancelled"));
+                    browser.report_notice(i18n::text_untracked("remote-cancelled"));
                 } else if !report.failures.is_empty() {
-                    let headline = t!(
+                    let headline = gds::t_untracked!(
                         "transfer-partial",
                         succeeded = report.completed.len() as i64,
                         failed = report.failures.len() as i64
@@ -806,7 +777,10 @@ impl Browser {
                 } else if let Some(path) = open_after {
                     browser.open_file(path, OpenMode::DefaultApplication);
                 } else {
-                    browser.report_success(gds_i18n::count("copy-done", report.completed.len()));
+                    browser.report_success(gds_i18n::count_untracked(
+                        "copy-done",
+                        report.completed.len(),
+                    ));
                 }
                 browser.focus_content();
             }));
@@ -814,7 +788,7 @@ impl Browser {
     }
 
     pub(crate) fn apply_desktop_command(&self, command: Command) {
-        if self.read(|state| state.picker.is_some()) {
+        if self.read_untracked(|state| state.picker.is_some()) {
             return;
         }
         let properties = matches!(command.request, Request::ShowProperties { .. });
@@ -832,7 +806,7 @@ impl Browser {
         }
         self.show_files();
         for target in targets {
-            let existing = self.read(|state| {
+            let existing = self.read_untracked(|state| {
                 state
                     .tabs
                     .iter()

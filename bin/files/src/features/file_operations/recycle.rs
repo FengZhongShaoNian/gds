@@ -67,8 +67,6 @@ pub enum Action {
 #[derive(Debug)]
 pub struct Outcome {
     pub entry: Entry,
-    #[allow(dead_code)]
-    pub original_path: PathBuf,
     pub restored: Option<super::history::Snapshot>,
     pub result: Result<(), Error>,
 }
@@ -311,7 +309,6 @@ pub fn perform_cancellable(
     entries
         .into_iter()
         .map(|entry| {
-            let original_path = entry.original_path.clone();
             let applied = if cancel.is_cancelled() {
                 Applied {
                     restored: None,
@@ -321,7 +318,6 @@ pub fn perform_cancellable(
                 entry.apply(action, cancel)
             };
             Outcome {
-                original_path,
                 restored: applied.restored,
                 result: applied.result,
                 entry,

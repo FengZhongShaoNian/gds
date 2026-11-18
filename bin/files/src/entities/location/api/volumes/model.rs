@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Stable identity, when the medium supplies one, plus the observed attachment.
 /// The attachment prevents a newly inserted disk reusing a device node from
@@ -70,42 +70,6 @@ impl Snapshot {
 
     pub fn drive(&self, id: &str) -> Option<&Drive> {
         self.drives.iter().find(|drive| drive.id == id)
-    }
-
-    pub fn at_path(&self, path: &Path) -> Option<&Volume> {
-        self.volumes
-            .iter()
-            .filter(|volume| {
-                volume.visible
-                    && volume
-                        .mount_points
-                        .iter()
-                        .any(|root| path.starts_with(root))
-            })
-            .max_by_key(|volume| {
-                volume
-                    .mount_points
-                    .iter()
-                    .filter(|root| path.starts_with(root))
-                    .map(|root| root.components().count())
-                    .max()
-                    .unwrap_or_default()
-            })
-    }
-
-    /// A reconnect needs a unique stable identity; duplicated UUIDs are not proof.
-    #[allow(dead_code)]
-    pub fn reconnect(&self, id: &VolumeId) -> Option<&Volume> {
-        if let Some(volume) = self.volume(id) {
-            return Some(volume);
-        }
-        let stable = id.stable.as_ref()?;
-        let mut matches = self
-            .volumes
-            .iter()
-            .filter(|volume| volume.id.stable.as_ref() == Some(stable));
-        let volume = matches.next()?;
-        matches.next().is_none().then_some(volume)
     }
 
     pub fn removal_volumes(&self, action: &DeviceAction) -> Vec<&Volume> {
@@ -181,12 +145,6 @@ impl DeviceAction {
     pub fn removes(&self) -> bool {
         matches!(self, Self::Unmount(_) | Self::PowerOff(_) | Self::Eject(_))
     }
-}
-
-#[derive(Debug)]
-pub struct OperationOutcome {
-    #[allow(dead_code)]
-    pub mount_point: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]

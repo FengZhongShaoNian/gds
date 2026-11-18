@@ -111,12 +111,18 @@ impl Number {
     pub fn value(self, display: f64) -> Result<Value, String> {
         let value = display / self.scale;
         if !value.is_finite() {
-            return Err(Gds::current().i18n().text("form-number-not-finite"));
+            return Err(Gds::current()
+                .i18n()
+                .text_untracked("form-number-not-finite"));
         }
         if matches!(self.integer, Integer::Float) {
             return serde_json::Number::from_f64(value)
                 .map(Value::Number)
-                .ok_or_else(|| Gds::current().i18n().text("form-number-not-finite"));
+                .ok_or_else(|| {
+                    Gds::current()
+                        .i18n()
+                        .text_untracked("form-number-not-finite")
+                });
         }
         let rounded = value.round();
         let converted = match self.integer {
@@ -147,7 +153,11 @@ impl Number {
                 fits_unsigned(rounded, usize::MAX as u128).then(|| Value::from(rounded as usize))
             }
         };
-        converted.ok_or_else(|| Gds::current().i18n().text("form-number-out-of-range"))
+        converted.ok_or_else(|| {
+            Gds::current()
+                .i18n()
+                .text_untracked("form-number-out-of-range")
+        })
     }
 
     #[must_use]

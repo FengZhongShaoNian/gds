@@ -42,7 +42,7 @@ impl Browser {
             Command::NewFolder => self.new_folder(),
             Command::NewTab => self.new_tab(None),
             Command::NewWindow => {
-                let target = self.read(|state| {
+                let target = self.read_untracked(|state| {
                     state
                         .tab()
                         .navigation
@@ -53,11 +53,11 @@ impl Browser {
                 (self.0.new_window)(target);
             }
             Command::CloseTab => {
-                let index = self.read(|state| state.active);
+                let index = self.read_untracked(|state| state.active);
                 self.close_tab(index);
             }
             Command::NextTab => {
-                let target = self.read(|state| {
+                let target = self.read_untracked(|state| {
                     (state.tabs.len() > 1).then_some((state.active + 1) % state.tabs.len())
                 });
                 if let Some(index) = target {
@@ -65,7 +65,7 @@ impl Browser {
                 }
             }
             Command::PreviousTab => {
-                let target = self.read(|state| {
+                let target = self.read_untracked(|state| {
                     let len = state.tabs.len();
                     (len > 1).then_some((state.active + len - 1) % len)
                 });
@@ -85,7 +85,7 @@ impl Browser {
             Command::Parent => self.parent(),
             Command::Refresh => self.refresh(),
             Command::Filter => {
-                if self.filter_available() {
+                if self.filter_available_untracked() {
                     self.0.filter_node.focus();
                 }
             }
@@ -137,7 +137,7 @@ impl Browser {
                 }
             }
             Command::MountVolume => {
-                let volume = self.read(|state| {
+                let volume = self.read_untracked(|state| {
                     state
                         .tab()
                         .selected()
@@ -152,7 +152,7 @@ impl Browser {
                 }
             }
             Command::UnmountVolume => {
-                let volume = self.read(|state| {
+                let volume = self.read_untracked(|state| {
                     state
                         .tab()
                         .selected()
@@ -178,12 +178,14 @@ impl Browser {
                     self.0.menus.close();
                 } else if !matches!(self.0.prompt.get_untracked(), Prompt::Closed) {
                     self.cancel_prompt();
-                } else if self.read(|state| state.operation.busy()) {
-                    self.read(|state| state.operation.cancel());
+                } else if self.read_untracked(|state| state.operation.busy()) {
+                    self.read_untracked(|state| state.operation.cancel());
                 } else if !self.0.filter.get_untracked().is_empty() {
                     self.filter(String::new());
                     self.focus_content();
-                } else if self.read(|state| state.picker.is_some()) {
+                } else if self.read_untracked(|state| state.tab().navigation.is_loading()) {
+                    self.cancel_location_load();
+                } else if self.read_untracked(|state| state.picker.is_some()) {
                     self.cancel_picker();
                 } else {
                     self.update_selection(|state| {
@@ -202,28 +204,12 @@ impl Browser {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn sidebar_focus_changed(&self, region: SidebarRegion, focused: bool) {
         if focused {
             self.0.sidebar_region.set(Some(region));
         } else if self.0.sidebar_region.get_untracked() == Some(region) {
             self.0.sidebar_region.set(None);
         }
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn sidebar_key(&self, event: &KeyEvent, region: SidebarRegion) {
-        let _ = self.handle_sidebar_key(event, Modifiers::NONE, region);
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn content_key(&self, event: &KeyEvent) {
-        let _ = self.handle_content_key(event, Modifiers::NONE);
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn search_key(&self, event: &KeyEvent) {
-        let _ = self.handle_search_key(event);
     }
 
     pub(super) fn key_down(&self, event: &mut EventCx<'_, zgui::view::events::KeyDown>) {
@@ -265,7 +251,7 @@ impl Browser {
             }
         }
 
-        if self.pane() != Pane::Files {
+        if self.pane_untracked() != Pane::Files {
             if !event.repeat
                 && let Some(command) = Command::from_key_event(event, modifiers)
                 && matches!(command, Command::Settings | Command::Help | Command::Cancel)
@@ -314,7 +300,7 @@ impl Browser {
         if !event.repeat
             && let Some(index) = matching_ordinal_tab(event, modifiers)
         {
-            let tab_count = self.read(|state| state.tabs.len());
+            let tab_count = self.read_untracked(|state| state.tabs.len());
             if index < tab_count {
                 self.select_tab(index);
                 event.prevent_default();
@@ -437,7 +423,7 @@ impl Browser {
 
     fn sidebar_rows(&self, region: SidebarRegion) -> Vec<SidebarRow> {
         match region {
-            SidebarRegion::Tabs => self.read(|state| {
+            SidebarRegion::Tabs => self.read_untracked(|state| {
                 state
                     .tabs
                     .iter()
@@ -451,7 +437,7 @@ impl Browser {
             SidebarRegion::Volumes => self
                 .0
                 .volumes
-                .snapshot()
+                .snapshot_untracked()
                 .volumes
                 .into_iter()
                 .filter(|volume| volume.visible)
@@ -543,7 +529,7 @@ impl Browser {
                 }
             }
             SidebarRow::Location(target) => {
-                let home = self.read(|state| state.home.clone());
+                let home = self.read_untracked(|state| state.home.clone());
                 self.open(target.location(&home));
                 self.focus_content();
             }
@@ -566,7 +552,7 @@ impl Browser {
             }
             Key::Named(NamedKey::ArrowDown) | Key::Named(NamedKey::Enter) => {
                 self.focus_content();
-                let should_select_first = self.read(|state| {
+                let should_select_first = self.read_untracked(|state| {
                     let tab = state.tab();
                     !tab.rows.is_empty() && tab.navigation.view().selection.is_empty()
                 });
@@ -581,7 +567,7 @@ impl Browser {
     }
 
     fn handle_content_key(&self, event: &KeyEvent, modifiers: Modifiers) -> bool {
-        let (count, mode, current_idx) = self.read(|state| {
+        let (count, mode, current_idx) = self.read_untracked(|state| {
             let tab = state.tab();
             let cursor_idx = tab
                 .navigation
@@ -626,7 +612,7 @@ impl Browser {
 
         let columns = match mode {
             ViewMode::List => 1,
-            ViewMode::Grid => self.grid_columns().max(1),
+            ViewMode::Grid => self.grid_columns_untracked().max(1),
         };
         let page_step = self.page_step_rows(mode, columns);
         let cur = current_idx;
@@ -692,7 +678,7 @@ impl Browser {
     fn page_step_rows(&self, mode: ViewMode, columns: usize) -> usize {
         let scale = self.0.list.scale().max(1.0);
         let viewport_h = (self.0.list.scroll_position().scrollport.height.0 / scale).max(300.0);
-        let row_h = self.row_height().max(24.0);
+        let row_h = self.row_height_untracked().max(24.0);
         let visible_rows = (viewport_h / row_h).floor().max(1.0) as usize;
         match mode {
             ViewMode::List => visible_rows,

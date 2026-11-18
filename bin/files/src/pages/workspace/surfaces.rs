@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Page-specific table metadata uses each domain's own values and service state.
 
 mod network;
@@ -515,7 +514,7 @@ impl Browser {
         });
 
         if matches!(location, Location::Tags(_))
-            && !self.0.preferences.snapshot().tags.enabled
+            && !self.0.preferences.state().with(|p| p.tags.enabled)
             && contents_kind == 1
         {
             let b = self.clone();
@@ -603,7 +602,7 @@ impl Browser {
                     reconnect: false,
                 },
                 Location::Tags(_) => {
-                    let enabled = self.0.preferences.snapshot().tags.enabled;
+                    let enabled = self.0.preferences.state().with(|p| p.tags.enabled);
                     CollectionBodyState {
                         icon: Some(IconName::Tag),
                         title: if enabled {

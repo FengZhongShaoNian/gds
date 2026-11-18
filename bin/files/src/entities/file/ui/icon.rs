@@ -8,42 +8,11 @@
 use std::{path::Path, sync::OnceLock};
 
 use directories::{BaseDirs, UserDirs};
-use gds::ui::{IconName, IconProps};
-use zgui::prelude::*;
-use zgui::view::install_stylesheet;
-use zgui::{component, view};
+use gds::ui::IconName;
 
 use crate::entities::file::directory::{
     ContentCategory, ContentType, Entry, EntryKind, LinkTarget,
 };
-
-/// Size of the corner badge relative to the base icon.
-const BADGE_SIZE_FRACTION: f32 = 0.55;
-const FILE_ARTWORK_SHEET: &str = "gds-files-file-artwork";
-const FILE_ARTWORK_CSS: &str = r#"
-.gds-file-artwork {
-    position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-
-.gds-file-artwork--directory {
-    color: var(--gds-primary);
-}
-
-.gds-file-artwork--file {
-    color: var(--gds-muted-foreground);
-}
-
-.gds-file-artwork__badge {
-    position: absolute;
-    bottom: -4px;
-    right: -4px;
-    display: flex;
-}
-"#;
 
 /// Icon for one entry: a base icon plus an optional corner badge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,28 +28,6 @@ impl FileIcon {
             EntryKind::Directory => Self::plain(Self::directory_icon(&entry.path)),
             EntryKind::File => Self::for_content(entry.details.content.as_ref()),
             EntryKind::SymbolicLink => Self::for_link(entry),
-            EntryKind::Other => Self::plain(IconName::File),
-            EntryKind::Unknown => Self::plain(IconName::FileQuestionMark),
-        }
-    }
-
-    /// Icon describing `path` without counting directory children or reading file headers.
-    #[allow(dead_code)]
-    pub(crate) fn for_path(path: &Path) -> Self {
-        let Ok(metadata) = std::fs::symlink_metadata(path) else {
-            return Self::plain(IconName::FileQuestionMark);
-        };
-        match EntryKind::from(metadata.file_type()) {
-            EntryKind::Directory => Self::plain(Self::directory_icon(path)),
-            EntryKind::File => {
-                let name = path.file_name().unwrap_or(path.as_os_str());
-                let content = ContentType::from_filename(name);
-                Self::for_content(content.as_ref())
-            }
-            EntryKind::SymbolicLink => {
-                let (target, _) = LinkTarget::from_path_base(path);
-                Self::for_link_target(path, &target)
-            }
             EntryKind::Other => Self::plain(IconName::File),
             EntryKind::Unknown => Self::plain(IconName::FileQuestionMark),
         }
@@ -102,7 +49,6 @@ impl FileIcon {
     }
 
     /// Icon for a drag that carries several entries.
-    #[allow(dead_code)]
     pub(crate) fn multiple() -> Self {
         Self::plain(IconName::Files)
     }
@@ -216,47 +162,6 @@ impl FileIcon {
         Self {
             base,
             badge: Some(badge),
-        }
-    }
-}
-
-/// The artwork slot used by file rows, tiles, and drag previews.
-#[component]
-pub(crate) fn FileArtwork(
-    icon: FileIcon,
-    #[prop(default = gds::appearance::tokens::ICON_SIZE)] size: f32,
-    #[prop(default = false)] directory: bool,
-    #[prop(into, optional)] class: Classes,
-) -> impl IntoView {
-    install_stylesheet(FILE_ARTWORK_SHEET, FILE_ARTWORK_CSS);
-    let badge_size = size * BADGE_SIZE_FRACTION;
-    let role_class = if directory {
-        "gds-file-artwork--directory"
-    } else {
-        "gds-file-artwork--file"
-    };
-    let badge = icon.badge().map(|badge| {
-        view! {
-            box(
-                class = "gds-file-artwork__badge",
-                style:width = format!("{badge_size}px"),
-                style:height = format!("{badge_size}px"),
-            ) {
-                Icon(name = badge, size = badge_size)
-            }
-        }
-        .into_view()
-    });
-    view! {
-        box(
-            class = "gds-file-artwork",
-            class = role_class,
-            class = class,
-            style:width = format!("{size}px"),
-            style:height = format!("{size}px"),
-        ) {
-            Icon(name = icon.base(), size = size) {}
-            {badge}
         }
     }
 }

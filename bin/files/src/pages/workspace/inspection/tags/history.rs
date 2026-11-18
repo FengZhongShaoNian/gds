@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! One editing history for the chips and the text that has not become a chip yet.
 
 use std::{

@@ -292,6 +292,7 @@ impl Default for PerformanceForm {
 }
 
 impl PerformanceForm {
+    #[cfg(test)]
     pub(super) fn is_default(&self) -> bool {
         *self == Self::default()
     }

@@ -78,7 +78,6 @@ pub struct Collision {
 
 impl Collision {
     /// Display form of the conflicting target, safe for dialog text.
-    #[allow(dead_code)]
     pub fn target_label(&self) -> String {
         self.target.to_string_lossy().escape_debug().to_string()
     }

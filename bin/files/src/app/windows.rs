@@ -125,7 +125,7 @@ impl Host {
         let title = portal
             .map(|request| request.title.clone())
             .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| gds::i18n::text("app-title"));
+            .unwrap_or_else(|| gds::i18n::text_untracked("app-title"));
         let parent = portal
             .map(|request| (request.parent_window.clone(), request.modal))
             .filter(|(parent, _)| !parent.is_empty());

@@ -207,8 +207,3 @@ pub(crate) fn FilesHelp() -> impl IntoView {
         }
     }
 }
-
-#[allow(dead_code)]
-pub(crate) fn view() -> AnyView {
-    AnyView::new(view! { FilesHelp() })
-}

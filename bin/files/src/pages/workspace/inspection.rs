@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Properties, content inspection, permissions, and tags dialogs share existing services.
 
 mod info;
@@ -111,7 +110,7 @@ const INSPECTION_CSS: &str = css!(
         font-weight: 600;
         color: var(--gds-foreground);
         text-align: center;
-        word-break: break-word;
+        overflow-wrap: anywhere;
     }
 
     .gds-files-details__subtitle {
@@ -144,7 +143,7 @@ const INSPECTION_CSS: &str = css!(
         color: var(--gds-foreground);
         text-align: right;
         min-width: 0;
-        word-break: break-word;
+        overflow-wrap: anywhere;
     }
 
     .gds-files-details__tags-section {
@@ -833,7 +832,10 @@ impl PermissionEditor {
         if entry.kind == EntryKind::SymbolicLink {
             editor.0.loading.set(false);
             editor.0.load_failed.set(true);
-            editor.0.error.set(Some(i18n::text("permissions-symlink")));
+            editor
+                .0
+                .error
+                .set(Some(i18n::text_untracked("permissions-symlink")));
             return editor;
         }
 
@@ -873,7 +875,10 @@ impl PermissionEditor {
     }
 
     fn save(&self, complete: impl FnOnce() + 'static) {
-        if !self.can_save() {
+        if self.0.loading.get_untracked()
+            || self.0.load_failed.get_untracked()
+            || self.0.saving.get_untracked()
+        {
             return;
         }
         let Some(browser) = self.0.browser.upgrade() else {
@@ -889,7 +894,8 @@ impl PermissionEditor {
 
         let done = RefCell::new(Some(Box::new(complete) as Box<dyn FnOnce()>));
         if recursive {
-            let Some(cancel) = browser.begin_operation(&i18n::text("permissions-saving")) else {
+            let Some(cancel) = browser.begin_operation(&i18n::text_untracked("permissions-saving"))
+            else {
                 self.0.saving.set(false);
                 return;
             };
@@ -908,14 +914,22 @@ impl PermissionEditor {
                         Ok(report) => {
                             browser.refresh_affected(&[refresh_path]);
                             if report.failures.is_empty() {
-                                browser.report_success(i18n::text("permissions-saved"));
+                                browser.report_success(i18n::text_untracked("permissions-saved"));
                                 if let Some(cb) = done.borrow_mut().take() {
                                     cb();
                                 }
                             } else {
+                                for failure in &report.failures {
+                                    tracing::warn!(
+                                        path = %failure.path.display(),
+                                        error = %failure.error,
+                                        "recursive permission update failed"
+                                    );
+                                }
                                 let succeeded = report.succeeded;
                                 let failed = report.failures.len();
-                                let msg = t!("permissions-partial", succeeded, failed);
+                                let msg =
+                                    gds::t_untracked!("permissions-partial", succeeded, failed);
                                 browser.report_notice(msg.clone());
                                 target.0.error.set(Some(msg));
                             }
@@ -940,7 +954,7 @@ impl PermissionEditor {
                     match result {
                         Ok(()) => {
                             browser.refresh_affected(&[refresh_path]);
-                            browser.report_success(i18n::text("permissions-saved"));
+                            browser.report_success(i18n::text_untracked("permissions-saved"));
                             if let Some(cb) = done.borrow_mut().take() {
                                 cb();
                             }
@@ -1311,18 +1325,6 @@ impl Browser {
         slots.permissions.set(Some(editor));
     }
 
-    pub(super) fn close_permissions(&self) {
-        let slots = dialog_slots(self);
-        if !slots
-            .permissions
-            .get_untracked()
-            .as_ref()
-            .is_some_and(PermissionEditor::is_saving)
-        {
-            slots.permissions.set(None);
-        }
-    }
-
     pub(super) fn permissions_dialog(&self) -> AnyView {
         install_inspection_stylesheet();
         let slots = dialog_slots(self);
@@ -1474,7 +1476,7 @@ impl Browser {
             }
 
             let row = &selected[0];
-            let tags_enabled = browser.0.preferences.snapshot().tags.enabled;
+            let tags_enabled = browser.0.preferences.state().with(|p| p.tags.enabled);
             let local_entry_or_place: Option<Entry> = match row {
                 Row::File(entry) => Some(entry.clone()),
                 Row::Place(Location::Directory(path)) => {

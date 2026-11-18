@@ -126,10 +126,12 @@ pub(crate) enum Change {
         location: Location,
         present: bool,
     },
+    #[cfg(test)]
     Pin {
         location: Location,
         present: bool,
     },
+    #[cfg(test)]
     PinOrder(Vec<Location>),
     Columns {
         scope: ViewScope,
@@ -161,9 +163,11 @@ impl Change {
             Self::Favorite { location, present } => {
                 set_membership(&mut places.favorites, location, *present)
             }
+            #[cfg(test)]
             Self::Pin { location, present } => {
                 set_membership(&mut places.pinned, location, *present)
             }
+            #[cfg(test)]
             Self::PinOrder(order) => reorder_existing(&mut places.pinned, order),
             Self::Columns { scope, layout } => {
                 places.settings_mut(scope.clone()).columns = layout.clone()
@@ -196,6 +200,7 @@ fn set_membership<T: Clone + PartialEq>(items: &mut Vec<T>, item: &T, present: b
 }
 
 /// Reorder only members of this window's snapshot; preserve pins owned by others.
+#[cfg(test)]
 pub(crate) fn reorder_existing(items: &mut [Location], order: &[Location]) {
     let mut seen = std::collections::HashSet::new();
     let ordered: Vec<_> = order

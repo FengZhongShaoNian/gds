@@ -138,7 +138,7 @@ impl Initializer {
                 {
                     notifications::report(Report::new(
                         Level::Error,
-                        gds::t!(@app, "settings-save-failed", error = message.clone()),
+                        gds::t_untracked!(@app, "settings-save-failed", error = message.clone()),
                     ));
                 }
                 current

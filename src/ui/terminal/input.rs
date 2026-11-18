@@ -64,9 +64,9 @@ fn key_parts<'a>(key: &'a Key, fallback: Option<&'a Key>) -> Option<(&'a str, Op
 }
 
 /// Encode a high-level `zgui` key press and modifier set using default terminal mode.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 #[must_use]
-pub fn encode_key(key: &Key, modifiers: Modifiers) -> Option<Vec<u8>> {
+fn encode_key(key: &Key, modifiers: Modifiers) -> Option<Vec<u8>> {
     let (key_name, key_char) = key_parts(key, None)?;
     if let Some(bytes) = input::key_bytes(
         &input::Keystroke {

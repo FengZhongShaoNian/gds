@@ -37,13 +37,6 @@ pub struct Sort {
 }
 
 impl Sort {
-    /// Whether the sort matches the canonical directories-first, ascending-name order
-    /// already maintained by [`super::super::directory::DirectorySnapshot`].
-    #[allow(dead_code)]
-    pub const fn is_canonical(self) -> bool {
-        matches!(self.key, Key::Name) && matches!(self.direction, Direction::Ascending)
-    }
-
     pub fn next(self, key: Key) -> Self {
         Self {
             key,
@@ -59,12 +52,6 @@ impl Sort {
     /// Directories and available metadata retain their priority in both directions.
     pub fn sort_indices(&self, entries: &[Entry], visible: &mut [usize]) {
         visible.sort_by(|&left, &right| self.compare(&entries[left], &entries[right]));
-    }
-
-    /// Whether `entries` already satisfy this ordering without requiring a resort.
-    #[allow(dead_code)]
-    pub fn is_sorted(&self, entries: &[Entry]) -> bool {
-        entries.is_sorted_by(|left, right| self.compare(left, right) != Ordering::Greater)
     }
 
     fn compare(&self, left: &Entry, right: &Entry) -> Ordering {

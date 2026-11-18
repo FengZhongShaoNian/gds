@@ -164,7 +164,7 @@ impl NameForm {
                     submit(validated);
                 }
                 Err(label_id) => {
-                    error.set(Some(i18n::text(label_id)));
+                    error.set(Some(i18n::text_untracked(label_id)));
                     input_node.focus();
                 }
             }

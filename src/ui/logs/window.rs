@@ -88,9 +88,12 @@ pub fn open() {
         return;
     };
 
-    let options = workspace_options(i18n::text("logs-title"), state.options.app_id.as_deref())
-        .with_size(INITIAL_WIDTH, INITIAL_HEIGHT)
-        .with_min_size(MIN_WIDTH, MIN_HEIGHT);
+    let options = workspace_options(
+        i18n::text_untracked("logs-title"),
+        state.options.app_id.as_deref(),
+    )
+    .with_size(INITIAL_WIDTH, INITIAL_HEIGHT)
+    .with_min_size(MIN_WIDTH, MIN_HEIGHT);
     let handle = windows.open(options, || {
         view! {
             Frame {

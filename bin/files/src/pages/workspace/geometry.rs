@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! The file surface shares one geometry for rendering, navigation, and hit testing.
 
 use gds::app::Gds;
@@ -48,32 +47,13 @@ pub(super) struct Grid {
 #[derive(Clone, Copy)]
 pub(super) struct GridMotion {
     pub target: Signal<Grid, LocalStorage>,
-    scale: f32,
 }
 
 impl GridMotion {
     pub fn new(browser: &Browser) -> Self {
-        let scale = browser
-            .0
-            .window
-            .as_ref()
-            .map_or(1.0, |window| window.scale().get_untracked())
-            .max(1.0);
         let browser = browser.clone();
         let target = Signal::derive_local(move || browser.grid_geometry());
-        Self { target, scale }
-    }
-
-    pub fn tile(&self, index: usize) -> RectF {
-        self.target.get().tile(index, self.scale)
-    }
-
-    pub fn candidates(&self, top: f32, bottom: f32, count: usize) -> std::ops::Range<usize> {
-        let grid = self.target.get();
-        let height = virtual_row_height(grid.row_height, self.scale);
-        let first = (top.max(0.0) / height).floor() as usize * grid.columns;
-        let end = (bottom.max(0.0) / height).ceil() as usize * grid.columns;
-        first.min(count)..end.min(count)
+        Self { target }
     }
 }
 
@@ -121,6 +101,10 @@ impl Browser {
         self.0.window_width.get() < 1080.0
     }
 
+    pub(super) fn compact_untracked(&self) -> bool {
+        self.0.window_width.get_untracked() < 1080.0
+    }
+
     pub(super) fn sidebar_expanded(&self) -> bool {
         self.0.sidebar.get() && !self.compact()
     }
@@ -130,17 +114,25 @@ impl Browser {
         Grid::new(self.0.content_width.get(), scale)
     }
 
+    pub(super) fn grid_geometry_untracked(&self) -> Grid {
+        let scale = Gds::current()
+            .appearance()
+            .typography()
+            .scaled_untracked(1.0);
+        Grid::new(self.0.content_width.get_untracked(), scale)
+    }
+
     pub(super) fn table_viewport_width(&self) -> f32 {
         (self.0.content_width.get() - TABLE_INSET * 2.0).max(1.0)
     }
 
-    pub(super) fn grid_columns(&self) -> usize {
-        self.grid_geometry().columns
+    pub(super) fn grid_columns_untracked(&self) -> usize {
+        self.grid_geometry_untracked().columns
     }
 
-    pub(super) fn row_height(&self) -> f32 {
-        if self.read(|state| state.tab().mode == crate::entities::file::ViewMode::Grid) {
-            self.grid_geometry().row_height
+    pub(super) fn row_height_untracked(&self) -> f32 {
+        if self.read_untracked(|state| state.tab().mode == crate::entities::file::ViewMode::Grid) {
+            self.grid_geometry_untracked().row_height
         } else {
             DataListStyle::ROW_HEIGHT
         }

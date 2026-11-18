@@ -129,14 +129,14 @@ pub fn ConfirmDialog(
     let confirm_label = confirm_label.unwrap_or_else(|| {
         let fallback = Gds::try_current().map_or_else(
             || "Confirm".to_owned(),
-            |gds| gds.i18n().text("dialog-confirm"),
+            |gds| gds.i18n().text_untracked("dialog-confirm"),
         );
         Signal::stored_local(fallback)
     });
     let cancel_label = cancel_label.unwrap_or_else(|| {
         Gds::try_current().map_or_else(
             || "Cancel".to_owned(),
-            |gds| gds.i18n().text("dialog-cancel"),
+            |gds| gds.i18n().text_untracked("dialog-cancel"),
         )
     });
     let cancel_sig = Signal::stored_local(cancel_label);

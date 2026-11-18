@@ -21,6 +21,10 @@ impl I18n {
         self.catalog.with(|catalog| catalog.language())
     }
 
+    pub fn language_untracked(&self) -> Language {
+        self.catalog.with_untracked(|catalog| catalog.language())
+    }
+
     pub fn catalog(&self) -> ReadSignal<Arc<Catalog>, LocalStorage> {
         self.catalog.read_only()
     }
@@ -29,14 +33,30 @@ impl I18n {
         self.catalog.with(|catalog| catalog.message(id, None))
     }
 
+    pub fn text_untracked(&self, id: &str) -> String {
+        self.catalog
+            .with_untracked(|catalog| catalog.message(id, None))
+    }
+
     pub fn format(&self, id: &str, arguments: Option<&FluentArgs<'_>>) -> String {
         self.catalog.with(|catalog| catalog.message(id, arguments))
+    }
+
+    pub fn format_untracked(&self, id: &str, arguments: Option<&FluentArgs<'_>>) -> String {
+        self.catalog
+            .with_untracked(|catalog| catalog.message(id, arguments))
     }
 
     pub fn count(&self, id: &str, count: usize) -> String {
         let mut arguments = FluentArgs::new();
         arguments.set("count", count as i64);
         self.format(id, Some(&arguments))
+    }
+
+    pub fn count_untracked(&self, id: &str, count: usize) -> String {
+        let mut arguments = FluentArgs::new();
+        arguments.set("count", count as i64);
+        self.format_untracked(id, Some(&arguments))
     }
 
     /// Install the suite's base messages and component translations.

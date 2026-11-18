@@ -10,7 +10,6 @@ pub trait Scheme: Sync {
     /// Rejects malformed addresses or URIs that do not belong to this scheme.
     fn parse(&self, input: &str) -> Result<Location, AddressError>;
     fn parent(&self, address: &Location) -> Option<Location>;
-    #[allow(dead_code)]
     fn browse<'a>(&self, _: &'a Location) -> Browse<'a> {
         Browse::Location
     }
@@ -18,10 +17,9 @@ pub trait Scheme: Sync {
 
 /// Navigation chooses a content source; providers implement loading separately.
 /// A virtual tag address cannot accidentally enter a filesystem directory read.
-#[allow(dead_code)]
 pub enum Browse<'a> {
     Location,
-    Tags(&'a TagAddress),
+    Tags,
     Remote(&'a gds::service::remote::Address),
 }
 
@@ -86,7 +84,6 @@ pub fn parent(address: &Location) -> Option<Location> {
     provider(address).parent(address)
 }
 
-#[allow(dead_code)]
 pub fn browse(address: &Location) -> Browse<'_> {
     provider(address).browse(address)
 }
@@ -227,7 +224,7 @@ impl Scheme for RemoteScheme {
 impl Scheme for TagsScheme {
     fn browse<'a>(&self, address: &'a Location) -> Browse<'a> {
         match address {
-            Location::Tags(tag) => Browse::Tags(tag),
+            Location::Tags(_) => Browse::Tags,
             _ => Browse::Location,
         }
     }

@@ -209,9 +209,28 @@ fn vertical_split_pointer_capture_drag_and_keyboard_resize_commit() {
         });
         harness.settle(16);
 
+        // Pressing Enter on SplitHandle must NOT toggle collapse (parity with main!).
+        let enter_key = KeyEvent::named(NamedKey::Enter, PhysicalKey::Code(KeyCode::Enter));
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Pressed,
+            event: enter_key.clone(),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Released,
+            event: enter_key,
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(16);
+
         harness.shut_down();
         Ok(())
     };
+
+    let bg_mounted = Rc::new(Cell::new(false));
+    let bg_flag = Rc::clone(&bg_mounted);
 
     zgui::app()
         .with_fonts(Fonts::shipped_only())
@@ -226,10 +245,15 @@ fn vertical_split_pointer_capture_drag_and_keyboard_resize_commit() {
             });
             *state_slot.lock().expect("lock") = Some(state);
             let committed = Arc::clone(&committed_ref);
+            let bg_flag = Rc::clone(&bg_flag);
             view! {
                 VerticalSplit(
                     state = state,
                     label = "Terminal dock",
+                    divider_background = move || {
+                        bg_flag.set(true);
+                        AnyView::new(view! { box(style:width = "58px", style:height = "1px") {} })
+                    },
                     on_commit = UnsyncCallback::new(move |size: f32| {
                         committed.lock().expect("lock").push(size);
                     }),
@@ -244,6 +268,95 @@ fn vertical_split_pointer_capture_drag_and_keyboard_resize_commit() {
         splitter_found.get(),
         "SplitHandle must project Role::Splitter"
     );
+    assert!(
+        bg_mounted.get(),
+        "VerticalSplit must render custom divider_background inside the 1px divider slot"
+    );
     let commits = committed.lock().expect("lock").clone();
     assert_eq!(commits, vec![260.0, 248.0]);
+}
+
+#[test]
+fn vertical_split_interpolates_bottom_progress_collapsed_height_and_maximized_progress() {
+    let bottom_h: Arc<Mutex<Option<f32>>> = Arc::new(Mutex::new(None));
+    let bottom_h_out = Arc::clone(&bottom_h);
+    let prog_slot: Arc<Mutex<Option<zgui::reactive::RwSignal<f32, zgui::reactive::LocalStorage>>>> =
+        Arc::new(Mutex::new(None));
+    let max_slot: Arc<Mutex<Option<zgui::reactive::RwSignal<f32, zgui::reactive::LocalStorage>>>> =
+        Arc::new(Mutex::new(None));
+    let prog_driver = Arc::clone(&prog_slot);
+    let max_driver = Arc::clone(&max_slot);
+
+    let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+        let mut harness = Harness::new(handler);
+        harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+            DevicePx(600.0),
+            DevicePx(500.0),
+        )));
+        harness.settle(32);
+
+        // Initial progress = 0.0 -> collapsed_bottom_height = 36.0!
+        assert_eq!(*bottom_h_out.lock().expect("lock"), Some(36.0));
+
+        // Open to progress = 1.0 -> height = 200.0!
+        if let Some(sig) = *prog_driver.lock().expect("lock") {
+            sig.set(1.0);
+            zgui::reactive::flush();
+        }
+        harness.settle(32);
+        assert_eq!(*bottom_h_out.lock().expect("lock"), Some(200.0));
+
+        // Maximize bottom pane -> height = 500.0 (full container height)!
+        if let Some(sig) = *max_driver.lock().expect("lock") {
+            sig.set(1.0);
+            zgui::reactive::flush();
+        }
+        harness.settle(32);
+        assert_eq!(*bottom_h_out.lock().expect("lock"), Some(500.0));
+
+        harness.shut_down();
+        Ok(())
+    };
+
+    zgui::app()
+        .with_fonts(Fonts::shipped_only())
+        .with_renderer(Box::new(noop_renderer))
+        .with_size(600.0, 500.0)
+        .run_on(driver, move || {
+            let state = State::new(Options {
+                min: 80.0,
+                max: 420.0,
+                initial: 200.0,
+                collapse_below: None,
+            });
+            let progress = zgui::reactive::RwSignal::new_local(0.0_f32);
+            let maximized = zgui::reactive::RwSignal::new_local(0.0_f32);
+            *prog_slot.lock().expect("lock") = Some(progress);
+            *max_slot.lock().expect("lock") = Some(maximized);
+
+            let trailing_ref = NodeRef::new();
+            let trailing_sz = trailing_ref.observe_border_size();
+            let out = Arc::clone(&bottom_h);
+            let fx = zgui::reactive::RenderEffect::new(move |_| {
+                if let Some(sz) = trailing_sz.get() {
+                    let s = trailing_ref.scale().max(1.0);
+                    *out.lock().expect("lock") = Some(sz.height.0 / s);
+                }
+            });
+            zgui::reactive::on_cleanup_local(move || drop(fx));
+
+            view! {
+                VerticalSplit(
+                    state = state,
+                    bottom_progress = Signal::from(progress),
+                    collapsed_bottom_height = 36.0,
+                    bottom_maximized_progress = Signal::from(maximized),
+                    leading = || AnyView::new(view! { box(style:width = "100%", style:height = "100%") {} }),
+                    trailing = move || AnyView::new(view! {
+                        box(node_ref = trailing_ref, style:width = "100%", style:height = "100%") {}
+                    })
+                )
+            }
+        })
+        .expect("split progress test runs");
 }

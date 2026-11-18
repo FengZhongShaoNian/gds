@@ -127,7 +127,6 @@ pub fn SplitHandle(state: State, #[prop(into, optional)] class: Classes) -> impl
                     Key::Named(NamedKey::ArrowDown) => state.step_by(-KEY_STEP, usable_height()),
                     Key::Named(NamedKey::Home) => state.snap_min(usable_height()),
                     Key::Named(NamedKey::End) => state.snap_max(usable_height()),
-                    Key::Named(NamedKey::Enter) => state.toggle_collapsed(),
                     _ => return,
                 }
                 ev.prevent_default();

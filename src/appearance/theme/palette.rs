@@ -4,7 +4,7 @@ use zgui::canvas::zgui_color::Color;
 use zgui_ui_tokens::Theme;
 
 use super::provider::color::color_css;
-use crate::appearance::{motion, tokens, typography};
+use crate::appearance::{motion, typography};
 
 const HOVER_OPACITY: f32 = 0.08;
 const PRESSED_OPACITY: f32 = 0.12;
@@ -167,11 +167,19 @@ impl Palette {
         theme.color.sidebar_border = color_css(self.border);
         theme.color.sidebar_ring = color_css(self.primary);
 
-        theme.radius.base = if rounded_corners {
-            format!("{}px", tokens::WINDOW_CORNER_RADIUS)
-        } else {
-            "0px".to_owned()
-        };
+        theme.control.ghost_hover = color_css(self.hover());
+        theme.control.outline_hover = color_css(self.hover());
+
+        let _ = rounded_corners;
+        "4px".clone_into(&mut theme.radius.sm);
+        "6px".clone_into(&mut theme.radius.md);
+        "8px".clone_into(&mut theme.radius.lg);
+        "10px".clone_into(&mut theme.radius.xl);
+        "8px".clone_into(&mut theme.radius.base);
+
+        theme.focus.disable_ring_shadows();
+        "1px solid var(--zui-color-ring)".clone_into(&mut theme.focus.ring_outline);
+        "-1px".clone_into(&mut theme.focus.ring_offset);
 
         let scale = typography.scale();
         theme.typography.family_sans = typography.sans_css_stack();

@@ -1,9 +1,14 @@
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use zgui::app::Fonts;
 use zgui::atlas::{SinkError, TextureFormat, TextureId, TextureSink};
 use zgui::geom::{CssPx, Device, DevicePx, Point, Rect, Size};
-use zgui::platform::{AppHandler, Decorations, PlatformError, Surface, SurfaceEvent};
+use zgui::platform::{
+    AppHandler, DecorationSource, Decorations, PlatformError, Surface, SurfaceEvent,
+};
+use zgui::reactive::UnsyncCallback;
 use zgui::render::{
     ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities, RenderTarget,
     Renderer, TextureHandle,
@@ -130,9 +135,16 @@ fn missing_desktop_uses_the_niri_socket_as_a_fallback() {
 }
 
 #[test]
-fn csd_close_button_exposes_button_role_and_label_and_stops_drag() {
+fn csd_controls_respect_capabilities_callbacks_and_server_decorations() {
     let found_close: Arc<Mutex<Option<(Role, Option<String>, bool)>>> = Arc::new(Mutex::new(None));
+    let found_max: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    let custom_closed = Rc::new(Cell::new(0usize));
+    let custom_maximized = Rc::new(Cell::new(0usize));
+
     let recorded = Arc::clone(&found_close);
+    let recorded_max = Arc::clone(&found_max);
+    let close_cb_ref = Rc::clone(&custom_closed);
+    let max_cb_ref = Rc::clone(&custom_maximized);
 
     let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
         let mut harness = Harness::new(handler);
@@ -148,8 +160,12 @@ fn csd_close_button_exposes_button_role_and_label_and_stops_drag() {
             .first()
             .cloned()
             .expect("window surface created");
-        let updates = surface.a11y_log();
-        for update in updates {
+        harness
+            .platform()
+            .set_surface_window_capabilities(surface.id(), Some(true), Some(true));
+        harness.settle(16);
+
+        for update in surface.a11y_log() {
             for (_, node) in update.nodes {
                 if node.role() == Role::Button && node.label() == Some("Close window") {
                     *recorded.lock().expect("lock") = Some((
@@ -158,25 +174,63 @@ fn csd_close_button_exposes_button_role_and_label_and_stops_drag() {
                         node.toggled().is_some(),
                     ));
                 }
+                if node.role() == Role::Button && node.label() == Some("Maximize window") {
+                    *recorded_max.lock().expect("lock") = true;
+                }
             }
         }
 
-        // Clicking near top-right (inside the close button) closes the window without panic,
-        // even though TitleBar wraps WindowControls with move_drag_handler().
-        let pos = Point::new(CssPx(620.0), CssPx(26.0));
+        // Click maximize button (left of close button: right-inset 12 + close 32 + gap 4 + center 16 = 64 -> x = 576).
+        let max_pos = Point::new(CssPx(576.0), CssPx(26.0));
         harness.deliver_to_first(SurfaceEvent::Pointer {
             action: PointerAction::Pressed,
-            event: PointerEvent::mouse(pos).with_button(PointerButton::Primary),
+            event: PointerEvent::mouse(max_pos).with_button(PointerButton::Primary),
             modifiers: Modifiers::NONE,
             timestamp: Timestamp::ORIGIN,
         });
         harness.deliver_to_first(SurfaceEvent::Pointer {
             action: PointerAction::Released,
-            event: PointerEvent::mouse(pos).with_button(PointerButton::Primary),
+            event: PointerEvent::mouse(max_pos).with_button(PointerButton::Primary),
             modifiers: Modifiers::NONE,
             timestamp: Timestamp::ORIGIN,
         });
         harness.settle(16);
+
+        // Click close button (x = 612, y = 26).
+        let close_pos = Point::new(CssPx(612.0), CssPx(26.0));
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Pressed,
+            event: PointerEvent::mouse(close_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(close_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(16);
+
+        // Negotiate server decorations dynamically -> controls hide so clicking close_pos does nothing!
+        harness
+            .platform()
+            .set_surface_decoration_source(surface.id(), Some(DecorationSource::Platform));
+        harness.settle(16);
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Pressed,
+            event: PointerEvent::mouse(close_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(close_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(16);
+
         harness.shut_down();
         Ok(())
     };
@@ -184,9 +238,20 @@ fn csd_close_button_exposes_button_role_and_label_and_stops_drag() {
     zgui::app()
         .with_fonts(Fonts::shipped_only())
         .with_renderer(Box::new(noop_renderer))
+        .with_decorations(Decorations::None)
         .with_size(640.0, 120.0)
-        .run_on(driver, || {
-            super::title_bar_with_forced_controls("Test Window")
+        .run_on(driver, move || {
+            let close_cb = Rc::clone(&close_cb_ref);
+            let max_cb = Rc::clone(&max_cb_ref);
+            super::title_bar_with_forced_controls(
+                "Test Window",
+                Some(UnsyncCallback::new(move |()| {
+                    max_cb.set(max_cb.get() + 1);
+                })),
+                Some(UnsyncCallback::new(move |()| {
+                    close_cb.set(close_cb.get() + 1);
+                })),
+            )
         })
         .expect("window titlebar runs headlessly");
 
@@ -194,5 +259,15 @@ fn csd_close_button_exposes_button_role_and_label_and_stops_drag() {
         *found_close.lock().expect("lock"),
         Some((Role::Button, Some("Close window".to_owned()), false)),
         "CSD close button must project Role::Button with label 'Close window' and no toggled state"
+    );
+    assert!(
+        *found_max.lock().expect("lock"),
+        "CSD maximize button must mount when can_maximize is true"
+    );
+    assert_eq!(custom_maximized.get(), 1);
+    assert_eq!(
+        custom_closed.get(),
+        1,
+        "close callback fires under CSD and is suppressed once server_decorated becomes true"
     );
 }

@@ -35,10 +35,13 @@ pub mod thumbnail;
 pub mod window;
 
 pub use button::{IconButton, IconButtonProps};
-pub use container::ContentContainer;
+pub use container::{ContentContainer, ContentContainerProps};
 pub use dialog::DialogActions;
 pub use drag::DragCard;
-pub use frame::{Frame, WindowDragArea};
+pub use frame::{
+    Frame, FrameContext, FrameFooter, FrameFooterProps, FrameProps, FrameToolbar,
+    FrameToolbarProps, FrameWorkspace, FrameWorkspaceProps, WindowDragArea, WindowDragAreaProps,
+};
 pub use icon::{Icon, IconName, IconProps};
 pub use list::ListSurface;
 pub use navigation::{
@@ -51,4 +54,7 @@ pub use shortcut::{
     HeldModifier, Shortcut, ShortcutBadge, ShortcutBadgeProps, ShortcutHint, ShortcutHintProps,
     command_tooltip, shortcut_tooltip,
 };
-pub use surface::CardSurface;
+pub use sidebar::{
+    SidebarPresentation, SidebarState, use_sidebar_presentation, use_sidebar_presentation_widths,
+};
+pub use surface::{CardSurface, CardSurfaceProps, GlassPanel, GlassPanelProps};

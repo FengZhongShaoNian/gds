@@ -181,6 +181,7 @@ impl Prepared {
         if let Some(path) = &self.loaded.source_path {
             paths.push(path.clone());
         }
+        paths.sort();
         paths.dedup();
         paths
     }

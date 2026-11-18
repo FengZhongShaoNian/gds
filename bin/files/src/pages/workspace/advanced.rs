@@ -844,6 +844,7 @@ impl Browser {
                 self.new_tab(Some(Location::from(target.directory.as_path())));
             }
             self.update(|state| state.tab_mut().navigation.view_mut().filter.clear());
+            self.0.filter.set(String::new());
             self.reveal_paths(target.selection);
             self.sync_address();
             self.refresh();

@@ -128,7 +128,7 @@ impl Browser {
         enum Dispatch {
             Remote(LoadRequest, gds::service::remote::Address),
             Standard(LoadRequest),
-            UnavailableVolume,
+            UnavailableVolume { is_active: bool },
         }
         let dispatch = {
             let mut state = self.0.state.borrow_mut();
@@ -145,10 +145,7 @@ impl Browser {
                 tab.contents = Contents::Unavailable(i18n::text("device-not-mounted"));
                 tab.rows.clear();
                 tab.backing = SelectionBacking::from_items(std::iter::empty());
-                if is_active {
-                    self.0.filter.set(String::new());
-                }
-                Dispatch::UnavailableVolume
+                Dispatch::UnavailableVolume { is_active }
             } else {
                 let request = tab
                     .navigation
@@ -162,8 +159,11 @@ impl Browser {
             }
         };
         match dispatch {
-            Dispatch::UnavailableVolume => {
+            Dispatch::UnavailableVolume { is_active } => {
                 self.clear_watch(id);
+                if is_active {
+                    self.0.filter.set(String::new());
+                }
                 self.sync_active_chrome();
                 self.changed();
             }

@@ -2,23 +2,28 @@
 
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     ffi::OsString,
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::{Rc, Weak},
 };
 
 use gds::{
     app::Gds,
-    appearance::tokens::COLLAPSED_SIDEBAR_WIDTH,
+    appearance::tokens::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH},
     service::task_manager::{Owner as TaskOwner, Scope},
+    ui::sidebar::{SidebarPresentation, SidebarState, use_sidebar_presentation},
 };
+use tokio_util::sync::CancellationToken;
 use zgui::prelude::*;
 use zgui::reactive::RenderEffect;
 
 use super::{
-    model::{AddressPresentation, Contents, Operation, Pages, Pane, Prompt, State, Tab},
+    model::{
+        AddressPresentation, BackgroundTask, BackgroundTasks, ConfirmOptions, Contents,
+        FILES_TASK_KEY, Operation, Pages, Pane, Prompt, State, Tab,
+    },
     name_form::{NameForm, NamePurpose},
 };
 use crate::{
@@ -34,6 +39,56 @@ use crate::{
     features::pick_files,
     shared::lib::clipboard::Clipboard,
 };
+
+pub(super) const DEFAULT_WINDOW_WIDTH: f32 = 1240.0;
+pub(super) const COMPACT_WINDOW_WIDTH: f32 = 1080.0;
+
+pub(super) fn resolve_initial_widths(reported_width: Option<f32>) -> (f32, f32) {
+    let window_width = reported_width
+        .filter(|width| width.is_finite() && *width > 0.0)
+        .unwrap_or(DEFAULT_WINDOW_WIDTH);
+    let sidebar_width = if window_width < COMPACT_WINDOW_WIDTH {
+        COLLAPSED_SIDEBAR_WIDTH
+    } else {
+        SIDEBAR_WIDTH
+    };
+    (window_width, (window_width - sidebar_width).max(1.0))
+}
+
+pub(super) fn sample_workspace_sidebar(
+    sidebar: RwSignal<bool, LocalStorage>,
+    window_width: RwSignal<f32, LocalStorage>,
+) -> (
+    Signal<SidebarPresentation, LocalStorage>,
+    Signal<f32, LocalStorage>,
+) {
+    let sidebar_state = Signal::derive_local(move || {
+        SidebarState::from_collapsed(!sidebar.get() || window_width.get() < COMPACT_WINDOW_WIDTH)
+    });
+    let presentation = use_sidebar_presentation(sidebar_state);
+    let width = Signal::derive_local(move || presentation.get().width());
+    (presentation, width)
+}
+
+pub(super) fn observe_window_title(
+    prefs: ReadSignal<preferences::Preferences, LocalStorage>,
+    ready: impl Fn() -> bool + 'static,
+    mut apply_title: impl FnMut(&str) + 'static,
+) {
+    let title_fx = RenderEffect::new(move |prev: Option<Option<String>>| {
+        let _ = prefs.with(|p| p.language);
+        let _ = Gds::current().i18n().language();
+        if !ready() {
+            return None;
+        }
+        let title = gds::i18n::text("app-title");
+        if prev.flatten().as_deref() != Some(title.as_str()) {
+            apply_title(&title);
+        }
+        Some(title)
+    });
+    on_cleanup_local(move || drop(title_fx));
+}
 
 pub(crate) struct LaunchOptions {
     pub places: Result<Places, PlacesError>,
@@ -62,6 +117,52 @@ impl WeakBrowser {
     }
 }
 
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub(super) struct DragSources(RwSignal<HashSet<PathBuf>, LocalStorage>);
+
+#[allow(dead_code)]
+impl DragSources {
+    pub fn new() -> Self {
+        Self(RwSignal::new_local(HashSet::new()))
+    }
+
+    pub fn read_only(self) -> ReadSignal<HashSet<PathBuf>, LocalStorage> {
+        self.0.read_only()
+    }
+
+    pub fn set(self, paths: impl IntoIterator<Item = PathBuf>) {
+        let next: HashSet<PathBuf> = paths.into_iter().collect();
+        if self.0.with_untracked(|current| *current != next) {
+            self.0.set(next);
+        }
+    }
+
+    pub fn clear(self) {
+        if !self.0.with_untracked(HashSet::is_empty) {
+            self.0.set(HashSet::new());
+        }
+    }
+
+    pub fn contains(self, path: &Path) -> bool {
+        self.0
+            .with(|sources| !sources.is_empty() && sources.contains(path))
+    }
+
+    pub fn contains_untracked(self, path: &Path) -> bool {
+        self.0
+            .with_untracked(|sources| !sources.is_empty() && sources.contains(path))
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0.with(HashSet::is_empty)
+    }
+
+    pub fn is_empty_untracked(self) -> bool {
+        self.0.with_untracked(HashSet::is_empty)
+    }
+}
+
 pub(super) struct Workspace {
     pub alive: Cell<bool>,
     pub state: RefCell<State>,
@@ -75,12 +176,19 @@ pub(super) struct Workspace {
     pub sidebar_tabs_height: RwSignal<Option<f32>, LocalStorage>,
     pub settings: crate::widgets::settings::View,
     pub sidebar: RwSignal<bool, LocalStorage>,
+    pub sidebar_presentation: Signal<SidebarPresentation, LocalStorage>,
+    pub sidebar_width: Signal<f32, LocalStorage>,
     pub details: RwSignal<bool, LocalStorage>,
     pub terminal: RwSignal<bool, LocalStorage>,
+    pub background_tasks: RwSignal<BackgroundTasks, LocalStorage>,
+    pub background_tasks_revision: RwSignal<u64, LocalStorage>,
+    pub drag_sources: DragSources,
     pub notice: RwSignal<Option<String>, LocalStorage>,
     pub prompt: RwSignal<Prompt, LocalStorage>,
     pub prompt_generation: RwSignal<u64, LocalStorage>,
     pub prompt_about: RwSignal<bool, LocalStorage>,
+    #[allow(dead_code)]
+    pub confirm_options: RwSignal<ConfirmOptions, LocalStorage>,
     pub address: RwSignal<String, LocalStorage>,
     pub filter: RwSignal<String, LocalStorage>,
     pub save_name: RwSignal<String, LocalStorage>,
@@ -172,6 +280,10 @@ impl Browser {
                 tabs.len() - 1
             });
         let next_tab = tabs.len() as u64 + 1;
+        let has_portal_title = picker
+            .as_ref()
+            .and_then(|options| options.portal.as_ref())
+            .is_some_and(|request| !request.title.is_empty());
         let save_name = picker
             .as_ref()
             .and_then(|options| options.portal.as_ref())
@@ -204,9 +316,17 @@ impl Browser {
                     notice.set(Some(error.to_string()));
                 }
             });
-        let initial_width = 960.0;
-        let initial_widths = Self::column_widths_map(&places, &location);
         let window = try_use_window();
+        let (initial_width, initial_content_width) = resolve_initial_widths(
+            window
+                .as_ref()
+                .map(|win| win.size().get_untracked().width.0),
+        );
+        let window_width = RwSignal::new_local(initial_width);
+        let sidebar = RwSignal::new_local(true);
+        let (sidebar_presentation, sidebar_width) =
+            owner.with(|| sample_workspace_sidebar(sidebar, window_width));
+        let initial_widths = Self::column_widths_map(&places, &location);
         let browser = Self(Rc::new(Workspace {
             alive: Cell::new(true),
             details: RwSignal::new_local(places.details_visible(location.clone())),
@@ -221,22 +341,29 @@ impl Browser {
                 operation: Operation::Idle,
                 saving_places: false,
                 favorites_reload: None,
+                pending_device_removals: Vec::new(),
             }),
             revision: RwSignal::new_local(0),
             selection: RwSignal::new_local(0),
             column_widths: RwSignal::new_local(initial_widths),
             pages: RwSignal::new_local(Pages::default()),
-            window_width: RwSignal::new_local(initial_width),
-            content_width: RwSignal::new_local(initial_width - COLLAPSED_SIDEBAR_WIDTH),
+            window_width,
+            content_width: RwSignal::new_local(initial_content_width),
             address_presentation: RwSignal::new_local(AddressPresentation::Breadcrumbs),
             sidebar_tabs_height: RwSignal::new_local(sidebar_tabs_height),
             settings,
-            sidebar: RwSignal::new_local(true),
+            sidebar,
+            sidebar_presentation,
+            sidebar_width,
             terminal: RwSignal::new_local(false),
+            background_tasks: RwSignal::new_local(BackgroundTasks::default()),
+            background_tasks_revision: RwSignal::new_local(0),
+            drag_sources: DragSources::new(),
             notice,
             prompt: RwSignal::new_local(Prompt::Closed),
             prompt_generation: RwSignal::new_local(0),
             prompt_about: RwSignal::new_local(false),
+            confirm_options: RwSignal::new_local(ConfirmOptions::default()),
             address: RwSignal::new_local(location.display_address()),
             filter: RwSignal::new_local(String::new()),
             save_name: RwSignal::new_local(save_name),
@@ -278,6 +405,10 @@ impl Browser {
             if let Some(browser) = weak.0.upgrade() {
                 browser.alive.set(false);
                 *browser.pending_focus.borrow_mut() = None;
+                browser.drag_sources.clear();
+                browser
+                    .background_tasks
+                    .with_untracked(BackgroundTasks::cancel_all);
                 browser.state.borrow().operation.cancel();
                 browser.tasks.cancel();
             }
@@ -300,6 +431,21 @@ impl Browser {
                 }
             });
             on_cleanup_local(move || drop(focus_effect));
+
+            if !has_portal_title {
+                let ready_win = win.clone();
+                let title_win = win;
+                let prefs = browser.0.preferences.state();
+                let presented = ready_win.presented();
+                observe_window_title(
+                    prefs,
+                    move || {
+                        let _ = presented.get();
+                        ready_win.is_open()
+                    },
+                    move |title| title_win.set_title(title),
+                );
+            }
         }
         browser.observe_services();
         browser.observe_terminals();
@@ -428,7 +574,33 @@ impl Browser {
     }
 
     pub(super) fn update<R>(&self, edit: impl FnOnce(&mut State) -> R) -> R {
-        let value = edit(&mut self.0.state.borrow_mut());
+        let (value, op_sync) = {
+            let mut state = self.0.state.borrow_mut();
+            let prior = match &state.operation {
+                Operation::Idle => None,
+                Operation::Running { label, cancel } => {
+                    Some((label.clone(), cancel.is_cancelled()))
+                }
+            };
+            let value = edit(&mut state);
+            let next = match &state.operation {
+                Operation::Idle => None,
+                Operation::Running { label, cancel } => Some((label.clone(), cancel.clone())),
+            };
+            let next_sig = next
+                .as_ref()
+                .map(|(label, cancel)| (label.as_str(), cancel.is_cancelled()));
+            let prior_sig = prior
+                .as_ref()
+                .map(|(label, cancelled)| (label.as_str(), *cancelled));
+            (value, (prior_sig != next_sig).then_some(next))
+        };
+        if let Some(op_state) = op_sync {
+            self.0.background_tasks.update(|tasks| {
+                tasks.sync(FILES_TASK_KEY, op_state);
+            });
+            self.bump_background_tasks_revision();
+        }
         self.changed();
         value
     }
@@ -525,6 +697,7 @@ impl Browser {
 
     pub(super) fn open_prompt(&self, prompt: Prompt) {
         debug_assert!(!matches!(prompt, Prompt::Closed));
+        self.0.confirm_options.set(ConfirmOptions::default());
         self.0.prompt_about.set(matches!(prompt, Prompt::About));
         self.0
             .prompt_generation
@@ -545,6 +718,29 @@ impl Browser {
             primary,
             accept: Rc::new(accept),
         });
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn confirm_with_options(
+        &self,
+        title: String,
+        message: String,
+        primary: String,
+        options: ConfirmOptions,
+        accept: impl Fn() + 'static,
+    ) {
+        self.open_prompt(Prompt::Confirm {
+            title,
+            message,
+            primary,
+            accept: Rc::new(accept),
+        });
+        self.0.confirm_options.set(options);
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn confirm_options(&self) -> ConfirmOptions {
+        self.0.confirm_options.get_untracked()
     }
 
     pub(super) fn prompt_name(
@@ -716,3 +912,243 @@ impl Browser {
         on_cleanup_local(move || drop(error_fx));
     }
 }
+
+/// Shared Phase 6 seam accessors for synchronized sidebar presentation, concurrent background
+/// tasks, active drag-source ghosting, and preference helpers.
+#[allow(dead_code)]
+impl Browser {
+    pub(super) fn sidebar_presentation(&self) -> Signal<SidebarPresentation, LocalStorage> {
+        self.0.sidebar_presentation
+    }
+
+    pub(super) fn sidebar_width(&self) -> Signal<f32, LocalStorage> {
+        self.0.sidebar_width
+    }
+
+    pub(super) fn sidebar_collapsed(&self) -> bool {
+        !self.sidebar_expanded()
+    }
+
+    pub(super) fn tags_enabled(&self) -> bool {
+        self.0.preferences.state().with(|prefs| prefs.tags.enabled)
+    }
+
+    pub(super) fn tags_enabled_untracked(&self) -> bool {
+        self.0.preferences.snapshot().tags.enabled
+    }
+
+    fn bump_background_tasks_revision(&self) {
+        self.0
+            .background_tasks_revision
+            .update(|revision| *revision = revision.wrapping_add(1));
+    }
+
+    fn mirror_files_operation(&self, task: Option<(String, CancellationToken)>) {
+        let mut state = self.0.state.borrow_mut();
+        state.operation = match task {
+            Some((label, cancel)) => Operation::Running { label, cancel },
+            None => Operation::Idle,
+        };
+    }
+
+    pub(super) fn background_tasks(&self) -> ReadSignal<BackgroundTasks, LocalStorage> {
+        self.0.background_tasks.read_only()
+    }
+
+    pub(super) fn background_tasks_revision(&self) -> ReadSignal<u64, LocalStorage> {
+        self.0.background_tasks_revision.read_only()
+    }
+
+    pub(super) fn background_task_list(&self) -> Vec<BackgroundTask> {
+        let _ = self.0.background_tasks_revision.get();
+        self.0.background_tasks.with(|tasks| tasks.items().to_vec())
+    }
+
+    pub(super) fn background_task_count(&self) -> usize {
+        let _ = self.0.background_tasks_revision.get();
+        self.0.background_tasks.with(BackgroundTasks::len)
+    }
+
+    pub(super) fn has_background_tasks(&self) -> bool {
+        let _ = self.0.background_tasks_revision.get();
+        self.0.background_tasks.with(|tasks| !tasks.is_empty())
+    }
+
+    pub(super) fn has_background_tasks_untracked(&self) -> bool {
+        self.0
+            .background_tasks
+            .with_untracked(|tasks| !tasks.is_empty())
+    }
+
+    pub(super) fn is_background_task_busy(&self, key: &str) -> bool {
+        let _ = self.0.background_tasks_revision.get();
+        self.0.background_tasks.with(|tasks| tasks.is_busy(key))
+    }
+
+    pub(super) fn is_background_task_busy_untracked(&self, key: &str) -> bool {
+        self.0
+            .background_tasks
+            .with_untracked(|tasks| tasks.is_busy(key))
+    }
+
+    pub(super) fn background_task_token(&self, key: &str) -> Option<CancellationToken> {
+        self.0
+            .background_tasks
+            .with_untracked(|tasks| tasks.token(key))
+    }
+
+    pub(super) fn begin_background_task(
+        &self,
+        key: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Option<CancellationToken> {
+        let key = key.into();
+        let label = label.into();
+        let cancel = self.0.tasks.token().child_token();
+        if self.is_background_task_busy_untracked(&key) {
+            return None;
+        }
+        if key == FILES_TASK_KEY {
+            if self.read_untracked(|state| state.operation.busy()) {
+                return None;
+            }
+            self.mirror_files_operation(Some((label.clone(), cancel.clone())));
+        }
+        let mut started = false;
+        let label_for_task = label;
+        let cancel_for_task = cancel.clone();
+        let key_for_task = key;
+        self.0.background_tasks.update(|tasks| {
+            started = tasks.begin(key_for_task, label_for_task, cancel_for_task);
+        });
+        if !started {
+            return None;
+        }
+        self.bump_background_tasks_revision();
+        self.changed();
+        Some(cancel)
+    }
+
+    pub(super) fn upsert_background_task(&self, task: BackgroundTask) {
+        if task.key == FILES_TASK_KEY {
+            self.mirror_files_operation(Some((task.label.clone(), task.cancel.clone())));
+        }
+        self.0.background_tasks.update(|tasks| tasks.upsert(task));
+        self.bump_background_tasks_revision();
+        self.changed();
+    }
+
+    pub(super) fn set_background_task_detail(&self, key: &str, detail: Option<String>) {
+        let mut updated = false;
+        self.0.background_tasks.update(|tasks| {
+            updated = tasks.set_detail(key, detail);
+        });
+        if updated {
+            self.bump_background_tasks_revision();
+        }
+    }
+
+    pub(super) fn update_background_task(
+        &self,
+        key: &str,
+        label: Option<String>,
+        detail: Option<String>,
+        progress: Option<f32>,
+    ) {
+        if key == FILES_TASK_KEY
+            && let Some(ref next_label) = label
+        {
+            let mut state = self.0.state.borrow_mut();
+            if let Operation::Running {
+                label: op_label, ..
+            } = &mut state.operation
+            {
+                *op_label = next_label.clone();
+            }
+        }
+        let mut updated = false;
+        self.0.background_tasks.update(|tasks| {
+            updated = tasks.update_progress(key, label, detail, progress);
+        });
+        if updated {
+            self.bump_background_tasks_revision();
+        }
+    }
+
+    pub(super) fn sync_background_task(
+        &self,
+        key: impl Into<String>,
+        task: Option<(String, CancellationToken)>,
+    ) {
+        let key = key.into();
+        if key == FILES_TASK_KEY {
+            self.mirror_files_operation(task.clone());
+        }
+        self.0
+            .background_tasks
+            .update(|tasks| tasks.sync(key, task));
+        self.bump_background_tasks_revision();
+        self.changed();
+    }
+
+    pub(super) fn cancel_background_task(&self, key: &str) -> bool {
+        let cancelled = self
+            .0
+            .background_tasks
+            .with_untracked(|tasks| tasks.cancel(key));
+        if key == FILES_TASK_KEY {
+            self.read_untracked(|state| state.operation.cancel());
+        }
+        if cancelled {
+            self.bump_background_tasks_revision();
+            self.changed();
+        }
+        cancelled
+    }
+
+    pub(super) fn finish_background_task(&self, key: &str) -> Option<BackgroundTask> {
+        if key == FILES_TASK_KEY {
+            self.mirror_files_operation(None);
+        }
+        let mut removed = None;
+        self.0.background_tasks.update(|tasks| {
+            removed = tasks.finish(key);
+        });
+        if removed.is_some() {
+            self.bump_background_tasks_revision();
+            self.changed();
+        }
+        removed
+    }
+
+    pub(super) fn drag_sources(&self) -> ReadSignal<HashSet<PathBuf>, LocalStorage> {
+        self.0.drag_sources.read_only()
+    }
+
+    pub(super) fn set_drag_sources(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.0.drag_sources.set(paths);
+    }
+
+    pub(super) fn clear_drag_sources(&self) {
+        self.0.drag_sources.clear();
+    }
+
+    pub(super) fn is_drag_source(&self, path: &Path) -> bool {
+        self.0.drag_sources.contains(path)
+    }
+
+    pub(super) fn is_drag_source_untracked(&self, path: &Path) -> bool {
+        self.0.drag_sources.contains_untracked(path)
+    }
+
+    pub(super) fn has_drag_sources(&self) -> bool {
+        !self.0.drag_sources.is_empty()
+    }
+
+    pub(super) fn has_drag_sources_untracked(&self) -> bool {
+        !self.0.drag_sources.is_empty_untracked()
+    }
+}
+
+#[cfg(test)]
+mod tests;

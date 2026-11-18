@@ -156,6 +156,8 @@ pub(super) struct Tab {
     pub work: Option<TaskOwner>,
     pub enrichment: Option<super::enrichment::Enrichment>,
     pub reveal: Vec<PathBuf>,
+    #[allow(dead_code)]
+    pub reveal_hidden: bool,
 }
 
 impl Tab {
@@ -175,6 +177,7 @@ impl Tab {
             work: None,
             enrichment: None,
             reveal: Vec::new(),
+            reveal_hidden: false,
         }
     }
 
@@ -207,6 +210,210 @@ impl Tab {
 impl Drop for Tab {
     fn drop(&mut self) {
         self.cancel();
+    }
+}
+
+#[allow(dead_code)]
+pub(super) const FILES_TASK_KEY: &str = "files";
+#[allow(dead_code)]
+pub(super) const TRASH_TASK_KEY: &str = "trash";
+
+#[allow(dead_code)]
+pub(super) fn remote_task_key(id: u64) -> String {
+    format!("remote-task-{id}")
+}
+
+/// Concurrent window-owned background operation entry shown in the footer `ListTodo` popover.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub(super) struct BackgroundTask {
+    pub key: String,
+    pub label: String,
+    pub detail: Option<String>,
+    pub progress: Option<f32>,
+    pub cancel: tokio_util::sync::CancellationToken,
+    on_cancel: Option<Rc<dyn Fn()>>,
+}
+
+#[allow(dead_code)]
+impl BackgroundTask {
+    pub fn new(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            detail: None,
+            progress: None,
+            cancel,
+            on_cancel: None,
+        }
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        let detail = detail.into();
+        self.detail = (!detail.is_empty()).then_some(detail);
+        self
+    }
+
+    pub fn with_progress(mut self, progress: f32) -> Self {
+        self.progress = progress.is_finite().then(|| progress.clamp(0.0, 1.0));
+        self
+    }
+
+    pub fn with_on_cancel(mut self, on_cancel: impl Fn() + 'static) -> Self {
+        self.on_cancel = Some(Rc::new(on_cancel));
+        self
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_cancelled()
+    }
+
+    pub fn cancel(&self) {
+        let was_cancelled = self.cancel.is_cancelled();
+        self.cancel.cancel();
+        if !was_cancelled && let Some(callback) = &self.on_cancel {
+            callback();
+        }
+    }
+
+    pub fn display_label(&self) -> String {
+        match self.detail.as_deref().filter(|detail| !detail.is_empty()) {
+            Some(detail) => format!("{} — {detail}", self.label),
+            None => self.label.clone(),
+        }
+    }
+}
+
+/// Ordered map of concurrent background tasks (`"files"`, `"trash"`, `"remote-task-{id}"`).
+#[derive(Clone, Default)]
+#[allow(dead_code)]
+pub(super) struct BackgroundTasks {
+    items: Vec<BackgroundTask>,
+}
+
+#[allow(dead_code)]
+impl BackgroundTasks {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn items(&self) -> &[BackgroundTask] {
+        &self.items
+    }
+
+    pub fn get(&self, key: &str) -> Option<&BackgroundTask> {
+        self.items.iter().find(|item| item.key == key)
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        self.items.iter().any(|item| item.key == key)
+    }
+
+    pub fn is_busy(&self, key: &str) -> bool {
+        self.contains(key)
+    }
+
+    pub fn token(&self, key: &str) -> Option<tokio_util::sync::CancellationToken> {
+        self.get(key).map(|item| item.cancel.clone())
+    }
+
+    pub fn begin(
+        &mut self,
+        key: impl Into<String>,
+        label: impl Into<String>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> bool {
+        let key = key.into();
+        if self.contains(&key) {
+            return false;
+        }
+        self.items.push(BackgroundTask::new(key, label, cancel));
+        true
+    }
+
+    pub fn upsert(&mut self, task: BackgroundTask) {
+        if let Some(existing) = self.items.iter_mut().find(|item| item.key == task.key) {
+            *existing = task;
+        } else {
+            self.items.push(task);
+        }
+    }
+
+    pub fn set_detail(&mut self, key: &str, detail: Option<String>) -> bool {
+        let normalized = detail.filter(|text| !text.is_empty());
+        let Some(item) = self.items.iter_mut().find(|item| item.key == key) else {
+            return false;
+        };
+        if item.detail == normalized {
+            return false;
+        }
+        item.detail = normalized;
+        true
+    }
+
+    pub fn update_progress(
+        &mut self,
+        key: &str,
+        label: Option<String>,
+        detail: Option<String>,
+        progress: Option<f32>,
+    ) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.key == key) else {
+            return false;
+        };
+        if let Some(label) = label {
+            item.label = label;
+        }
+        item.detail = detail.filter(|text| !text.is_empty());
+        item.progress = progress
+            .filter(|value| value.is_finite())
+            .map(|value| value.clamp(0.0, 1.0));
+        true
+    }
+
+    pub fn sync(
+        &mut self,
+        key: impl Into<String>,
+        task: Option<(String, tokio_util::sync::CancellationToken)>,
+    ) {
+        let key = key.into();
+        if let Some((label, cancel)) = task {
+            if let Some(existing) = self.items.iter_mut().find(|item| item.key == key) {
+                existing.label = label;
+                existing.cancel = cancel;
+            } else {
+                self.items.push(BackgroundTask::new(key, label, cancel));
+            }
+        } else {
+            self.items.retain(|item| item.key != key);
+        }
+    }
+
+    pub fn finish(&mut self, key: &str) -> Option<BackgroundTask> {
+        let index = self.items.iter().position(|item| item.key == key)?;
+        Some(self.items.remove(index))
+    }
+
+    pub fn cancel(&self, key: &str) -> bool {
+        let Some(item) = self.get(key) else {
+            return false;
+        };
+        item.cancel();
+        true
+    }
+
+    pub fn cancel_all(&self) {
+        for item in &self.items {
+            item.cancel();
+        }
     }
 }
 
@@ -262,6 +469,17 @@ impl Pages {
     }
 }
 
+/// Optional visual metadata and frozen item preview for [`Prompt::Confirm`].
+#[derive(Clone, Default)]
+#[allow(dead_code)]
+pub(super) struct ConfirmOptions {
+    pub icon: Option<gds::ui::IconName>,
+    pub primary_icon: Option<gds::ui::IconName>,
+    pub destructive: bool,
+    pub items: Vec<String>,
+    pub overflow_count: usize,
+}
+
 #[derive(Clone)]
 pub(super) enum Prompt {
     Closed,
@@ -290,6 +508,8 @@ pub(super) struct State {
     pub operation: Operation,
     pub saving_places: bool,
     pub favorites_reload: Option<Vec<Location>>,
+    #[allow(dead_code)]
+    pub pending_device_removals: Vec<volumes::DeviceAction>,
 }
 
 impl State {
@@ -315,3 +535,6 @@ impl State {
             .is_none_or(|picker| picker.allows_multiple())
     }
 }
+
+#[cfg(test)]
+mod tests;

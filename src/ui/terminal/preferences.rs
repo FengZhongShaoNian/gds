@@ -87,7 +87,6 @@ impl Preferences {
         }
         Ok(())
     }
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn normalized(mut self) -> Self {
         if !self.font_size.is_finite() {
             self.font_size = Self::default().font_size;

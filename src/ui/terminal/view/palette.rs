@@ -14,7 +14,7 @@ use zgui::canvas::zgui_color::Color as ZguiColor;
 
 use crate::{app::Gds, appearance::theme};
 
-#[allow(dead_code)] // Seed skeleton for Wave 2 ui-terminal-tools.
+#[derive(Clone, Copy)]
 pub(in crate::ui::terminal) struct Palette {
     pub background: ZguiColor,
     pub foreground: ZguiColor,
@@ -24,14 +24,76 @@ pub(in crate::ui::terminal) struct Palette {
     colors: [Rgb; COUNT],
 }
 
-#[allow(dead_code)]
 impl Palette {
     pub fn current() -> Self {
-        let gds = Gds::current();
-        let theme = gds.appearance().theme();
-        let roles = theme.colors().terminal;
-        let alpha = theme.content_background().alpha();
-        Self::from_roles(roles, alpha)
+        if let Some(gds) = Gds::try_current() {
+            let theme = gds.appearance().theme();
+            let roles = theme.colors().terminal;
+            let alpha = theme.content_background().alpha();
+            Self::from_roles(roles, alpha)
+        } else {
+            Self::fallback()
+        }
+    }
+
+    pub(in crate::ui::terminal) fn fallback() -> Self {
+        let mut colors = [Rgb { r: 0, g: 0, b: 0 }; COUNT];
+        let defaults: [(u8, u8, u8); 16] = [
+            (0x1d, 0x1f, 0x21),
+            (0xcc, 0x66, 0x66),
+            (0xb5, 0xbd, 0x68),
+            (0xf0, 0xc6, 0x74),
+            (0x81, 0xa2, 0xbe),
+            (0xb2, 0x94, 0xbb),
+            (0x8a, 0xbe, 0xb7),
+            (0xc5, 0xc8, 0xc6),
+            (0x66, 0x66, 0x66),
+            (0xd5, 0x4e, 0x53),
+            (0xb9, 0xca, 0x4a),
+            (0xe7, 0xc5, 0x47),
+            (0x7a, 0xa6, 0xda),
+            (0xc3, 0x97, 0xd8),
+            (0x70, 0xc0, 0xb1),
+            (0xea, 0xea, 0xea),
+        ];
+        for (i, (r, g, b)) in defaults.iter().copied().enumerate() {
+            let rgb = Rgb { r, g, b };
+            colors[i] = rgb;
+            if i < 8 {
+                colors[NamedColor::DimBlack as usize + i] = dim(rgb);
+            }
+        }
+        let fg = Rgb {
+            r: 0xc5,
+            g: 0xc8,
+            b: 0xc6,
+        };
+        let bg = Rgb {
+            r: 0x1d,
+            g: 0x1f,
+            b: 0x21,
+        };
+        colors[NamedColor::Foreground as usize] = fg;
+        colors[NamedColor::Background as usize] = bg;
+        colors[NamedColor::Cursor as usize] = fg;
+        colors[NamedColor::BrightForeground as usize] = Rgb {
+            r: 0xea,
+            g: 0xea,
+            b: 0xea,
+        };
+        colors[NamedColor::DimForeground as usize] = dim(fg);
+        Self {
+            background: from_rgb(bg),
+            foreground: from_rgb(fg),
+            selection: from_rgb(Rgb {
+                r: 0x37,
+                g: 0x3b,
+                b: 0x41,
+            }),
+            selected_text: from_rgb(fg),
+            cursor_text: from_rgb(bg),
+            colors,
+        }
     }
 
     pub(crate) fn from_roles(roles: theme::TerminalColors, opacity: f32) -> Self {

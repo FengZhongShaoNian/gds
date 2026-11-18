@@ -1,6 +1,5 @@
 use zgui::prelude::*;
 use zgui::reactive::LocalStorage;
-use zgui::vocab::Toggled;
 use zgui::{component, view};
 use zgui_ui::{ButtonProps as ZuiButtonProps, ButtonSize, ButtonVariant};
 
@@ -16,7 +15,7 @@ pub fn IconButton(
     #[prop(default = ButtonVariant::Ghost)] variant: ButtonVariant,
     #[prop(default = ButtonSize::Icon)] size: ButtonSize,
     #[prop(into, default = Signal::stored_local(false))] disabled: Signal<bool, LocalStorage>,
-    #[prop(into, default = Signal::stored_local(false))] toggled: Signal<bool, LocalStorage>,
+    #[prop(into, optional)] toggled: Option<Signal<bool, LocalStorage>>,
     #[prop(optional)] shortcut: Option<Shortcut>,
     #[prop(default = None)] keytip: Option<&'static str>,
     #[prop(optional)] node_ref: Option<NodeRef>,
@@ -25,21 +24,10 @@ pub fn IconButton(
 ) -> impl IntoView {
     crate::ui::styles::install_ui_stylesheets();
     let _ = (shortcut, keytip);
-    let own = Attrs::new()
-        .attribute(zgui::view::AttrName::new("data-toggled"), move || {
-            toggled.get().then(|| "true".to_owned())
-        })
-        .a11y_from(
-            A11yBinding::new(Role::Button)
-                .label(move || label.get())
-                .toggled(move || {
-                    if toggled.get() {
-                        Toggled::True
-                    } else {
-                        Toggled::False
-                    }
-                }),
-        );
+    let own = super::apply_toggled(
+        Attrs::new().a11y_from(A11yBinding::unspecified().label(move || label.get())),
+        toggled,
+    );
 
     view! {
         ZuiButton(

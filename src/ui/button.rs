@@ -19,6 +19,23 @@ use zgui_ui::{
 
 use crate::ui::Shortcut;
 
+pub(super) fn apply_toggled(attrs: Attrs, toggled: Option<Signal<bool, LocalStorage>>) -> Attrs {
+    let Some(toggled) = toggled else {
+        return attrs;
+    };
+    attrs
+        .attribute(zgui::view::AttrName::new("data-toggled"), move || {
+            toggled.get().then(|| "true".to_owned())
+        })
+        .a11y_from(A11yBinding::unspecified().toggled(move || {
+            if toggled.get() {
+                Toggled::True
+            } else {
+                Toggled::False
+            }
+        }))
+}
+
 /// Standard GDS button wrapping `zgui_ui::Button` with optional tooltip/shortcut hint.
 #[allow(clippy::too_many_arguments)]
 #[component]
@@ -26,7 +43,7 @@ pub fn Button(
     #[prop(default = ButtonVariant::Default)] variant: ButtonVariant,
     #[prop(default = ButtonSize::Md)] size: ButtonSize,
     #[prop(into, default = Signal::stored_local(false))] disabled: Signal<bool, LocalStorage>,
-    #[prop(into, default = Signal::stored_local(false))] toggled: Signal<bool, LocalStorage>,
+    #[prop(into, optional)] toggled: Option<Signal<bool, LocalStorage>>,
     #[prop(into, optional)] tooltip: Option<String>,
     #[prop(optional)] shortcut: Option<Shortcut>,
     #[prop(optional)] node_ref: Option<NodeRef>,
@@ -35,17 +52,7 @@ pub fn Button(
     children: Children,
 ) -> impl IntoView {
     crate::ui::styles::install_ui_stylesheets();
-    let own = Attrs::new()
-        .attribute(zgui::view::AttrName::new("data-toggled"), move || {
-            toggled.get().then(|| "true".to_owned())
-        })
-        .a11y_from(A11yBinding::new(Role::Button).toggled(move || {
-            if toggled.get() {
-                Toggled::True
-            } else {
-                Toggled::False
-            }
-        }));
+    let own = apply_toggled(Attrs::new(), toggled);
 
     let core = view! {
         ZuiButton(

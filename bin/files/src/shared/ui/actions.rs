@@ -1,7 +1,13 @@
 //! Files command metadata shared by native `zgui` keyboard dispatch and Help.
 
+pub use gds::ui::actions::{
+    Cancel, CloseAllNotifications, CloseAllNotifications as ClearNotifications, CloseNotification,
+    FocusNotifications,
+};
 use gds::ui::{Shortcut, actions as ui_actions};
 use zgui::vocab::{Key, KeyEvent, Modifiers, NamedKey};
+
+const _: ClearNotifications = CloseAllNotifications;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum Command {
@@ -312,20 +318,34 @@ impl From<Command> for Shortcut {
     }
 }
 
+impl From<FocusNotifications> for Command {
+    fn from(_: FocusNotifications) -> Self {
+        Self::FocusNotifications
+    }
+}
+
+impl From<CloseNotification> for Command {
+    fn from(_: CloseNotification) -> Self {
+        Self::CloseNotification
+    }
+}
+
+impl From<ClearNotifications> for Command {
+    fn from(_: ClearNotifications) -> Self {
+        Self::CloseAllNotifications
+    }
+}
+
+impl From<Cancel> for Command {
+    fn from(_: Cancel) -> Self {
+        Self::Cancel
+    }
+}
+
 fn matches_shortcut(shortcut: &Shortcut, event: &KeyEvent, modifiers: Modifiers) -> bool {
-    if shortcut.matches(&event.key, modifiers)
-        || shortcut.matches(&event.key_without_modifiers, modifiers)
-    {
-        return true;
-    }
-    if shortcut.key == Key::Named(NamedKey::Space) {
-        let held = modifiers.bits() & Modifiers::ALL.bits();
-        let wanted = shortcut.modifiers.bits() & Modifiers::ALL.bits();
-        return held == wanted
-            && (event.key == Key::character(" ")
-                || event.key_without_modifiers == Key::character(" "));
-    }
-    false
+    shortcut.matches(&event.key, modifiers)
+        || (!shortcut.modifiers.held().is_empty()
+            && shortcut.matches(&event.key_without_modifiers, modifiers))
 }
 
 /// Direct binding for the `position + 1`-th file tab (`Ctrl+1`..`Ctrl+9`).
@@ -337,4 +357,82 @@ pub fn ordinal_shortcut(position: usize) -> Option<Shortcut> {
             Modifiers::CONTROL,
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use zgui::vocab::{Key, KeyEvent, Modifiers, NamedKey};
+
+    use super::{
+        Cancel, ClearNotifications, CloseAllNotifications, CloseNotification, Command,
+        FocusNotifications, ordinal_shortcut,
+    };
+
+    #[test]
+    fn notification_commands_and_reexports_bind_alt_n_alt_x_and_alt_shift_x() {
+        let _tokens = (
+            Cancel,
+            FocusNotifications,
+            CloseNotification,
+            CloseAllNotifications,
+            ClearNotifications,
+        );
+
+        assert_eq!(
+            Command::FocusNotifications.shortcut(),
+            gds::ui::Shortcut::new(Key::character("n"), Modifiers::ALT)
+        );
+        assert_eq!(
+            Command::CloseNotification.shortcut(),
+            gds::ui::Shortcut::new(Key::character("x"), Modifiers::ALT)
+        );
+        assert_eq!(
+            Command::CloseAllNotifications.shortcut(),
+            gds::ui::Shortcut::new(Key::character("x"), Modifiers::ALT | Modifiers::SHIFT)
+        );
+
+        assert_eq!(
+            Command::from_key_event(&KeyEvent::character("x"), Modifiers::ALT),
+            Some(Command::CloseNotification)
+        );
+        assert_eq!(
+            Command::from_key_event(&KeyEvent::character("X"), Modifiers::ALT | Modifiers::SHIFT),
+            Some(Command::CloseAllNotifications)
+        );
+        assert_eq!(
+            Command::from_key_event(&KeyEvent::character("c"), Modifiers::ALT),
+            Some(Command::ClearRecent)
+        );
+        assert_eq!(
+            Command::from_key_event(&KeyEvent::character("C"), Modifiers::ALT | Modifiers::SHIFT),
+            None
+        );
+        assert_eq!(
+            Command::from_key_event(
+                &KeyEvent::character(" "),
+                Modifiers::ALT | Modifiers::CAPS_LOCK
+            ),
+            Some(Command::FocusContent)
+        );
+    }
+
+    #[test]
+    fn ordinal_tab_shortcuts_cover_one_through_nine_only() {
+        assert_eq!(
+            ordinal_shortcut(0),
+            Some(gds::ui::Shortcut::new(
+                Key::character("1"),
+                Modifiers::CONTROL
+            ))
+        );
+        assert_eq!(
+            ordinal_shortcut(8),
+            Some(gds::ui::Shortcut::new(
+                Key::character("9"),
+                Modifiers::CONTROL
+            ))
+        );
+        assert_eq!(ordinal_shortcut(9), None);
+        assert_eq!(Command::Help.shortcut().key, Key::Named(NamedKey::F1));
+    }
 }

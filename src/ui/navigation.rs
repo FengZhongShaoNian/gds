@@ -29,7 +29,10 @@ const NAVIGATION_CSS: &str = css!(
     ".gds-nav-item {
         position: relative;
         width: 100%;
+        max-width: 100%;
         min-width: 0px;
+        box-sizing: border-box;
+        overflow: hidden;
         padding: 0px 10px;
         user-select: none;
         transition:
@@ -56,7 +59,10 @@ const NAVIGATION_CSS: &str = css!(
         display: flex;
         flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
+        max-width: 100%;
         min-width: 0px;
+        overflow: hidden;
         gap: 2px;
     }
     .gds-nav-item__header {
@@ -64,18 +70,24 @@ const NAVIGATION_CSS: &str = css!(
         flex-direction: row;
         align-items: center;
         flex: 1 1 0%;
+        width: 100%;
+        max-width: 100%;
         min-width: 0px;
+        overflow: hidden;
         gap: 8px;
     }
     .gds-nav-item__label {
         flex: 1 1 0%;
         min-width: 0px;
+        max-width: 100%;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         font-size: var(--gds-font-size-small, 14px);
     }
     .gds-nav-item__details {
+        width: 100%;
+        max-width: 100%;
         min-width: 0px;
         overflow: hidden;
         text-overflow: ellipsis;

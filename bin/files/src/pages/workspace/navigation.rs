@@ -17,7 +17,7 @@ use zgui::reactive::{on_cleanup_local, spawn_local};
 use zgui::view::{ScrollBehavior, ScrollTarget};
 
 use super::{
-    model::{AddressPresentation, Contents, InitialVisit, Row, Tab},
+    model::{AddressPresentation, Contents, InitialVisit, Row, State, Tab},
     ui::Browser,
 };
 use crate::{
@@ -535,20 +535,11 @@ impl Browser {
     }
 
     pub(super) fn sortable_columns(&self) -> Vec<Column> {
-        self.read_untracked(|state| match &state.tab().contents {
-            Contents::Directory => Column::ALL.to_vec(),
-            Contents::Tags { entries, .. } if !entries.is_empty() => Column::ALL.to_vec(),
-            Contents::Trash(_) => vec![Column::Name, Column::Size, Column::Modified],
-            Contents::Remote { .. } => {
-                vec![Column::Name, Column::Type, Column::Size, Column::Modified]
-            }
-            Contents::Places(_)
-            | Contents::Network { .. }
-            | Contents::Tags { .. }
-            | Contents::Volumes
-            | Contents::LoadingCollection
-            | Contents::Unavailable(_) => Vec::new(),
-        })
+        self.read(sortable_columns_for)
+    }
+
+    pub(super) fn sortable_columns_untracked(&self) -> Vec<Column> {
+        self.read_untracked(sortable_columns_for)
     }
 
     pub(super) fn reproject(&self, id: u64) {
@@ -1487,6 +1478,23 @@ fn sort_remote_entries(entries: &mut [gds::service::remote::Entry], sort: sortin
             ordered.then(tie)
         }
     });
+}
+
+fn sortable_columns_for(state: &State) -> Vec<Column> {
+    match &state.tab().contents {
+        Contents::Directory => Column::ALL.to_vec(),
+        Contents::Tags { entries, .. } if !entries.is_empty() => Column::ALL.to_vec(),
+        Contents::Trash(_) => vec![Column::Name, Column::Size, Column::Modified],
+        Contents::Remote { .. } => {
+            vec![Column::Name, Column::Type, Column::Size, Column::Modified]
+        }
+        Contents::Places(_)
+        | Contents::Network { .. }
+        | Contents::Tags { .. }
+        | Contents::Volumes
+        | Contents::LoadingCollection
+        | Contents::Unavailable(_) => Vec::new(),
+    }
 }
 
 #[cfg(test)]

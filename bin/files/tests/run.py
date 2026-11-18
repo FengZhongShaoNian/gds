@@ -204,132 +204,165 @@ def run_wayland_smoke(
     app_log_path = artifacts / "wayland-app.log"
     screenshooter = weston.with_name("weston-screenshooter")
 
-    weston_env = base_env.copy()
-    weston_cmd = [
-        "dbus-run-session",
-        f"--config-file={artifacts / 'dbus.conf'}",
-        "--",
-        str(weston),
-        "--backend=headless",
-        "--renderer=pixman",
-        f"--socket={socket_name}",
-        "--width=1280",
-        "--height=900",
-        "--fake-seat",
-        "--no-config",
-        "--idle-time=0",
-        "--debug",
-    ]
-
-    with weston_log_path.open("w", encoding="utf-8") as weston_log:
-        weston_proc = subprocess.Popen(
-            weston_cmd,
-            env=weston_env,
-            stdout=weston_log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        try:
-            wait_for(
-                lambda: socket_path.exists() or weston_proc.poll() is not None,
-                15.0,
-                f"Timed out waiting for Weston Wayland socket {socket_path}; inspect {weston_log_path}",
+    dbus_proc = subprocess.Popen(
+        [
+            "dbus-daemon",
+            "--nofork",
+            "--print-address=1",
+            f"--config-file={artifacts / 'dbus.conf'}",
+        ],
+        env=base_env.copy(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert dbus_proc.stdout is not None
+        dbus_addr = dbus_proc.stdout.readline().strip()
+        dbus_proc.stdout.close()
+        if not dbus_addr:
+            err = dbus_proc.stderr.read() if dbus_proc.stderr else ""
+            raise SystemExit(
+                f"Failed to start shared dbus-daemon for Wayland smoke: {err}"
             )
-            if weston_proc.poll() is not None:
-                raise SystemExit(f"Weston exited early ({weston_proc.returncode}); inspect {weston_log_path}")
+        if dbus_proc.stderr:
+            dbus_proc.stderr.close()
 
-            app_env = base_env.copy()
-            app_env["WAYLAND_DISPLAY"] = socket_name
-            app_env["GDS_E2E_MODE"] = "wayland"
-            app_env["RUST_LOG"] = "gds_files=info,zgui_render_wgpu::renderer::builder=info,warn"
+        bus_env = base_env.copy()
+        bus_env["DBUS_SESSION_BUS_ADDRESS"] = dbus_addr
 
-            baseline_rows: list[bytes] = []
-            prev_rows: list[bytes] = []
-            desktop_deadline = time.monotonic() + 8.0
-            while time.monotonic() < desktop_deadline:
-                shot = capture_weston_png(screenshooter, artifacts, app_env)
-                rows = png_center_rows(shot)
-                shot.unlink(missing_ok=True)
-                non_empty = any(any(row) for row in rows)
-                if non_empty and rows == prev_rows:
-                    baseline_rows = rows
-                    break
-                prev_rows = rows
-                time.sleep(0.2)
-            if not baseline_rows:
-                baseline_rows = prev_rows
+        weston_cmd = [
+            str(weston),
+            "--backend=headless",
+            "--renderer=pixman",
+            f"--socket={socket_name}",
+            "--width=1280",
+            "--height=900",
+            "--fake-seat",
+            "--no-config",
+            "--idle-time=0",
+            "--debug",
+        ]
 
-            with app_log_path.open("w", encoding="utf-8") as app_log:
-                app_proc = subprocess.Popen(
-                    [str(binary), str(work)],
-                    env=app_env,
-                    stdout=app_log,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
+        with weston_log_path.open("w", encoding="utf-8") as weston_log:
+            weston_proc = subprocess.Popen(
+                weston_cmd,
+                env=bus_env,
+                stdout=weston_log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            try:
+                wait_for(
+                    lambda: socket_path.exists() or weston_proc.poll() is not None,
+                    15.0,
+                    f"Timed out waiting for Weston Wayland socket {socket_path}; inspect {weston_log_path}",
                 )
-                try:
-                    def wayland_ready() -> bool:
-                        if app_proc.poll() is not None:
-                            return True
-                        log_text = app_log_path.read_text(encoding="utf-8", errors="replace")
-                        return "Files ready" in log_text and (
-                            "graphics device opened" in log_text
-                            or "no graphics card on this machine" in log_text
-                        )
-
-                    wait_for(
-                        wayland_ready,
-                        25.0,
-                        f"Native Wayland Files session did not become ready; inspect {app_log_path}",
+                if weston_proc.poll() is not None:
+                    raise SystemExit(
+                        f"Weston exited early ({weston_proc.returncode}); inspect {weston_log_path}"
                     )
-                    if app_proc.poll() is not None:
-                        raise SystemExit(
-                            f"Native Wayland app exited early ({app_proc.returncode}); inspect {app_log_path}"
-                        )
 
-                    wayland_png = artifacts / "wayland-window.png"
-                    window_painted = False
-                    deadline = time.monotonic() + 20.0
-                    while time.monotonic() < deadline:
+                app_env = bus_env.copy()
+                app_env["WAYLAND_DISPLAY"] = socket_name
+                app_env["GDS_E2E_MODE"] = "wayland"
+                app_env["RUST_LOG"] = "gds_files=info,zgui_render_wgpu::renderer::builder=info,warn"
+
+                baseline_rows: list[bytes] = []
+                prev_rows: list[bytes] = []
+                desktop_deadline = time.monotonic() + 8.0
+                while time.monotonic() < desktop_deadline:
+                    shot = capture_weston_png(screenshooter, artifacts, app_env)
+                    rows = png_center_rows(shot)
+                    shot.unlink(missing_ok=True)
+                    non_empty = any(any(row) for row in rows)
+                    if non_empty and rows == prev_rows:
+                        baseline_rows = rows
+                        break
+                    prev_rows = rows
+                    time.sleep(0.2)
+                if not baseline_rows:
+                    baseline_rows = prev_rows
+
+                with app_log_path.open("w", encoding="utf-8") as app_log:
+                    app_proc = subprocess.Popen(
+                        [str(binary), str(work)],
+                        env=app_env,
+                        stdout=app_log,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                    try:
+                        def wayland_ready() -> bool:
+                            if app_proc.poll() is not None:
+                                return True
+                            log_text = app_log_path.read_text(encoding="utf-8", errors="replace")
+                            return "Files ready" in log_text and (
+                                "graphics device opened" in log_text
+                                or "no graphics card on this machine" in log_text
+                            )
+
+                        wait_for(
+                            wayland_ready,
+                            25.0,
+                            f"Native Wayland Files session did not become ready; inspect {app_log_path}",
+                        )
                         if app_proc.poll() is not None:
                             raise SystemExit(
                                 f"Native Wayland app exited early ({app_proc.returncode}); inspect {app_log_path}"
                             )
-                        shot = capture_weston_png(screenshooter, artifacts, app_env)
-                        current_rows = png_center_rows(shot)
-                        diff_rows = sum(a != b for a, b in zip(baseline_rows, current_rows))
-                        if diff_rows >= 100:
-                            shutil.move(str(shot), str(wayland_png))
-                            window_painted = True
-                            break
-                        shot.unlink(missing_ok=True)
-                        time.sleep(0.4)
-                    if not window_painted:
-                        raise SystemExit(
-                            f"Native Wayland window did not paint onto Weston within 20s; inspect {app_log_path}"
-                        )
-                finally:
-                    if app_proc.poll() is None:
-                        app_proc.send_signal(signal.SIGTERM)
-                        try:
-                            app_proc.wait(timeout=10)
-                        except subprocess.TimeoutExpired:
-                            app_proc.kill()
-                            app_proc.wait(timeout=5)
-        finally:
-            if weston_proc.poll() is None:
-                try:
-                    os.killpg(weston_proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    weston_proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
+
+                        wayland_png = artifacts / "wayland-window.png"
+                        window_painted = False
+                        deadline = time.monotonic() + 20.0
+                        while time.monotonic() < deadline:
+                            if app_proc.poll() is not None:
+                                raise SystemExit(
+                                    f"Native Wayland app exited early ({app_proc.returncode}); inspect {app_log_path}"
+                                )
+                            shot = capture_weston_png(screenshooter, artifacts, app_env)
+                            current_rows = png_center_rows(shot)
+                            diff_rows = sum(a != b for a, b in zip(baseline_rows, current_rows))
+                            if diff_rows >= 100:
+                                shutil.move(str(shot), str(wayland_png))
+                                window_painted = True
+                                break
+                            shot.unlink(missing_ok=True)
+                            time.sleep(0.4)
+                        if not window_painted:
+                            raise SystemExit(
+                                f"Native Wayland window did not paint onto Weston within 20s; inspect {app_log_path}"
+                            )
+                    finally:
+                        if app_proc.poll() is None:
+                            app_proc.send_signal(signal.SIGTERM)
+                            try:
+                                app_proc.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                app_proc.kill()
+                                app_proc.wait(timeout=5)
+            finally:
+                if weston_proc.poll() is None:
                     try:
-                        os.killpg(weston_proc.pid, signal.SIGKILL)
+                        os.killpg(weston_proc.pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
-                    weston_proc.wait(timeout=5)
+                    try:
+                        weston_proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(weston_proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        weston_proc.wait(timeout=5)
+    finally:
+        if dbus_proc.poll() is None:
+            dbus_proc.terminate()
+            try:
+                dbus_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                dbus_proc.kill()
+                dbus_proc.wait(timeout=5)
 
     app_log_text = app_log_path.read_text(encoding="utf-8", errors="replace")
     if "timed out waiting on app_will_quit" in app_log_text:

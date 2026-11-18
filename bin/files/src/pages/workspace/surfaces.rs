@@ -677,13 +677,21 @@ impl Browser {
     }
 
     pub(super) fn collection_empty_label(&self) -> Option<&'static str> {
-        self.read(|state| match &state.tab().contents {
-            Contents::Places(_) | Contents::Tags { .. } => Some("empty-collection"),
-            Contents::Trash(_) => Some("recycle-empty"),
-            Contents::Remote { .. } => Some("empty-directory"),
-            Contents::Volumes => Some("device-none"),
-            Contents::Network { .. } => Some("network-empty"),
-            Contents::Directory | Contents::LoadingCollection | Contents::Unavailable(_) => None,
+        self.read(|state| {
+            let tab = state.tab();
+            if !tab.rows.is_empty() {
+                return None;
+            }
+            match &tab.contents {
+                Contents::Places(_) | Contents::Tags { .. } => Some("empty-collection"),
+                Contents::Trash(_) => Some("recycle-empty"),
+                Contents::Remote { .. } => Some("empty-directory"),
+                Contents::Volumes => Some("device-none"),
+                Contents::Network { .. } => Some("network-empty"),
+                Contents::Directory | Contents::LoadingCollection | Contents::Unavailable(_) => {
+                    None
+                }
+            }
         })
     }
 

@@ -85,7 +85,9 @@ const TERMINALS_CSS: &str = css!(
         display: flex;
         flex-direction: column;
         flex-shrink: 0;
+        min-width: 0;
         min-height: 0;
+        overflow: hidden;
         background: var(--gds-sidebar-bg, var(--gds-sidebar));
         border-right: 1px solid var(--gds-border);
     }
@@ -120,11 +122,24 @@ const TERMINALS_CSS: &str = css!(
     }
 
     .gds-files-terminal-rail__list {
+        display: flex;
+        flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
+        min-width: 0;
         min-height: 0;
         overflow-y: auto;
+        overflow-x: hidden;
         padding: 4px;
         gap: 2px;
+    }
+
+    .gds-files-terminal-rail__list .zui-tooltip__trigger {
+        display: flex;
+        flex: 1 1 0%;
+        min-width: 0;
+        max-width: 100%;
+        overflow: hidden;
     }
 
     .gds-files-terminal-pane {

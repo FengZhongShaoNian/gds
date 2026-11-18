@@ -13,6 +13,7 @@ const SHEET: &str = css!(
         max-width: 320px;
         max-height: 220px;
         overflow-y: auto;
+        pointer-events: none;
     }
 
     .gds-tooltip-text {

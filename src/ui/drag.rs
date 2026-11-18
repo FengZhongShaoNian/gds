@@ -239,6 +239,7 @@ impl<T: Clone + 'static> DragOverlayState<T> {
                     if ev.button != Some(PointerButton::Primary) {
                         return;
                     }
+                    ev.release_pointer();
                     let pos = (ev.position.x.0, ev.position.y.0);
                     self.move_to(pos.0, pos.1);
                     if let Some(payload) = self.end()
@@ -251,7 +252,8 @@ impl<T: Clone + 'static> DragOverlayState<T> {
             .listener(
                 events::POINTER_CANCEL,
                 ListenerOptions::DEFAULT,
-                move |_| {
+                move |ev: &mut EventCx<'_, events::PointerCancel>| {
+                    ev.release_pointer();
                     self.cancel();
                 },
             )

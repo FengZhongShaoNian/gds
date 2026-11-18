@@ -34,7 +34,7 @@ use zgui_ui::{
 use zgui_ui_primitives::{Align, Binding, Placement, Side};
 
 use super::geometry::RectF;
-use super::model::{Contents, Pane, Prompt, Row, RowKey};
+use super::model::{Contents, Pane, Prompt, Row, RowKey, State};
 use super::ui::Browser;
 use crate::entities::file::ViewMode;
 use crate::entities::file::columns::{Column, Layout};
@@ -573,7 +573,7 @@ impl Browser {
         let grid = self.read_untracked(|state| state.tab().mode == ViewMode::Grid);
         let favorite = self
             .read_untracked(|state| state.places.is_favorite(state.tab().navigation.location()));
-        let columns = self.configurable_columns();
+        let columns = self.configurable_columns_untracked();
         let show_hidden = self.0.preferences.snapshot().files.show_hidden;
         let compact = self.compact_untracked();
 
@@ -856,7 +856,7 @@ impl Browser {
         let open = self.clone();
         AnyView::new(view! {
             box(
-                class = "gds-files-menu-wrap",
+                class = "gds-files-menu-wrap gds-files-sidebar-row-wrap",
                 on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
                     if ev.button == Some(PointerButton::Secondary) {
                         ev.stop_propagation();
@@ -1568,7 +1568,7 @@ impl Browser {
         let entries_browser = self.clone();
         let close_browser = self.clone();
         let configurable = self.configurable_columns();
-        let grid = self.read_untracked(|state| state.tab().mode == ViewMode::Grid);
+        let grid = self.read(|state| state.tab().mode == ViewMode::Grid);
         let sortable = !self.sortable_columns().is_empty();
         let open = Signal::derive_local({
             let browser = self.clone();
@@ -1616,7 +1616,7 @@ impl Browser {
 
     fn sort_entries(&self) -> Vec<MenuEntry> {
         let current_sort = self.read_untracked(|state| state.tab().sort.key);
-        self.sortable_columns()
+        self.sortable_columns_untracked()
             .into_iter()
             .map(|column| {
                 let weak = self.downgrade();
@@ -1635,7 +1635,7 @@ impl Browser {
     }
 
     pub(super) fn show_sort_menu(&self) {
-        if self.sortable_columns().is_empty() {
+        if self.sortable_columns_untracked().is_empty() {
             return;
         }
         self.0.menus.surface.update(|surface| {
@@ -1648,7 +1648,7 @@ impl Browser {
     }
 
     pub(super) fn configure_columns(&self) {
-        if !self.configurable_columns()
+        if !self.configurable_columns_untracked()
             || self.read_untracked(|state| state.tab().mode == ViewMode::Grid)
         {
             return;
@@ -1667,12 +1667,11 @@ impl Browser {
     }
 
     fn configurable_columns(&self) -> bool {
-        self.read_untracked(|state| {
-            matches!(
-                state.tab().contents,
-                Contents::Directory | Contents::Tags { .. }
-            ) && !state.tab().is_pure_tag_catalogue()
-        })
+        self.read(is_configurable_columns)
+    }
+
+    fn configurable_columns_untracked(&self) -> bool {
+        self.read_untracked(is_configurable_columns)
     }
 
     pub(super) fn sort_by(&self, column: Column) {
@@ -2010,4 +2009,11 @@ impl Browser {
             self.enrich_directory(id);
         }
     }
+}
+
+fn is_configurable_columns(state: &State) -> bool {
+    matches!(
+        state.tab().contents,
+        Contents::Directory | Contents::Tags { .. }
+    ) && !state.tab().is_pure_tag_catalogue()
 }

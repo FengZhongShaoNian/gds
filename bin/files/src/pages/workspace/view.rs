@@ -234,6 +234,8 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
+        min-width: 0px;
         min-height: 0px;
         overflow: hidden;
     }
@@ -242,6 +244,8 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
+        min-width: 0px;
         min-height: 0px;
         overflow: hidden;
     }
@@ -254,6 +258,8 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
+        min-width: 0px;
         min-height: 0px;
         overflow: hidden;
     }
@@ -266,6 +272,8 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
+        min-width: 0px;
         min-height: 0px;
         overflow: hidden;
     }
@@ -274,6 +282,8 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
+        min-width: 0px;
         min-height: 0px;
         overflow-y: auto;
         overflow-x: hidden;
@@ -283,7 +293,27 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-sidebar-locations {
         display: flex;
         flex-direction: column;
+        width: 100%;
+        min-width: 0px;
+        overflow-x: hidden;
         gap: 4px;
+    }
+
+    .gds-files-sidebar-row-wrap {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0px;
+        overflow: hidden;
+    }
+
+    .gds-files-sidebar-row-wrap .zui-tooltip__trigger {
+        display: flex;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0px;
+        overflow: hidden;
     }
 
     .gds-files-sidebar-heading {
@@ -341,12 +371,20 @@ const WORKSPACE_CSS: &str = css!(
     }
 
     .gds-files-tab-item {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0px;
+        overflow: hidden;
         height: 44px;
         gap: 10px;
         border-radius: 6px;
     }
 
     .gds-files-location-item {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0px;
+        overflow: hidden;
         gap: 10px;
         border-radius: 6px;
     }

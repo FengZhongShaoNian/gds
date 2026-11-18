@@ -197,6 +197,7 @@ enum TargetKind {
 
 #[derive(Clone)]
 struct RegisteredTarget {
+    token: u64,
     key: String,
     node: NodeRef,
     kind: TargetKind,
@@ -204,6 +205,7 @@ struct RegisteredTarget {
 
 #[derive(Clone)]
 struct RegisteredTab {
+    token: u64,
     id: u64,
     pinned: bool,
     node: NodeRef,
@@ -220,6 +222,7 @@ struct DragCoordinator {
     tabs: RefCell<Vec<RegisteredTab>>,
     spring: RefCell<Option<SpringLoad>>,
     copy_modifier: Cell<bool>,
+    next_token: Cell<u64>,
 }
 
 impl DragCoordinator {
@@ -231,33 +234,53 @@ impl DragCoordinator {
             tabs: RefCell::new(Vec::new()),
             spring: RefCell::new(None),
             copy_modifier: Cell::new(false),
+            next_token: Cell::new(1),
         }
     }
 
-    fn register_target(&self, key: String, node: NodeRef, kind: TargetKind) {
+    fn alloc_token(&self) -> u64 {
+        let token = self.next_token.get();
+        self.next_token.set(token.saturating_add(1));
+        token
+    }
+
+    fn register_target(&self, key: String, node: NodeRef, kind: TargetKind) -> u64 {
+        let token = self.alloc_token();
         let mut targets = self.targets.borrow_mut();
-        targets.retain(|item| item.node.get_untracked().is_some() && item.key != key);
-        targets.push(RegisteredTarget { key, node, kind });
+        targets.retain(|item| item.key != key);
+        targets.push(RegisteredTarget {
+            token,
+            key,
+            node,
+            kind,
+        });
+        token
     }
 
-    fn unregister_target(&self, key: &str) {
-        self.targets.borrow_mut().retain(|item| item.key != key);
+    fn unregister_target(&self, token: u64) {
+        self.targets.borrow_mut().retain(|item| item.token != token);
     }
 
-    fn register_tab(&self, id: u64, pinned: bool, node: NodeRef) {
+    fn register_tab(&self, id: u64, pinned: bool, node: NodeRef) -> u64 {
+        let token = self.alloc_token();
         let mut tabs = self.tabs.borrow_mut();
-        tabs.retain(|item| item.node.get_untracked().is_some() && item.id != id);
-        tabs.push(RegisteredTab { id, pinned, node });
+        tabs.retain(|item| item.id != id);
+        tabs.push(RegisteredTab {
+            token,
+            id,
+            pinned,
+            node,
+        });
+        token
     }
 
-    fn unregister_tab(&self, id: u64) {
-        self.tabs.borrow_mut().retain(|item| item.id != id);
+    fn unregister_tab(&self, token: u64) {
+        self.tabs.borrow_mut().retain(|item| item.token != token);
     }
 
     fn hit_target(&self, pos: (f32, f32)) -> Option<RegisteredTarget> {
-        let mut targets = self.targets.borrow_mut();
-        targets.retain(|item| item.node.get_untracked().is_some());
-        targets
+        self.targets
+            .borrow()
             .iter()
             .rev()
             .find(|item| drop_hit_test(&item.node, pos))
@@ -265,9 +288,9 @@ impl DragCoordinator {
     }
 
     fn hit_tab(&self, pos: (f32, f32)) -> Option<RegisteredTab> {
-        let mut tabs = self.tabs.borrow_mut();
-        tabs.retain(|item| item.node.get_untracked().is_some());
-        tabs.iter()
+        self.tabs
+            .borrow()
+            .iter()
             .find(|item| drop_hit_test(&item.node, pos))
             .cloned()
     }
@@ -401,13 +424,12 @@ impl Browser {
         let coord = coordinator_for(self);
         let node = NodeRef::new();
         let target_key = format!("tab:{id}");
-        coord.register_tab(id, pinned, node);
-        coord.register_target(target_key.clone(), node, TargetKind::Tab(id));
+        let tab_token = coord.register_tab(id, pinned, node);
+        let target_token = coord.register_target(target_key.clone(), node, TargetKind::Tab(id));
         let cleanup_coord = Rc::clone(&coord);
-        let cleanup_key = target_key.clone();
         on_cleanup_local(move || {
-            cleanup_coord.unregister_tab(id);
-            cleanup_coord.unregister_target(&cleanup_key);
+            cleanup_coord.unregister_tab(tab_token);
+            cleanup_coord.unregister_target(target_token);
         });
 
         let overlay = coord.overlay;
@@ -424,6 +446,7 @@ impl Browser {
 
         AnyView::new(view! {
             box(
+                class = "gds-files-sidebar-row-wrap",
                 node_ref = node,
                 attr:data-drop-active = move || is_hovered.get().then(|| "true".to_owned()),
                 on:pointer_down = move |ev| {
@@ -490,6 +513,7 @@ impl Browser {
                     if !is_tab_drag {
                         return;
                     }
+                    ev.release_pointer();
                     let pos = (ev.position.x.0, ev.position.y.0);
                     if let Some(WindowDragPayload::Tab { id: from_id, .. }) = up_coord.overlay.end()
                         && let Some(target_tab) = up_coord.hit_tab(pos)
@@ -503,7 +527,8 @@ impl Browser {
                         ev.stop_propagation();
                     }
                 },
-                on:pointer_cancel = move |_| {
+                on:pointer_cancel = move |ev| {
+                    ev.release_pointer();
                     cancel_coord.cancel_all();
                 },
             ) {
@@ -516,15 +541,14 @@ impl Browser {
         let coord = coordinator_for(self);
         let node = NodeRef::new();
         let target_key = format!("dir:{}", destination.display());
-        coord.register_target(
+        let target_token = coord.register_target(
             target_key.clone(),
             node,
             TargetKind::Folder(destination.clone()),
         );
         let cleanup_coord = Rc::clone(&coord);
-        let cleanup_key = target_key.clone();
         on_cleanup_local(move || {
-            cleanup_coord.unregister_target(&cleanup_key);
+            cleanup_coord.unregister_target(target_token);
         });
 
         let overlay = coord.overlay;
@@ -544,7 +568,7 @@ impl Browser {
         let attrs = drop_target_attrs(internal_active, Some(on_external_drop));
 
         AnyView::new(view! {
-            box(node_ref = node, {..attrs}) {
+            box(class = "gds-files-sidebar-row-wrap", node_ref = node, {..attrs}) {
                 {view}
             }
         })
@@ -629,6 +653,7 @@ impl Browser {
                     ) {
                         return;
                     }
+                    ev.release_pointer();
                     up_coord.clear_spring();
                     let pos = (ev.position.x.0, ev.position.y.0);
                     let target = up_coord.hit_target(pos);
@@ -663,7 +688,8 @@ impl Browser {
                         ev.stop_propagation();
                     }
                 },
-                on:pointer_cancel = move |_| {
+                on:pointer_cancel = move |ev| {
+                    ev.release_pointer();
                     cancel_coord.cancel_all();
                 },
             ) {

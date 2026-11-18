@@ -11,22 +11,27 @@ use gds::service::file_tags;
 use gds::service::task_manager::Scope;
 use gds::ui::button::{ButtonSize, ButtonVariant};
 use gds::ui::capacity::CapacityBarProps;
+use gds::ui::feedback::dialog::{
+    DialogActionsProps, DialogContentProps, DialogDecision, DialogDescriptionProps,
+    DialogFooterProps, DialogHeaderProps, DialogProps, DialogTitleProps,
+};
+use gds::ui::feedback::tooltip::HintTooltipProps;
 use gds::ui::file_inspection::{Cache, Options, State as InspectionState};
 use gds::ui::frame::FrameProps;
 use gds::ui::thumbnail::ThumbnailProps;
 use gds::ui::time::Timestamp;
 use gds::ui::window::{TitleBarProps, workspace_options};
-use gds::ui::{IconName, IconProps};
+use gds::ui::{IconName, IconProps, Shortcut};
 use gds::{i18n, t};
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, RwSignal, Signal, on_cleanup_local, spawn_local};
-use zgui::runtime::{WindowHandle, try_use_windows};
-use zgui::view::{current_host, install_stylesheet};
-use zgui::{css, view};
-use zgui_ui::{
-    ButtonProps, CheckboxProps, Checked, DialogContentProps, DialogDescriptionProps,
-    DialogFooterProps, DialogHeaderProps, DialogProps, DialogTitleProps, LabelProps, SpinnerProps,
+use zgui::reactive::{
+    LocalStorage, RwSignal, Signal, UnsyncCallback, on_cleanup_local, spawn_local,
 };
+use zgui::runtime::{WindowHandle, try_use_windows};
+use zgui::view::{EventCx, current_host, events, install_stylesheet};
+use zgui::vocab::{Key, Modifiers, NamedKey};
+use zgui::{css, view};
+use zgui_ui::{ButtonProps, CheckboxProps, Checked, LabelProps, SpinnerProps};
 use zgui_ui_primitives::Binding;
 
 use crate::entities::file::{
@@ -34,6 +39,7 @@ use crate::entities::file::{
     ui::{EntryPresentation, FileIcon, UNKNOWN_VALUE},
 };
 use crate::entities::location::{Location, volumes};
+use crate::entities::preferences;
 use crate::features::file_operations::permissions;
 
 use super::{
@@ -52,8 +58,30 @@ const INSPECTION_CSS: &str = css!(
         justify-content: center;
         flex-shrink: 0;
         position: relative;
+        overflow: visible;
+        border-radius: var(--gds-radius-control, 6px);
+    }
+
+    .gds-files-artwork-thumb {
+        width: 100%;
+        height: 100%;
         overflow: hidden;
         border-radius: var(--gds-radius-control, 6px);
+    }
+
+    .gds-files-artwork-badge {
+        position: absolute;
+        right: -4px;
+        bottom: -4px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: var(--gds-panel);
+        color: var(--gds-foreground);
+        padding: 1px;
+        pointer-events: none;
+        z-index: 1;
     }
 
     .gds-files-details {
@@ -96,6 +124,14 @@ const INSPECTION_CSS: &str = css!(
         gap: 10px;
         padding-bottom: 12px;
         border-bottom: 1px solid var(--gds-border);
+    }
+
+    .gds-files-details__thumb-wrap {
+        position: relative;
+        width: 144px;
+        height: 144px;
+        overflow: visible;
+        flex-shrink: 0;
     }
 
     .gds-files-details__thumb {
@@ -176,13 +212,17 @@ const INSPECTION_CSS: &str = css!(
         color: var(--gds-foreground);
     }
 
-    .gds-files-details__actions {
+    .gds-files-properties-root {
         display: flex;
-        flex-direction: row;
-        flex-wrap: wrap;
-        gap: 8px;
-        padding-top: 10px;
-        border-top: 1px solid var(--gds-border);
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+    }
+
+    .gds-files-properties-root:focus {
+        outline: none;
     }
 
     .gds-files-properties-window {
@@ -194,10 +234,27 @@ const INSPECTION_CSS: &str = css!(
     }
 
     .gds-files-dialog-body {
+        display: flex;
+        flex-direction: column;
         gap: 12px;
     }
 
+    .gds-files-dialog-desc-wrap .zui-tooltip__trigger {
+        display: inline-flex;
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    .gds-files-dialog-desc {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 100%;
+    }
+
     .gds-files-permissions-grid {
+        display: flex;
+        flex-direction: column;
         gap: 10px;
     }
 
@@ -311,16 +368,19 @@ fn text_row(label_key: &'static str, value: String) -> AnyView {
     )
 }
 
-fn file_artwork_view(icon: FileIcon, size: f32) -> AnyView {
-    let badge = icon.badge().map(|badge_icon| {
-        let badge_size = (size * 0.45).max(10.0);
-        view! {
-            box(style:position = "absolute", style:right = "0px", style:bottom = "0px") {
-                Icon(name = badge_icon, size = badge_size)
-            }
+fn badge_pill_view(badge_icon: IconName, size: f32) -> AnyView {
+    let badge_size = (size * 0.55).clamp(10.0, 28.0);
+    AnyView::new(view! {
+        box(class = "gds-files-artwork-badge", a11y:hidden = true) {
+            Icon(name = badge_icon, size = badge_size)
         }
-        .into_view()
-    });
+    })
+}
+
+fn file_artwork_view(icon: FileIcon, size: f32) -> AnyView {
+    let badge_overlay = icon
+        .badge()
+        .map(|badge_icon| badge_pill_view(badge_icon, size));
     AnyView::new(view! {
         box(
             class = "gds-files-artwork-slot",
@@ -328,7 +388,7 @@ fn file_artwork_view(icon: FileIcon, size: f32) -> AnyView {
             style:height = format!("{size:.1}px"),
         ) {
             Icon(name = icon.base(), size = size) {}
-            {badge}
+            {badge_overlay}
         }
     })
 }
@@ -354,7 +414,13 @@ struct PropertiesInner {
 pub(crate) struct Properties(Rc<PropertiesInner>);
 
 impl Properties {
+    #[allow(dead_code)]
     pub(crate) fn new(path: PathBuf, scope: Scope) -> Self {
+        let tags_enabled = preferences::Service::current().snapshot().tags.enabled;
+        Self::new_with_tags(path, scope, tags_enabled)
+    }
+
+    fn new_with_tags(path: PathBuf, scope: Scope, tags_enabled: bool) -> Self {
         let cache = Cache::with_scope(scope.clone(), Options::default());
         let inner = Rc::new(PropertiesInner {
             path,
@@ -362,7 +428,7 @@ impl Properties {
             cache,
             entry: RwSignal::new_local(EntryState::Loading),
             tags: RwSignal::new_local(None),
-            tags_enabled: true,
+            tags_enabled,
         });
         let props = Self(inner);
         props.reload();
@@ -372,7 +438,7 @@ impl Properties {
     fn from_entry(entry: Entry, cache: Cache, scope: Scope, tags_enabled: bool) -> Self {
         let path = entry.path.clone();
         let inner = Rc::new(PropertiesInner {
-            path: path.clone(),
+            path,
             scope,
             cache,
             entry: RwSignal::new_local(EntryState::Ready(entry)),
@@ -413,18 +479,54 @@ impl Properties {
             .unwrap_or_else(|| path.display().to_string());
         let window_path = path.clone();
         let options = workspace_options(title.clone(), None)
-            .with_size(460.0, 620.0)
+            .with_size(420.0, 640.0)
             .with_min_size(360.0, 420.0);
 
         let handle = windows.open(options, move || {
             let _ = Gds::current().appearance().install_window_sheet();
-            let props = Properties::new(window_path.clone(), scope.clone());
+            install_inspection_stylesheet();
+            let tags_enabled = preferences::Service::current().snapshot().tags.enabled;
+            let props = Properties::new_with_tags(window_path.clone(), scope.clone(), tags_enabled);
             let title_text = title.clone();
+            let root_ref = NodeRef::new();
+            let close_win = try_use_window();
+            let ctrl_w = Shortcut::new(Key::character("w"), Modifiers::CONTROL);
+
+            if let Some(clock) = zgui::view::Timers::current() {
+                let focus_root = root_ref;
+                drop(clock.request_frame(move |_| {
+                    if focus_root.is_bound() {
+                        focus_root.focus();
+                    }
+                }));
+            }
+
             view! {
-                Frame {
-                    TitleBar(title = title_text)
-                    column(class = "gds-files-properties-window") {
-                        {props.view(None, false)}
+                box(
+                    node_ref = root_ref,
+                    class = "gds-files-properties-root",
+                    tabindex = Focus::Sequential,
+                    on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
+                        if ev.repeat {
+                            return;
+                        }
+                        let is_esc = ev.key == Key::Named(NamedKey::Escape) && ev.modifiers.is_empty();
+                        let is_ctrl_w = ctrl_w.matches(&ev.key, ev.modifiers)
+                            || ctrl_w.matches(&ev.key_without_modifiers, ev.modifiers);
+                        if (is_esc || is_ctrl_w)
+                            && let Some(ref win) = close_win
+                        {
+                            win.close();
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                        }
+                    },
+                ) {
+                    Frame {
+                        TitleBar(title = title_text)
+                        column(class = "gds-files-properties-window") {
+                            {props.view(None, false)}
+                        }
                     }
                 }
             }
@@ -641,8 +743,8 @@ impl Properties {
         rows
     }
 
-    fn tags_section(&self, browser: Option<&Browser>) -> Option<AnyView> {
-        if !self.0.tags_enabled {
+    fn tags_section(&self, browser: Option<&Browser>, entry_kind: EntryKind) -> Option<AnyView> {
+        if !self.0.tags_enabled || entry_kind == EntryKind::SymbolicLink {
             return None;
         }
         let tags_sig = self.0.tags;
@@ -736,18 +838,25 @@ impl Properties {
                             InspectionState::Ready(meta) => Some(meta.as_ref()),
                             _ => None,
                         };
+                        let icon = FileIcon::for_entry(&entry);
                         let hero_visual = if let Some(thumb_src) = entry.thumbnail_source() {
                             let _ = props.0.cache.request(&thumb_src, Request::Thumbnail);
+                            let badge_overlay = icon
+                                .badge()
+                                .map(|badge_icon| badge_pill_view(badge_icon, 48.0));
                             AnyView::new(view! {
-                                Thumbnail(
-                                    cache = props.0.cache.clone(),
-                                    source = thumb_src,
-                                    show_status = true,
-                                    class = "gds-files-details__thumb",
-                                )
+                                box(class = "gds-files-details__thumb-wrap") {
+                                    Thumbnail(
+                                        cache = props.0.cache.clone(),
+                                        source = thumb_src,
+                                        show_status = true,
+                                        class = "gds-files-details__thumb",
+                                    ) {}
+                                    {badge_overlay}
+                                }
                             })
                         } else {
-                            file_artwork_view(FileIcon::for_entry(&entry), 64.0)
+                            file_artwork_view(icon, 64.0)
                         };
 
                         let mut all_rows = props.base_rows(&entry, metadata_ref);
@@ -755,19 +864,7 @@ impl Properties {
                             all_rows.extend(Self::fact_rows(meta));
                         }
 
-                        let tags_view = props.tags_section(browser.as_ref());
-                        let perm_button = browser.as_ref().map(|b| {
-                            let b = b.clone();
-                            let target_entry = entry.clone();
-                            view! {
-                                Button(
-                                    variant = ButtonVariant::Outline,
-                                    size = ButtonSize::Sm,
-                                    on:click = move |_| b.edit_permissions(target_entry.clone()),
-                                ) {{i18n::text("permissions")}}
-                            }
-                            .into_view()
-                        });
+                        let tags_view = props.tags_section(browser.as_ref(), entry.kind);
 
                         AnyView::new(view! {
                             column(style:gap = "12px") {
@@ -780,11 +877,6 @@ impl Properties {
                                     {all_rows}
                                 }
                                 {tags_view}
-                                {perm_button.map(|btn| view! {
-                                    row(class = "gds-files-details__actions") {
-                                        {btn}
-                                    }
-                                }.into_view())}
                             }
                         })
                     }
@@ -816,18 +908,20 @@ impl PermissionEditor {
             .details
             .permissions
             .as_ref()
-            .map_or(0o644, |perms| perms.mode & 0o777);
-        let editor = Self(Rc::new(PermissionEditorInner {
-            browser: browser.downgrade(),
-            entry: entry.clone(),
-            directory,
-            mode: RwSignal::new_local(initial_mode),
-            recursive: RwSignal::new_local(false),
-            loading: RwSignal::new_local(true),
-            saving: RwSignal::new_local(false),
-            load_failed: RwSignal::new_local(false),
-            error: RwSignal::new_local(None),
-        }));
+            .map_or(0o644, |perms| perms.mode);
+        let editor = browser.0.owner.with(|| {
+            Self(Rc::new(PermissionEditorInner {
+                browser: browser.downgrade(),
+                entry: entry.clone(),
+                directory,
+                mode: RwSignal::new_local(initial_mode),
+                recursive: RwSignal::new_local(false),
+                loading: RwSignal::new_local(true),
+                saving: RwSignal::new_local(false),
+                load_failed: RwSignal::new_local(false),
+                error: RwSignal::new_local(None),
+            }))
+        });
 
         if entry.kind == EntryKind::SymbolicLink {
             editor.0.loading.set(false);
@@ -852,7 +946,7 @@ impl PermissionEditor {
                 target.0.loading.set(false);
                 match result {
                     Ok(mode) => {
-                        target.0.mode.set(mode & 0o777);
+                        target.0.mode.set(mode);
                         target.0.load_failed.set(false);
                         target.0.error.set(None);
                     }
@@ -866,8 +960,8 @@ impl PermissionEditor {
         editor
     }
 
-    fn is_saving(&self) -> bool {
-        self.0.saving.get()
+    fn is_saving_untracked(&self) -> bool {
+        self.0.saving.get_untracked()
     }
 
     fn can_save(&self) -> bool {
@@ -885,6 +979,8 @@ impl PermissionEditor {
             return;
         };
         let path = self.0.entry.path.clone();
+        // `permissions::save` and `permissions::apply_cancellable` read fstat and preserve
+        // all high bits (`!0o777`, including `0o7000` setuid/setgid/sticky) while applying `access`.
         let access = self.0.mode.get_untracked() & 0o777;
         let recursive = self.0.directory && self.0.recursive.get_untracked();
         let weak = Rc::downgrade(&self.0);
@@ -1062,7 +1158,14 @@ impl PermissionEditor {
                         )
                         Label(node_ref = rec_label, control = rec_ref) {{i18n::text("permissions-recursive")}}
                     }
-                    text(class = "gds-files-permissions-note") {{i18n::text("permissions-recursive-hint")}}
+                    {move || {
+                        rec_sig.get().then(|| {
+                            view! {
+                                text(class = "gds-files-permissions-note") {{i18n::text("permissions-recursive-hint")}}
+                            }
+                            .into_view()
+                        })
+                    }}
                 }
             }
             .into_view()
@@ -1127,7 +1230,7 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
             let size = entry
                 .size
                 .map(EntryPresentation::format_size)
-                .or_else(|| entry.items.map(|n| n.to_string()))
+                .or_else(|| entry.items.map(|n| i18n::count("item-count", n)))
                 .unwrap_or_else(|| UNKNOWN_VALUE.to_owned());
             AnyView::new(view! {
                 column(class = "gds-files-details") {
@@ -1226,6 +1329,28 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
 }
 
 impl Browser {
+    pub(super) fn has_open_inspection_dialog(&self) -> bool {
+        let slots = dialog_slots(self);
+        slots.tags.get_untracked().is_some() || slots.permissions.get_untracked().is_some()
+    }
+
+    pub(super) fn cancel_inspection_dialog(&self) -> bool {
+        let slots = dialog_slots(self);
+        if let Some(tags) = slots.tags.get_untracked() {
+            if !tags.is_saving_untracked() {
+                slots.tags.set(None);
+            }
+            return true;
+        }
+        if let Some(perms) = slots.permissions.get_untracked() {
+            if !perms.is_saving_untracked() {
+                slots.permissions.set(None);
+            }
+            return true;
+        }
+        false
+    }
+
     pub(super) fn edit_tags(&self, path: PathBuf) {
         self.0.menus.close();
         let slots = dialog_slots(self);
@@ -1233,7 +1358,7 @@ impl Browser {
             .tags
             .get_untracked()
             .as_ref()
-            .is_some_and(TagEditor::is_saving)
+            .is_some_and(TagEditor::is_saving_untracked)
         {
             return;
         }
@@ -1255,51 +1380,63 @@ impl Browser {
                         && !tags_sig
                             .get_untracked()
                             .as_ref()
-                            .is_some_and(TagEditor::is_saving)
+                            .is_some_and(TagEditor::is_saving_untracked)
                     {
                         tags_sig.set(None);
                     }
                 }),
             ) {
-                DialogContent {
+                DialogContent(class = "gds-dialog-content") {
                     {move || match tags_sig.get() {
                         None => AnyView::new(view! { box() }),
                         Some(editor) => {
+                            let full_path = editor.path().display().to_string();
                             let title_path = editor
                                 .path()
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .filter(|s| !s.is_empty())
-                                .unwrap_or_else(|| editor.path().display().to_string());
+                                .unwrap_or_else(|| full_path.clone());
                             let fields = editor.fields();
                             let save_editor = editor.clone();
                             let disabled = Signal::derive_local(move || {
                                 !editor.available() || editor.is_saving()
                             });
-                            let can_cancel = Signal::derive_local(move || {
-                                tags_sig
-                                    .get()
-                                    .as_ref()
-                                    .is_some_and(TagEditor::is_saving)
-                            });
                             AnyView::new(view! {
                                 column(class = "gds-files-dialog-body") {
                                     DialogHeader {
                                         DialogTitle {{i18n::text("tags-editor-title")}}
-                                        DialogDescription {{title_path}}
+                                        box(class = "gds-files-dialog-desc-wrap") {
+                                            HintTooltip(text = full_path) {
+                                                DialogDescription(class = "gds-files-dialog-desc") {
+                                                    {title_path}
+                                                }
+                                            }
+                                        }
                                     }
                                     {fields}
                                     DialogFooter {
-                                        Button(
-                                            variant = ButtonVariant::Outline,
-                                            disabled = can_cancel,
-                                            on:click = move |_| tags_sig.set(None),
-                                        ) {{i18n::text("dialog-cancel")}}
-                                        Button(
-                                            variant = ButtonVariant::Default,
+                                        DialogActions(
+                                            primary_label = i18n::text("permissions-save"),
+                                            cancel_label = i18n::text("operation-cancel"),
                                             disabled = disabled,
-                                            on:click = move |_| save_editor.save(move || tags_sig.set(None)),
-                                        ) {{i18n::text("permissions-save")}}
+                                            on_decision = UnsyncCallback::new(move |decision: DialogDecision| {
+                                                match decision {
+                                                    DialogDecision::Confirm => {
+                                                        save_editor.save(move || tags_sig.set(None));
+                                                    }
+                                                    DialogDecision::Cancel | DialogDecision::Dismiss => {
+                                                        if !tags_sig
+                                                            .get_untracked()
+                                                            .as_ref()
+                                                            .is_some_and(TagEditor::is_saving_untracked)
+                                                        {
+                                                            tags_sig.set(None);
+                                                        }
+                                                    }
+                                                }
+                                            }),
+                                        )
                                     }
                                 }
                             })
@@ -1317,7 +1454,7 @@ impl Browser {
             .permissions
             .get_untracked()
             .as_ref()
-            .is_some_and(PermissionEditor::is_saving)
+            .is_some_and(PermissionEditor::is_saving_untracked)
         {
             return;
         }
@@ -1338,20 +1475,20 @@ impl Browser {
                         && !perm_sig
                             .get_untracked()
                             .as_ref()
-                            .is_some_and(PermissionEditor::is_saving)
+                            .is_some_and(PermissionEditor::is_saving_untracked)
                     {
                         perm_sig.set(None);
                     }
                 }),
             ) {
-                DialogContent {
+                DialogContent(class = "gds-dialog-content") {
                     {move || match perm_sig.get() {
                         None => AnyView::new(view! { box() }),
                         Some(editor) => {
                             let name = editor.0.entry.display_name.clone();
+                            let full_path = editor.0.entry.path.display().to_string();
                             let fields = editor.fields();
-                            let save_editor = editor.clone();
-                            let cancel_disabled = Signal::derive_local(move || editor.is_saving());
+                            let save_editor = editor;
                             let save_disabled = Signal::derive_local(move || {
                                 !perm_sig.get().as_ref().is_some_and(PermissionEditor::can_save)
                             });
@@ -1359,20 +1496,37 @@ impl Browser {
                                 column(class = "gds-files-dialog-body") {
                                     DialogHeader {
                                         DialogTitle {{i18n::text("permissions-title")}}
-                                        DialogDescription {{name}}
+                                        box(class = "gds-files-dialog-desc-wrap") {
+                                            HintTooltip(text = full_path) {
+                                                DialogDescription(class = "gds-files-dialog-desc") {
+                                                    {name}
+                                                }
+                                            }
+                                        }
                                     }
                                     {fields}
                                     DialogFooter {
-                                        Button(
-                                            variant = ButtonVariant::Outline,
-                                            disabled = cancel_disabled,
-                                            on:click = move |_| perm_sig.set(None),
-                                        ) {{i18n::text("dialog-cancel")}}
-                                        Button(
-                                            variant = ButtonVariant::Default,
+                                        DialogActions(
+                                            primary_label = i18n::text("permissions-save"),
+                                            cancel_label = i18n::text("operation-cancel"),
                                             disabled = save_disabled,
-                                            on:click = move |_| save_editor.save(move || perm_sig.set(None)),
-                                        ) {{i18n::text("permissions-save")}}
+                                            on_decision = UnsyncCallback::new(move |decision: DialogDecision| {
+                                                match decision {
+                                                    DialogDecision::Confirm => {
+                                                        save_editor.save(move || perm_sig.set(None));
+                                                    }
+                                                    DialogDecision::Cancel | DialogDecision::Dismiss => {
+                                                        if !perm_sig
+                                                            .get_untracked()
+                                                            .as_ref()
+                                                            .is_some_and(PermissionEditor::is_saving_untracked)
+                                                        {
+                                                            perm_sig.set(None);
+                                                        }
+                                                    }
+                                                }
+                                            }),
+                                        )
                                     }
                                 }
                             })
@@ -1401,20 +1555,33 @@ impl Browser {
         install_inspection_stylesheet();
         let inner = match row {
             Row::File(entry) => {
+                let icon = FileIcon::for_entry(entry);
                 if size >= 32.0
                     && let Some(source) = entry.thumbnail_source()
                 {
                     let cache = self.0.inspections.get_untracked();
                     let _ = cache.request(&source, Request::Thumbnail);
+                    let badge_overlay = icon
+                        .badge()
+                        .map(|badge_icon| badge_pill_view(badge_icon, size));
                     AnyView::new(view! {
-                        Thumbnail(
-                            cache = cache,
-                            source = source,
-                            show_status = false,
-                        )
+                        box(
+                            class = "gds-files-artwork-slot",
+                            style:width = format!("{size:.1}px"),
+                            style:height = format!("{size:.1}px"),
+                        ) {
+                            box(class = "gds-files-artwork-thumb") {
+                                Thumbnail(
+                                    cache = cache,
+                                    source = source,
+                                    show_status = false,
+                                )
+                            }
+                            {badge_overlay}
+                        }
                     })
                 } else {
-                    file_artwork_view(FileIcon::for_entry(entry), size)
+                    file_artwork_view(icon, size)
                 }
             }
             Row::Trash(_) => file_artwork_view(FileIcon::plain(row.icon()), size),
@@ -1476,7 +1643,7 @@ impl Browser {
             }
 
             let row = &selected[0];
-            let tags_enabled = browser.0.preferences.state().with(|p| p.tags.enabled);
+            let tags_enabled = browser.tags_enabled();
             let local_entry_or_place: Option<Entry> = match row {
                 Row::File(entry) => Some(entry.clone()),
                 Row::Place(Location::Directory(path)) => {
@@ -1492,7 +1659,13 @@ impl Browser {
                         if let Some(hit) = cache_hit {
                             hit
                         } else {
-                            let created = Properties::new(path_buf.clone(), browser.scope());
+                            // CRITICAL (#94): Allocate signals on `browser.0.owner`, NEVER inside
+                            // this transient reactive closure, so cached `Properties` survive
+                            // preference/selection re-runs without disposed-signal panics.
+                            let scope = browser.scope();
+                            let created = browser.0.owner.with(|| {
+                                Properties::new_with_tags(path_buf.clone(), scope, tags_enabled)
+                            });
                             *cached_entry.borrow_mut() =
                                 Some((path_buf, None, tags_enabled, created.clone()));
                             created
@@ -1517,12 +1690,12 @@ impl Browser {
                     if let Some(hit) = cache_hit {
                         hit
                     } else {
-                        let created = Properties::from_entry(
-                            entry.clone(),
-                            browser.0.inspections.get_untracked(),
-                            browser.scope(),
-                            tags_enabled,
-                        );
+                        let cache = browser.0.inspections.get_untracked();
+                        let scope = browser.scope();
+                        let entry_for_props = entry.clone();
+                        let created = browser.0.owner.with(|| {
+                            Properties::from_entry(entry_for_props, cache, scope, tags_enabled)
+                        });
                         *cached_entry.borrow_mut() = Some((
                             entry.path.clone(),
                             entry.details.changed,

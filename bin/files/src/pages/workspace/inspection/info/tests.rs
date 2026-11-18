@@ -96,4 +96,8 @@ fn permissions_counts_dimensions_and_line_endings_format_cleanly() {
         line_endings(LineEndings::Mixed),
         LineEndingLabel::Message("details-mixed")
     ));
+    assert_eq!(
+        permissions(&Permissions::from_mode(0o4755)),
+        "rwsr-xr-x · 4755"
+    );
 }

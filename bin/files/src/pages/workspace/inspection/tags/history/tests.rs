@@ -98,3 +98,18 @@ fn record_draft(history: &mut History, draft: &str) {
         true,
     );
 }
+
+#[test]
+fn parse_draft_tags_splits_comma_delimited_drafts_and_deduplicates() {
+    assert_eq!(
+        super::super::parse_draft_tags("   ").expect("whitespace draft"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        super::super::parse_draft_tags("work, urgent , work, , client ")
+            .expect("comma-delimited tags"),
+        vec!["work".to_owned(), "urgent".to_owned(), "client".to_owned()]
+    );
+    assert!(super::super::parse_draft_tags("bad\ntag").is_err());
+    assert!(super::super::parse_draft_tags("bad\0tag").is_err());
+}

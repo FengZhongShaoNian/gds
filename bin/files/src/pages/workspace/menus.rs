@@ -2,46 +2,250 @@
 
 mod pages;
 
-use std::path::PathBuf;
+use std::{cell::Cell, path::PathBuf, rc::Rc};
 
 use gds::app::Gds;
 use gds::appearance::tokens::DataListStyle;
 use gds::i18n;
-use gds::ui::button::{ApplicationMenuButtonProps, ButtonSize, IconButtonProps};
+use gds::ui::button::{
+    ApplicationMenuButtonProps, ButtonProps as GdsButtonProps, ButtonSize,
+    ButtonVariant as GdsButtonVariant, IconButtonProps,
+};
+use gds::ui::drag::DRAG_THRESHOLD;
 use gds::ui::feedback::dialog::{
     DialogActionsProps, DialogContentProps, DialogDecision, DialogFooterProps, DialogHeaderProps,
     DialogProps, DialogTitleProps,
 };
-use gds::ui::menu::MenuEntry;
-use gds::ui::{IconName, IconProps};
+use gds::ui::feedback::tooltip::HintTooltipProps;
+use gds::ui::menu::{MenuEntry, render_entries};
+use gds::ui::{IconName, IconProps, Shortcut};
 use zgui::prelude::*;
 use zgui::reactive::{
     RenderEffect, RwSignal, UnsyncCallback, enter_non_reactive_zone, on_cleanup_local,
 };
 use zgui::task::spawn_local;
-use zgui::view;
-use zgui::view::events;
-use zgui::vocab::{Key, KeyEvent, NamedKey, PointerButton};
-use zgui_ui::menu::{
-    MenuCheckboxItemProps, MenuContentProps, MenuContext, MenuItemProps, MenuLabelProps,
-    MenuSeparatorProps, MenuSubContentProps, MenuSubProps, MenuSubTriggerProps,
-};
+use zgui::view::{current_host, events, install_stylesheet};
+use zgui::vocab::{Key, KeyEvent, Modifiers, NamedKey, PointerButton};
+use zgui::{css, view};
+use zgui_ui::menu::{MenuContentProps, MenuContext};
 use zgui_ui::overlay::OverlayState;
 use zgui_ui::{
-    ButtonProps, ButtonVariant, CheckboxProps, Checked, SelectContentProps, SelectItemProps,
-    SelectProps, SelectTriggerProps, SelectValueProps,
+    CheckboxProps, Checked, SelectContentProps, SelectItemProps, SelectProps, SelectTriggerProps,
+    SelectTriggerSize, SelectValueProps,
 };
 use zgui_ui_primitives::{Align, Binding, Placement, Side};
 
 use super::geometry::RectF;
-use super::model::{Contents, Pane, Prompt, Row, RowKey, State};
+use super::model::{Contents, Pane, Prompt, Row, RowKey, State, TRASH_TASK_KEY, remote_task_key};
 use super::ui::Browser;
 use crate::entities::file::ViewMode;
 use crate::entities::file::columns::{Column, Layout};
+use crate::entities::file::sorting::{Direction, Sort};
 use crate::entities::file::ui::FileIcon;
 use crate::entities::location::{Location, scheme::TagAddress, volumes};
 use crate::shared::lib::clipboard::Clipboard;
 use crate::shared::ui::actions::Command;
+
+const MENUS_SHEET: &str = "gds-files-workspace-menus";
+
+const MENUS_CSS: &str = css!(
+    r#"
+    .zui-dialog.gds-files-columns-dialog {
+        width: 460px;
+        max-width: calc(100vw - 32px);
+    }
+
+    .gds-files-columns-body {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .gds-files-columns-title {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .gds-files-columns-target-bar {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        min-width: 0;
+    }
+
+    .gds-files-columns-folder-wrap {
+        display: flex;
+        min-width: 0;
+        flex: 1 1 0%;
+    }
+
+    .gds-files-columns-folder-wrap .zui-tooltip__trigger {
+        display: flex;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .gds-files-columns-folder-badge {
+        display: inline-flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
+        height: 28px;
+        padding: 0 8px;
+        border-radius: var(--gds-radius-control, 6px);
+        background: var(--gds-surface);
+        border: 1px solid var(--gds-border);
+        color: var(--gds-foreground);
+        font-size: var(--gds-font-size-xs, 12px);
+        min-width: 0;
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+
+    .gds-files-columns-folder-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+    }
+
+    .gds-files-columns-scope-group {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+    }
+
+    .gds-files-columns-scope-label {
+        font-size: var(--gds-font-size-xs, 12px);
+        color: var(--gds-muted-foreground);
+        white-space: nowrap;
+    }
+
+    .gds-files-columns-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        max-height: 360px;
+        overflow-y: auto;
+        padding: 2px 0;
+    }
+
+    .gds-files-columns-group-heading {
+        font-size: var(--gds-font-size-xs, 12px);
+        font-weight: 600;
+        color: var(--gds-muted-foreground);
+        padding: 4px 6px 2px 6px;
+    }
+
+    .gds-files-column-option {
+        position: relative;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        height: 30px;
+        padding: 0 6px;
+        gap: 8px;
+        border-radius: 6px;
+        box-sizing: border-box;
+        user-select: none;
+    }
+
+    .gds-files-column-option:hover {
+        background: var(--gds-hover);
+    }
+
+    .gds-files-column-option[data-drop-before="true"]::before {
+        content: "";
+        position: absolute;
+        left: 6px;
+        right: 6px;
+        top: -1px;
+        height: 2px;
+        border-radius: 1px;
+        background: var(--gds-primary);
+        pointer-events: none;
+    }
+
+    .gds-files-column-handle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+        color: var(--gds-muted-foreground);
+        cursor: grab;
+    }
+
+    .gds-files-column-handle[data-pinned="true"] {
+        opacity: 0.35;
+        cursor: default;
+    }
+
+    .gds-files-column-spacer {
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+    }
+
+    .gds-files-column-name {
+        flex: 1 1 0%;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: var(--gds-font-size-small, 14px);
+        color: var(--gds-foreground);
+    }
+
+    .gds-files-column-name--hidden {
+        color: var(--gds-muted-foreground);
+    }
+
+    .gds-files-columns-drop-end {
+        position: relative;
+        height: 10px;
+        width: 100%;
+    }
+
+    .gds-files-columns-drop-end[data-drop-end="true"]::before {
+        content: "";
+        position: absolute;
+        left: 6px;
+        right: 6px;
+        top: 4px;
+        height: 2px;
+        border-radius: 1px;
+        background: var(--gds-primary);
+        pointer-events: none;
+    }
+
+    .gds-files-columns-footer {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        gap: 8px;
+    }
+
+    .gds-files-columns-footer__right {
+        margin-left: auto;
+    }
+    "#
+);
+
+fn install_menus_stylesheet() {
+    if current_host().is_some() {
+        install_stylesheet(MENUS_SHEET, MENUS_CSS);
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct DirectoryTarget {
@@ -169,6 +373,7 @@ impl DirectoryAction {
 
 fn command_icon(command: Command) -> Option<IconName> {
     Some(match command {
+        Command::NewWindow => IconName::Plus,
         Command::NewFolder => IconName::FolderPlus,
         Command::Copy => IconName::Copy,
         Command::Cut => IconName::Scissors,
@@ -177,18 +382,16 @@ fn command_icon(command: Command) -> Option<IconName> {
         Command::Open => IconName::ExternalLink,
         Command::OpenInNewTab => IconName::Folder,
         Command::Rename => IconName::TextCursor,
-        Command::Trash
-        | Command::DeletePermanent
-        | Command::PurgeSelection
-        | Command::EmptyTrash => IconName::Trash,
-        Command::RestoreSelection | Command::Undo => IconName::Undo,
-        Command::Redo => IconName::Redo,
+        Command::Trash | Command::DeletePermanent | Command::PurgeSelection => IconName::Trash,
+        Command::EmptyTrash | Command::ClearRecent => IconName::Broom,
+        Command::RestoreSelection | Command::Undo => IconName::Undo2,
+        Command::Redo => IconName::Redo2,
         Command::Refresh => IconName::RefreshCw,
         Command::MountVolume => IconName::Plug,
         Command::UnmountVolume => IconName::Unplug,
         Command::Favorite => IconName::Star,
         Command::Settings => IconName::Settings,
-        Command::Help => IconName::CircleQuestionMark,
+        Command::Help => IconName::BookOpen,
         _ => return None,
     })
 }
@@ -269,90 +472,6 @@ impl Menus {
     }
 }
 
-fn has_leading_column(entries: &[MenuEntry]) -> bool {
-    entries.iter().any(|entry| {
-        matches!(
-            entry,
-            MenuEntry::Checkbox { .. }
-                | MenuEntry::Item { icon: Some(_), .. }
-                | MenuEntry::Submenu { icon: Some(_), .. }
-        )
-    })
-}
-
-fn render_menu_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
-    let align_column = has_leading_column(&entries);
-    entries
-        .into_iter()
-        .map(|entry| match entry {
-            MenuEntry::Item {
-                label,
-                icon,
-                shortcut,
-                disabled,
-                destructive,
-                on_select,
-            } => {
-                let shortcut_str = shortcut.map(|s| s.label());
-                let inset = align_column && icon.is_none();
-                AnyView::new(view! {
-                    MenuItem(
-                        disabled = disabled,
-                        destructive = destructive,
-                        inset = inset,
-                        shortcut = shortcut_str,
-                        on_select = on_select
-                    ) {
-                        row(class = "gds-files-menu-item-row") {
-                            {{icon.map(|name| AnyView::new(view! { Icon(name = name) }))}}
-                            text(class = "gds-files-menu-item-label") {{label}}
-                        }
-                    }
-                })
-            }
-            MenuEntry::Checkbox {
-                label,
-                checked,
-                disabled,
-                on_toggle,
-            } => AnyView::new(view! {
-                MenuCheckboxItem(
-                    default_checked = checked,
-                    disabled = disabled,
-                    on_change = on_toggle
-                ) {
-                    {label}
-                }
-            }),
-            MenuEntry::Submenu {
-                label,
-                icon,
-                entries,
-            } => {
-                let inset = align_column && icon.is_none();
-                let entries = StoredValue::new_local(entries);
-                AnyView::new(view! {
-                    MenuSub {
-                        MenuSubTrigger(inset = inset) {
-                            row(class = "gds-files-menu-item-row") {
-                                {{icon.map(|name| AnyView::new(view! { Icon(name = name) }))}}
-                                text(class = "gds-files-menu-item-label") {{label}}
-                            }
-                        }
-                        MenuSubContent(class = "gds-files-menu-content") {
-                            {{entries.with_value(|list| render_menu_entries(list.clone()))}}
-                        }
-                    }
-                })
-            }
-            MenuEntry::Label(title) => {
-                AnyView::new(view! { MenuLabel(inset = align_column) {{title}} })
-            }
-            MenuEntry::Separator => AnyView::new(view! { MenuSeparator() }),
-        })
-        .collect()
-}
-
 fn anchored_menu_surface(
     anchor: NodeRef,
     open: Signal<bool, LocalStorage>,
@@ -375,11 +494,26 @@ fn anchored_menu_surface(
         MenuContent(
             state = overlay,
             placement = placement,
-            class = "gds-files-menu-content"
+            class = "gds-menu-content gds-files-menu-content"
         ) {
-            {{render_menu_entries(build_entries())}}
+            {{render_entries(build_entries())}}
         }
     })
+}
+
+fn move_column_pinned(layout: &mut Layout, column: Column, target_index: usize) {
+    if column.is_required() {
+        let _ = layout.move_to(column, 0);
+        return;
+    }
+    let min_index = usize::from(layout.columns().first().is_some_and(|c| c.is_required()));
+    let _ = layout.move_to(column, target_index.max(min_index));
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColumnDropSlot {
+    Before(Column),
+    End,
 }
 
 impl Browser {
@@ -448,26 +582,56 @@ impl Browser {
     }
 
     fn app_entries(&self) -> Vec<MenuEntry> {
+        let in_picker = self.read_untracked(|state| state.picker.is_some());
+        let undo_enabled = self.history_available(false);
+        let redo_enabled = self.history_available(true);
         let mut entries = vec![
-            self.command_item(Command::NewWindow, |browser| {
-                let path = browser.read_untracked(|state| {
-                    state
-                        .tab()
-                        .navigation
-                        .path()
-                        .unwrap_or(&state.home)
-                        .to_owned()
-                });
-                (browser.0.new_window)(path);
-            }),
+            MenuEntry::Item {
+                label: self.history_label(false),
+                icon: Some(IconName::Undo2),
+                shortcut: Some(Command::Undo.shortcut()),
+                disabled: !undo_enabled,
+                destructive: false,
+                on_select: self.menu_action("undo", |browser| browser.replay(false)),
+            },
+            MenuEntry::Item {
+                label: self.history_label(true),
+                icon: Some(IconName::Redo2),
+                shortcut: Some(Command::Redo.shortcut()),
+                disabled: !redo_enabled,
+                destructive: false,
+                on_select: self.menu_action("redo", |browser| browser.replay(true)),
+            },
+            MenuEntry::Separator,
+            MenuEntry::Item {
+                label: i18n::text_untracked(Command::NewWindow.label_id()),
+                icon: Some(IconName::Plus),
+                shortcut: Some(Command::NewWindow.shortcut()),
+                disabled: in_picker,
+                destructive: false,
+                on_select: self.menu_action(Command::NewWindow.label_id(), |browser| {
+                    let path = browser.read_untracked(|state| {
+                        state
+                            .tab()
+                            .navigation
+                            .path()
+                            .unwrap_or(&state.home)
+                            .to_owned()
+                    });
+                    (browser.0.new_window)(path);
+                }),
+            },
             self.command_item(Command::Settings, Browser::show_settings),
             self.command_item(Command::Help, Browser::show_help),
         ];
         if Gds::current().ui().logs().is_enabled() {
             entries.push(MenuEntry::Item {
                 label: i18n::text_untracked("logs-title"),
-                icon: None,
-                shortcut: None,
+                icon: Some(IconName::List),
+                shortcut: Some(Shortcut::new(
+                    Key::character("l"),
+                    Modifiers::CONTROL | Modifiers::SHIFT,
+                )),
                 disabled: false,
                 destructive: false,
                 on_select: UnsyncCallback::new(|()| {
@@ -475,7 +639,13 @@ impl Browser {
                 }),
             });
         }
-        entries.push(self.menu_item_entry("about", None, None, false, Browser::show_about));
+        entries.push(self.menu_item_entry(
+            "about",
+            Some(IconName::Info),
+            None,
+            false,
+            Browser::show_about,
+        ));
         entries
     }
 
@@ -503,7 +673,6 @@ impl Browser {
                     label = Signal::derive_local(|| i18n::text("app-menu")),
                     application = gds::ui::about::Application::try_cargo("gds-files"),
                     shortcut = Some(Command::Menu.shortcut()),
-                    keytip = Some("M"),
                     active = open,
                     on_activate = UnsyncCallback::new(move |()| activate_browser.show_app_menu()),
                     on:click = move |_| browser.show_app_menu()
@@ -546,7 +715,6 @@ impl Browser {
                     node_ref = anchor,
                     icon = IconName::Ellipsis,
                     label = Signal::derive_local(|| i18n::text("page-tools")),
-                    keytip = Some("O"),
                     active = open,
                     on_activate = UnsyncCallback::new(move |()| activate_browser.toggle_page_menu()),
                     on:click = move |_| browser.toggle_page_menu()
@@ -567,7 +735,15 @@ impl Browser {
     }
 
     fn page_entries(&self) -> Vec<MenuEntry> {
-        if let Some(entries) = self.special_page_entries() {
+        if let Some(mut entries) = self.special_page_entries() {
+            let sort = self.sort_entries();
+            if !sort.is_empty() {
+                entries.push(MenuEntry::Submenu {
+                    label: i18n::text_untracked("sort"),
+                    icon: Some(IconName::ArrowDownWideNarrow),
+                    entries: sort,
+                });
+            }
             return entries;
         }
         let grid = self.read_untracked(|state| state.tab().mode == ViewMode::Grid);
@@ -634,7 +810,7 @@ impl Browser {
         });
         entries.push(self.menu_item_entry(
             Command::Details.label_id(),
-            Some(IconName::PanelRight),
+            Some(IconName::Info),
             Some(Command::Details),
             compact,
             Browser::toggle_details,
@@ -1009,7 +1185,7 @@ impl Browser {
                         let id = volume.id.clone();
                         items.push(MenuEntry::Item {
                             label: i18n::text_untracked("device-power-off"),
-                            icon: None,
+                            icon: Some(IconName::CircleX),
                             shortcut: None,
                             disabled: false,
                             destructive: false,
@@ -1022,30 +1198,141 @@ impl Browser {
                 items
             }
             Row::Tag(_) => self.place_entries(row),
-            Row::Remote(_) => vec![
-                self.command_item(Command::Open, Browser::open_selected),
-                self.command_item(Command::OpenInNewTab, Browser::open_selected_tab),
-                self.command_item(Command::Copy, |browser| browser.copy(false)),
-                self.paste_item(),
-                self.menu_item_entry(
-                    "remote-download",
-                    Some(IconName::Download),
-                    None,
-                    false,
-                    Browser::download_selected_remote,
-                ),
-                self.command_item(Command::Rename, Browser::rename),
-                self.command_item(Command::DeletePermanent, |browser| browser.delete(true)),
-                MenuEntry::Separator,
-                self.command_item(Command::Favorite, Browser::favorite),
-                self.menu_item_entry(
-                    "remote-disconnect",
-                    Some(IconName::Unplug),
-                    None,
-                    false,
-                    Browser::disconnect_remote,
-                ),
-            ],
+            Row::Remote(entry) => {
+                let (selected, remote_busy) = self.read_untracked(|state| {
+                    let tab = state.tab();
+                    (
+                        tab.selected(),
+                        state.operation.busy()
+                            || tab.navigation.is_loading()
+                            || self.is_background_task_busy_untracked(&remote_task_key(tab.id)),
+                    )
+                });
+                let count = selected.len();
+                let many = count > 1;
+                let all_dirs = !selected.is_empty()
+                    && selected.iter().all(|item| {
+                        matches!(
+                            item,
+                            Row::Remote(rem)
+                                if rem.kind == gds::service::remote::EntryKind::Directory
+                        )
+                    });
+                let is_dir = entry.kind == gds::service::remote::EntryKind::Directory && all_dirs;
+                let copy_label = if many {
+                    i18n::count_untracked("copy-selected-files", count)
+                } else {
+                    i18n::text_untracked(Command::Copy.label_id())
+                };
+                let copy_paths_label = if many {
+                    i18n::count_untracked("copy-selected-paths", count)
+                } else {
+                    i18n::text_untracked("copy-path")
+                };
+                let delete_label = if many {
+                    i18n::count_untracked("delete-selected", count)
+                } else {
+                    i18n::text_untracked(Command::DeletePermanent.label_id())
+                };
+
+                let mut items = Vec::new();
+                if !many {
+                    items.push(self.command_item(Command::Open, Browser::open_selected));
+                }
+                if is_dir {
+                    items.push(MenuEntry::Item {
+                        label: if many {
+                            i18n::count_untracked("open-directories-new-tabs", count)
+                        } else {
+                            i18n::text_untracked(Command::OpenInNewTab.label_id())
+                        },
+                        icon: command_icon(Command::OpenInNewTab),
+                        shortcut: Some(Command::OpenInNewTab.shortcut()),
+                        disabled: false,
+                        destructive: false,
+                        on_select: self.menu_action(
+                            Command::OpenInNewTab.label_id(),
+                            Browser::open_selected_tab,
+                        ),
+                    });
+                }
+                if !items.is_empty() {
+                    items.push(MenuEntry::Separator);
+                }
+                items.extend([
+                    MenuEntry::Item {
+                        label: copy_label,
+                        icon: command_icon(Command::Copy),
+                        shortcut: Some(Command::Copy.shortcut()),
+                        disabled: remote_busy,
+                        destructive: false,
+                        on_select: self.menu_action(Command::Copy.label_id(), |browser| {
+                            browser.copy(false);
+                        }),
+                    },
+                    self.paste_item(),
+                    MenuEntry::Item {
+                        label: copy_paths_label,
+                        icon: command_icon(Command::CopyPaths),
+                        shortcut: Some(Command::CopyPaths.shortcut()),
+                        disabled: false,
+                        destructive: false,
+                        on_select: self.menu_action(
+                            Command::CopyPaths.label_id(),
+                            Browser::copy_selected_paths,
+                        ),
+                    },
+                    MenuEntry::Separator,
+                    self.menu_item_entry(
+                        "remote-download",
+                        Some(IconName::Download),
+                        None,
+                        remote_busy,
+                        Browser::download_selected_remote,
+                    ),
+                    self.menu_item_entry(
+                        "new-folder",
+                        Some(IconName::FolderPlus),
+                        Some(Command::NewFolder),
+                        remote_busy,
+                        Browser::new_folder,
+                    ),
+                    self.menu_item_entry(
+                        Command::Rename.label_id(),
+                        command_icon(Command::Rename),
+                        Some(Command::Rename),
+                        remote_busy || count != 1,
+                        Browser::rename,
+                    ),
+                    MenuEntry::Item {
+                        label: delete_label,
+                        icon: command_icon(Command::DeletePermanent),
+                        shortcut: Some(Command::DeletePermanent.shortcut()),
+                        disabled: remote_busy,
+                        destructive: true,
+                        on_select: self
+                            .menu_action(Command::DeletePermanent.label_id(), |browser| {
+                                browser.delete(true)
+                            }),
+                    },
+                    MenuEntry::Separator,
+                    self.menu_item_entry(
+                        Command::Favorite.label_id(),
+                        command_icon(Command::Favorite),
+                        Some(Command::Favorite),
+                        remote_busy,
+                        Browser::favorite,
+                    ),
+                    self.menu_item_entry(
+                        "remote-disconnect",
+                        Some(IconName::Unplug),
+                        None,
+                        remote_busy,
+                        Browser::disconnect_remote,
+                    ),
+                ]);
+                items
+            }
             Row::Place(_) => self.place_entries(row),
             Row::File(_)
                 if self.read_untracked(|state| {
@@ -1059,14 +1346,16 @@ impl Browser {
     }
 
     fn trash_entries(&self, selection: bool) -> Vec<MenuEntry> {
-        let (count, busy, has_rows) = self.read_untracked(|state| {
+        let trash_busy = self.is_background_task_busy_untracked(TRASH_TASK_KEY);
+        let (count, loading, has_rows) = self.read_untracked(|state| {
             let tab = state.tab();
             (
                 tab.navigation.view().selection.len(),
-                state.operation.busy() || tab.navigation.is_loading(),
+                tab.navigation.is_loading(),
                 matches!(&tab.contents, Contents::Trash(entries) if !entries.is_empty()),
             )
         });
+        let busy = trash_busy || loading;
         let mut entries = Vec::new();
         if selection {
             let restore = if count == 1 {
@@ -1075,7 +1364,7 @@ impl Browser {
                 i18n::count_untracked("recycle-restore-selected", count)
             };
             for (label, icon, command, purge) in [
-                (restore, IconName::Undo, Command::RestoreSelection, false),
+                (restore, IconName::Undo2, Command::RestoreSelection, false),
                 (
                     i18n::count_untracked("recycle-purge-selected", count),
                     IconName::Trash,
@@ -1104,7 +1393,7 @@ impl Browser {
             MenuEntry::Separator,
             self.menu_item_entry(
                 "recycle-empty-action",
-                Some(IconName::Trash),
+                Some(IconName::Broom),
                 Some(Command::EmptyTrash),
                 busy || !has_rows,
                 |browser| browser.restore_trash(true, true),
@@ -1166,10 +1455,10 @@ impl Browser {
             move |browser| {
                 browser.update(|state| state.places.toggle_favorite(saved.clone()));
                 browser.save_places();
-                browser.refresh();
+                browser.refresh_location(&Location::Favorites);
             },
         ));
-        if local.is_some() && self.0.preferences.snapshot().tags.enabled {
+        if local.is_some() && self.tags_enabled_untracked() {
             entries.push(self.menu_item_entry(
                 "tags-edit",
                 Some(IconName::Tag),
@@ -1183,7 +1472,7 @@ impl Browser {
             entries.push(self.menu_item_entry(
                 "tags-delete",
                 Some(IconName::Trash),
-                None,
+                Some(Command::Trash),
                 false,
                 move |browser| browser.delete_tags(vec![tag.clone()]),
             ));
@@ -1298,7 +1587,7 @@ impl Browser {
                 Browser::rename,
                 busy || !cfg!(target_os = "linux") || entry.path.file_name().is_none(),
             ));
-            if self.0.preferences.snapshot().tags.enabled {
+            if self.tags_enabled_untracked() {
                 entries.push(self.menu_item_entry(
                     "tags-edit",
                     Some(IconName::Tag),
@@ -1591,7 +1880,6 @@ impl Browser {
                             icon = IconName::ArrowDownWideNarrow,
                             label = Signal::derive_local(|| i18n::text("sort")),
                             shortcut = Some(Command::Sort.shortcut()),
-                            keytip = Some("S"),
                             active = open,
                             on_activate = UnsyncCallback::new(move |()| sort_act.show_sort_menu()),
                             on:click = move |_| sort_click.show_sort_menu()
@@ -1605,7 +1893,6 @@ impl Browser {
                         label = Signal::derive_local(|| i18n::text("columns-configure")),
                         disabled = Signal::stored_local(grid),
                         shortcut = Some(Command::Columns.shortcut()),
-                        keytip = Some("C"),
                         on_activate = UnsyncCallback::new(move |()| columns_act.configure_columns()),
                         on:click = move |_| columns_browser.configure_columns()
                     )
@@ -1615,23 +1902,41 @@ impl Browser {
     }
 
     fn sort_entries(&self) -> Vec<MenuEntry> {
-        let current_sort = self.read_untracked(|state| state.tab().sort.key);
-        self.sortable_columns_untracked()
+        let sortable = self.sortable_columns_untracked();
+        if sortable.is_empty() {
+            return Vec::new();
+        }
+        let current_sort = self.read_untracked(|state| state.tab().sort);
+        let mut entries: Vec<MenuEntry> = sortable
             .into_iter()
             .map(|column| {
                 let weak = self.downgrade();
                 MenuEntry::Checkbox {
                     label: i18n::text_untracked(column.label_id()),
-                    checked: current_sort == column,
+                    checked: current_sort.key == column,
                     disabled: false,
                     on_toggle: UnsyncCallback::new(move |_| {
                         if let Some(browser) = weak.upgrade() {
-                            browser.0.owner.with(|| browser.sort_by(column));
+                            browser.0.owner.with(|| browser.set_sort_key(column));
                         }
                     }),
                 }
             })
-            .collect()
+            .collect();
+
+        entries.push(MenuEntry::Separator);
+        let weak = self.downgrade();
+        entries.push(MenuEntry::Checkbox {
+            label: i18n::text_untracked("sort-descending"),
+            checked: current_sort.direction == Direction::Descending,
+            disabled: false,
+            on_toggle: UnsyncCallback::new(move |_| {
+                if let Some(browser) = weak.upgrade() {
+                    browser.0.owner.with(|| browser.toggle_sort_direction());
+                }
+            }),
+        });
+        entries
     }
 
     pub(super) fn show_sort_menu(&self) {
@@ -1649,20 +1954,32 @@ impl Browser {
 
     pub(super) fn configure_columns(&self) {
         if !self.configurable_columns_untracked()
-            || self.read_untracked(|state| state.tab().mode == ViewMode::Grid)
+            || self.read_untracked(|state| {
+                state.tab().mode == ViewMode::Grid || state.tab().navigation.is_loading()
+            })
         {
             return;
         }
-        let (location, layout) = self.read_untracked(|state| {
+        let (location, layout, default_scope) = self.read_untracked(|state| {
+            let loc = state.tab().navigation.location().clone();
+            let cols = state.tab().columns.clone();
+            let scope = if state.places.columns_for(&loc).is_some() {
+                ColumnScope::Location
+            } else {
+                ColumnScope::Default
+            };
+            (loc, cols, scope)
+        });
+        let (layout_sig, scope_sig) = self.0.owner.with(|| {
             (
-                state.tab().navigation.location().clone(),
-                state.tab().columns.clone(),
+                RwSignal::new_local(layout),
+                RwSignal::new_local(default_scope),
             )
         });
         self.0.menus.surface.set(Surface::Columns {
             location,
-            layout: RwSignal::new_local(layout),
-            scope: RwSignal::new_local(ColumnScope::Location),
+            layout: layout_sig,
+            scope: scope_sig,
         });
     }
 
@@ -1674,10 +1991,10 @@ impl Browser {
         self.read_untracked(is_configurable_columns)
     }
 
-    pub(super) fn sort_by(&self, column: Column) {
+    fn apply_tab_sort(&self, update_sort: impl FnOnce(Sort) -> Sort) {
         let id = self.update(|state| {
             let tab = state.tab_mut();
-            tab.sort = tab.sort.next(column);
+            tab.sort = update_sort(tab.sort);
             let id = tab.id;
             let location = tab.navigation.location().clone();
             let sort = tab.sort;
@@ -1689,7 +2006,29 @@ impl Browser {
         self.enrich_directory(id);
     }
 
+    fn set_sort_key(&self, column: Column) {
+        self.apply_tab_sort(|current| Sort {
+            key: column,
+            direction: current.direction,
+        });
+    }
+
+    fn toggle_sort_direction(&self) {
+        self.apply_tab_sort(|current| Sort {
+            key: current.key,
+            direction: match current.direction {
+                Direction::Ascending => Direction::Descending,
+                Direction::Descending => Direction::Ascending,
+            },
+        });
+    }
+
+    pub(super) fn sort_by(&self, column: Column) {
+        self.apply_tab_sort(|current| current.next(column));
+    }
+
     pub(super) fn menu_overlay(&self) -> AnyView {
+        install_menus_stylesheet();
         let origin = self.clone();
         let validity_fx = RenderEffect::new(move |_| {
             let valid = match origin.0.menus.surface.get() {
@@ -1719,9 +2058,11 @@ impl Browser {
         let popup_browser = self.clone();
         let permissions_view = self.permissions_dialog();
         let tags_view = self.tags_dialog();
+        let picker_bar = self.picker_footer_overlay();
 
         AnyView::new(view! {
             box(class = "gds-files-menu-overlay") {
+                {picker_bar}
                 {move || popup_browser.context_popup()}
                 Dialog(
                     open = Binding::controlled(
@@ -1734,7 +2075,7 @@ impl Browser {
                     )
                 ) {
                     DialogContent(
-                        class = "gds-files-columns-dialog",
+                        class = "gds-dialog-content gds-files-columns-dialog",
                         dismiss_on_outside_press = true,
                         dismiss_on_escape = true
                     ) {
@@ -1809,15 +2150,16 @@ impl Browser {
                     state = overlay,
                     placement = Placement::new(Side::Bottom, Align::Start),
                     offset = 0.0,
-                    class = "gds-files-menu-content"
+                    class = "gds-menu-content gds-files-menu-content"
                 ) {
-                    {render_menu_entries(entries.clone())}
+                    {render_entries(entries.clone())}
                 }
             }
         })
     }
 
     fn columns_dialog(&self) -> AnyView {
+        install_menus_stylesheet();
         let Surface::Columns {
             location,
             layout,
@@ -1829,92 +2171,270 @@ impl Browser {
 
         let browser = self.clone();
         let defaults = self.clone();
-        let restore = location.clone();
+        let has_override_browser = self.clone();
+        let restore_loc = location.clone();
+        let override_loc = location.clone();
         let apply = location.clone();
         let confirm = self.clone();
 
         let scope_value = Signal::derive_local(move || scope.get().as_value().to_owned());
-        let address = location.display_address();
+        let folder_name = self.location_title(&location);
+        let full_address = location.display_address();
+        let has_override = Signal::derive_local(move || {
+            has_override_browser.read(|state| state.places.columns_for(&override_loc).is_some())
+        });
+
+        let dragging_col: RwSignal<Option<Column>, LocalStorage> = RwSignal::new_local(None);
+        let drop_slot: RwSignal<Option<ColumnDropSlot>, LocalStorage> = RwSignal::new_local(None);
 
         AnyView::new(view! {
             column(class = "gds-files-columns-body") {
                 DialogHeader {
-                    DialogTitle {{i18n::text("columns-title")}}
-                }
-                text(class = "gds-files-columns-address") {{address}}
-                Select(
-                    value = Binding::controlled(
-                        scope_value,
-                        move |next: String| {
-                            scope.set(ColumnScope::from_value(&next));
+                    DialogTitle {
+                        row(class = "gds-files-columns-title") {
+                            Icon(name = IconName::Columns3Cog) {}
+                            text {{i18n::text("columns-title")}}
                         }
-                    )
-                ) {
-                    SelectTrigger {
-                        SelectValue(placeholder = i18n::text("columns-scope"))
                     }
-                    SelectContent {
-                        SelectItem(value = "location") {{i18n::text("columns-scope-folder")}}
-                        SelectItem(value = "default") {{i18n::text("columns-scope-global")}}
+                }
+                row(class = "gds-files-columns-target-bar") {
+                    box(class = "gds-files-columns-folder-wrap") {
+                        HintTooltip(text = full_address) {
+                            row(class = "gds-files-columns-folder-badge") {
+                                Icon(name = IconName::Folder, size = 14.0) {}
+                                text(class = "gds-files-columns-folder-label") {{folder_name}}
+                            }
+                        }
+                    }
+                    row(class = "gds-files-columns-scope-group") {
+                        text(class = "gds-files-columns-scope-label") {{i18n::text("columns-scope")}}
+                        Select(
+                            value = Binding::controlled(
+                                scope_value,
+                                move |next: String| {
+                                    scope.set(ColumnScope::from_value(&next));
+                                }
+                            )
+                        ) {
+                            SelectTrigger(
+                                size = SelectTriggerSize::Sm,
+                                label = i18n::text("columns-scope"),
+                            ) {
+                                SelectValue(placeholder = i18n::text("columns-scope"))
+                            }
+                            SelectContent {
+                                SelectItem(value = "location") {{i18n::text("columns-scope-folder")}}
+                                SelectItem(value = "default") {{i18n::text("columns-scope-global")}}
+                            }
+                        }
                     }
                 }
                 column(class = "gds-files-columns-list") {
                     {{move || {
                         let current = layout.get();
-                        let len = current.columns().len();
-                        let visible = current.columns().iter().copied().enumerate().map(|(index, column)| {
-                            let is_checked = Signal::derive_local(move || {
-                                if layout.with(|l| l.contains(column)) {
-                                    Checked::Yes
-                                } else {
-                                    Checked::No
-                                }
-                            });
-                            let required = column.is_required();
-                            AnyView::new(view! {
-                                row(class = "gds-files-column-option") {
-                                    Checkbox(
-                                        checked = Binding::controlled(
-                                            is_checked,
-                                            move |next: Checked| {
+                        let visible_cols: Vec<Column> = current.columns().to_vec();
+                        let len = visible_cols.len();
+                        let min_movable =
+                            usize::from(visible_cols.first().is_some_and(|c| c.is_required()));
+
+                        let row_refs: Rc<Vec<(Column, NodeRef)>> = Rc::new(
+                            visible_cols
+                                .iter()
+                                .copied()
+                                .filter(|c| !c.is_required())
+                                .map(|c| (c, NodeRef::new()))
+                                .collect(),
+                        );
+
+                        let visible_views = visible_cols
+                            .iter()
+                            .copied()
+                            .enumerate()
+                            .map(|(index, column)| {
+                                let required = column.is_required();
+                                let row_ref = row_refs
+                                    .iter()
+                                    .find(|(c, _)| *c == column)
+                                    .map(|(_, r)| *r)
+                                    .unwrap_or_else(NodeRef::new);
+                                let refs_for_move = Rc::clone(&row_refs);
+                                let armed_start: Rc<Cell<Option<f32>>> = Rc::new(Cell::new(None));
+                                let a_down = Rc::clone(&armed_start);
+                                let a_move = Rc::clone(&armed_start);
+                                let a_up = Rc::clone(&armed_start);
+                                let a_cancel = Rc::clone(&armed_start);
+
+                                let is_checked = Signal::derive_local(move || {
+                                    if layout.with(|l| l.contains(column)) {
+                                        Checked::Yes
+                                    } else {
+                                        Checked::No
+                                    }
+                                });
+                                let up_disabled = required || index <= min_movable;
+                                let down_disabled = required || index + 1 >= len;
+
+                                AnyView::new(view! {
+                                    row(
+                                        node_ref = row_ref,
+                                        class = "gds-files-column-option",
+                                        attr:data-drop-before = move || {
+                                            (!required
+                                                && drop_slot.get()
+                                                    == Some(ColumnDropSlot::Before(column)))
+                                                .then(|| "true".to_owned())
+                                        },
+                                    ) {
+                                        box(
+                                            class = "gds-files-column-handle",
+                                            attr:data-pinned = required.then(|| "true".to_owned()),
+                                            on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
+                                                if required || ev.button != Some(PointerButton::Primary) {
+                                                    return;
+                                                }
+                                                a_down.set(Some(ev.position.y.0));
+                                                ev.capture_pointer();
+                                                ev.stop_propagation();
+                                                ev.prevent_default();
+                                            },
+                                            on:pointer_move = move |ev: &mut EventCx<'_, events::PointerMove>| {
+                                                let y = ev.position.y.0;
+                                                if dragging_col.get_untracked().is_none() {
+                                                    if let Some(start_y) = a_move.get()
+                                                        && (y - start_y).abs() >= DRAG_THRESHOLD
+                                                    {
+                                                        dragging_col.set(Some(column));
+                                                    } else {
+                                                        return;
+                                                    }
+                                                }
+                                                if dragging_col.get_untracked() != Some(column) {
+                                                    return;
+                                                }
+                                                let mut chosen = ColumnDropSlot::End;
+                                                for (candidate, node) in refs_for_move.iter() {
+                                                    if let Some(bounds) = node.window_bounds() {
+                                                        let scale = node.scale().max(0.01);
+                                                        let mid_y = (bounds.origin.y.0
+                                                            + bounds.size.height.0 * 0.5)
+                                                            / scale;
+                                                        if y < mid_y {
+                                                            chosen =
+                                                                ColumnDropSlot::Before(*candidate);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                let filtered = match chosen {
+                                                    ColumnDropSlot::Before(target)
+                                                        if target == column =>
+                                                    {
+                                                        None
+                                                    }
+                                                    other => Some(other),
+                                                };
+                                                drop_slot.set(filtered);
+                                            },
+                                            on:pointer_up = move |ev: &mut EventCx<'_, events::PointerUp>| {
+                                                a_up.set(None);
+                                                ev.release_pointer();
+                                                let dragged = dragging_col.get_untracked();
+                                                let slot = drop_slot.get_untracked();
+                                                dragging_col.set(None);
+                                                drop_slot.set(None);
+                                                if dragged == Some(column)
+                                                    && let Some(slot) = slot
+                                                {
+                                                    layout.update(|l| {
+                                                        let cols = l.columns();
+                                                        let Some(src) = cols
+                                                            .iter()
+                                                            .position(|c| *c == column)
+                                                        else {
+                                                            return;
+                                                        };
+                                                        let target_idx = match slot {
+                                                            ColumnDropSlot::Before(target) => {
+                                                                let Some(dst) = cols
+                                                                    .iter()
+                                                                    .position(|c| *c == target)
+                                                                else {
+                                                                    return;
+                                                                };
+                                                                if src < dst {
+                                                                    dst.saturating_sub(1)
+                                                                } else {
+                                                                    dst
+                                                                }
+                                                            }
+                                                            ColumnDropSlot::End => {
+                                                                cols.len().saturating_sub(1)
+                                                            }
+                                                        };
+                                                        move_column_pinned(l, column, target_idx);
+                                                    });
+                                                }
+                                            },
+                                            on:pointer_cancel = move |ev: &mut EventCx<'_, events::PointerCancel>| {
+                                                a_cancel.set(None);
+                                                ev.release_pointer();
+                                                dragging_col.set(None);
+                                                drop_slot.set(None);
+                                            },
+                                        ) {
+                                            Icon(name = IconName::GripVertical, size = 14.0) {}
+                                        }
+                                        Checkbox(
+                                            checked = Binding::controlled(
+                                                is_checked,
+                                                move |next: Checked| {
+                                                    layout.update(|l| {
+                                                        l.set_visible(column, next == Checked::Yes);
+                                                    });
+                                                }
+                                            ),
+                                            disabled = Signal::stored_local(required),
+                                            class = "gds-files-column-check"
+                                        )
+                                        text(class = "gds-files-column-name") {{i18n::text(column.label_id())}}
+                                        IconButton(
+                                            icon = IconName::ArrowUp,
+                                            label = i18n::text("columns-move-up"),
+                                            size = ButtonSize::IconXs,
+                                            disabled = Signal::stored_local(up_disabled),
+                                            on:click = move |_| {
                                                 layout.update(|l| {
-                                                    l.set_visible(column, next == Checked::Yes);
+                                                    move_column_pinned(
+                                                        l,
+                                                        column,
+                                                        index.saturating_sub(1),
+                                                    );
                                                 });
                                             }
-                                        ),
-                                        disabled = Signal::stored_local(required),
-                                        class = "gds-files-column-check"
-                                    )
-                                    text(class = "gds-files-column-name") {{i18n::text(column.label_id())}}
-                                    IconButton(
-                                        icon = IconName::ChevronUp,
-                                        label = i18n::text("columns-move-up"),
-                                        size = ButtonSize::IconXs,
-                                        disabled = Signal::stored_local(index == 0),
-                                        on:click = move |_| {
-                                            layout.update(|l| {
-                                                l.move_to(column, index.saturating_sub(1));
-                                            });
-                                        }
-                                    )
-                                    IconButton(
-                                        icon = IconName::ChevronDown,
-                                        label = i18n::text("columns-move-down"),
-                                        size = ButtonSize::IconXs,
-                                        disabled = Signal::stored_local(index + 1 >= len),
-                                        on:click = move |_| {
-                                            layout.update(|l| {
-                                                l.move_to(column, index + 1);
-                                            });
-                                        }
-                                    )
-                                }
+                                        )
+                                        IconButton(
+                                            icon = IconName::ArrowDown,
+                                            label = i18n::text("columns-move-down"),
+                                            size = ButtonSize::IconXs,
+                                            disabled = Signal::stored_local(down_disabled),
+                                            on:click = move |_| {
+                                                layout.update(|l| {
+                                                    move_column_pinned(l, column, index + 1);
+                                                });
+                                            }
+                                        )
+                                    }
+                                })
                             })
-                        }).collect::<Vec<_>>();
+                            .collect::<Vec<_>>();
 
-                        let hidden = Column::ALL
+                        let hidden_cols: Vec<Column> = Column::ALL
                             .into_iter()
                             .filter(|column| !current.contains(*column))
+                            .collect();
+                        let hidden_len = hidden_cols.len();
+                        let hidden_views = hidden_cols
+                            .into_iter()
                             .map(|column| {
                                 let is_checked = Signal::derive_local(move || {
                                     if layout.with(|l| l.contains(column)) {
@@ -1925,6 +2445,7 @@ impl Browser {
                                 });
                                 AnyView::new(view! {
                                     row(class = "gds-files-column-option") {
+                                        box(class = "gds-files-column-spacer") {}
                                         Checkbox(
                                             checked = Binding::controlled(
                                                 is_checked,
@@ -1936,7 +2457,9 @@ impl Browser {
                                             ),
                                             class = "gds-files-column-check"
                                         )
-                                        text(class = "gds-files-column-name") {{i18n::text(column.label_id())}}
+                                        text(class = "gds-files-column-name gds-files-column-name--hidden") {
+                                            {i18n::text(column.label_id())}
+                                        }
                                     }
                                 })
                             })
@@ -1944,37 +2467,72 @@ impl Browser {
 
                         view! {
                             column(class = "gds-files-columns-list") {
-                                {visible}
-                                {hidden}
+                                text(class = "gds-files-columns-group-heading") {
+                                    {i18n::count("columns-visible-group", len)}
+                                }
+                                {visible_views}
+                                box(
+                                    class = "gds-files-columns-drop-end",
+                                    attr:data-drop-end = move || {
+                                        (drop_slot.get() == Some(ColumnDropSlot::End))
+                                            .then(|| "true".to_owned())
+                                    },
+                                ) {}
+                                {(hidden_len > 0).then(|| view! {
+                                    column(style:gap = "4px") {
+                                        text(class = "gds-files-columns-group-heading") {
+                                            {i18n::count("columns-hidden-group", hidden_len)}
+                                        }
+                                        {hidden_views}
+                                    }
+                                })}
                             }
                         }
                     }}}
                 }
-                Button(
-                    variant = ButtonVariant::Outline,
-                    on:click = move |_| {
-                        defaults.apply_columns(restore.clone(), None, ColumnScope::Location);
-                    }
-                ) {
-                    {{i18n::text("columns-restore")}}
-                }
                 DialogFooter {
-                    DialogActions(
-                        confirm_label = i18n::text("columns-apply"),
-                        cancel_label = i18n::text("dialog-cancel"),
-                        on_decision = UnsyncCallback::new(move |decision: DialogDecision| {
-                            match decision {
-                                DialogDecision::Confirm => browser.apply_columns(
-                                    apply.clone(),
-                                    Some(layout.get_untracked()),
-                                    scope.get_untracked(),
-                                ),
-                                DialogDecision::Cancel | DialogDecision::Dismiss => {
-                                    confirm.0.menus.close();
+                    row(class = "gds-files-columns-footer") {
+                        {move || {
+                            let d_browser = defaults.clone();
+                            let loc = restore_loc.clone();
+                            has_override.get().then(move || {
+                                view! {
+                                    GdsButton(
+                                        variant = GdsButtonVariant::Ghost,
+                                        icon = IconName::RotateCcw,
+                                        on:click = move |_| {
+                                            d_browser.apply_columns(
+                                                loc.clone(),
+                                                None,
+                                                ColumnScope::Location,
+                                            );
+                                        }
+                                    ) {
+                                        {i18n::text("columns-restore")}
+                                    }
                                 }
-                            }
-                        })
-                    )
+                                .into_view()
+                            })
+                        }}
+                        box(class = "gds-files-columns-footer__right") {
+                            DialogActions(
+                                primary_label = i18n::text("columns-apply"),
+                                cancel_label = i18n::text("dialog-cancel"),
+                                on_decision = UnsyncCallback::new(move |decision: DialogDecision| {
+                                    match decision {
+                                        DialogDecision::Confirm => browser.apply_columns(
+                                            apply.clone(),
+                                            Some(layout.get_untracked()),
+                                            scope.get_untracked(),
+                                        ),
+                                        DialogDecision::Cancel | DialogDecision::Dismiss => {
+                                            confirm.0.menus.close();
+                                        }
+                                    }
+                                })
+                            )
+                        }
+                    }
                 }
             }
         })
@@ -1984,8 +2542,12 @@ impl Browser {
         self.update(|state| {
             match (scope, layout) {
                 (_, None) => state.places.clear_columns(location),
-                (ColumnScope::Location, Some(layout)) => state.places.set_columns(location, layout),
-                (ColumnScope::Default, Some(layout)) => {
+                (ColumnScope::Location, Some(mut layout)) => {
+                    let _ = layout.normalize();
+                    state.places.set_columns(location, layout);
+                }
+                (ColumnScope::Default, Some(mut layout)) => {
+                    let _ = layout.normalize();
                     state.places.set_default_columns(layout);
                     state.places.clear_columns(location);
                 }

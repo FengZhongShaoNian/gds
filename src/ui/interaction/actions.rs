@@ -1,76 +1,39 @@
-//! Suite-wide decisions and notification navigation. Applications own their commands.
-use crate::app::AppExt as _;
-use gpui_kit::{Action, App, KeyBinding, actions};
+//! Shared command identities and keystroke defaults independent of GPUI.
 
-actions!(
-    gds,
-    [
-        FocusNotifications,
-        CloseNotification,
-        CloseAllNotifications,
-        Cancel
-    ]
-);
+use super::shortcut::Shortcut;
+use zgui::vocab::{Key, Modifiers, NamedKey};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Cancel;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct FocusNotifications;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CloseNotification;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CloseAllNotifications;
+
+/// Core semantic UI commands shared across windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
+    Cancel,
     FocusNotifications,
     CloseNotification,
     CloseAllNotifications,
-    Cancel,
 }
 
 impl Command {
-    pub const ALL: [Self; 4] = [
-        Self::FocusNotifications,
-        Self::CloseNotification,
-        Self::CloseAllNotifications,
-        Self::Cancel,
-    ];
-    pub fn label_id(self) -> &'static str {
+    #[must_use]
+    pub fn default_stroke(self) -> Shortcut {
         match self {
-            Self::FocusNotifications => "focus-notifications",
-            Self::CloseNotification => "notification-close",
-            Self::CloseAllNotifications => "notifications-close-all",
-            Self::Cancel => "close",
+            Self::Cancel => Shortcut::new(Key::Named(NamedKey::Escape), Modifiers::NONE),
+            Self::FocusNotifications => Shortcut::new(Key::character("n"), Modifiers::ALT),
+            Self::CloseNotification => Shortcut::new(Key::character("c"), Modifiers::ALT),
+            Self::CloseAllNotifications => {
+                Shortcut::new(Key::character("c"), Modifiers::ALT | Modifiers::SHIFT)
+            }
         }
     }
-    pub fn action(self) -> Box<dyn Action> {
-        match self {
-            Self::FocusNotifications => Box::new(FocusNotifications),
-            Self::CloseNotification => Box::new(CloseNotification),
-            Self::CloseAllNotifications => Box::new(CloseAllNotifications),
-            Self::Cancel => Box::new(Cancel),
-        }
-    }
-    pub fn context(self) -> Option<&'static str> {
-        None
-    }
-    pub fn default_stroke(self) -> &'static str {
-        match self {
-            Self::FocusNotifications => "alt-n",
-            Self::CloseNotification => "alt-x",
-            Self::CloseAllNotifications => "alt-shift-x",
-            Self::Cancel => "escape",
-        }
-    }
-}
-
-pub(crate) fn register(cx: &mut App) {
-    let bindings = Command::ALL
-        .into_iter()
-        .map(|command| {
-            KeyBinding::load(
-                command.default_stroke(),
-                command.action(),
-                None,
-                false,
-                None,
-                cx,
-            )
-            .expect("suite shortcuts are valid")
-        })
-        .collect::<Vec<_>>();
-    cx.bind_keys(bindings);
-    cx.gds_mut().ui().register_dialogs();
 }

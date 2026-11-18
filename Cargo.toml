@@ -125,6 +125,7 @@ ui = [
     "app",
     "appearance", "i18n", "persistence", "logs", "terminal", "file-inspection",
     "dep:zgui", "dep:zgui-ui", "dep:zgui-ui-tokens", "dep:zgui-ui-primitives", "dep:zgui-ui-icons",
+    "dep:zgui-image",
     "dep:gds-settings-derive", "dep:anyhow",
     "dep:unicode-segmentation", "dep:unicode-width", "dep:chrono", "dep:serde_json",
     "dep:rust-embed",
@@ -150,8 +151,8 @@ portal = [
     "desktop-protocol", "dep:anyhow", "dep:tokio", "dep:clap", "dep:nix",
     "dep:serde_json", "dep:thiserror", "dep:url", "dep:zbus",
 ]
-gui-tests = ["files", "zbus?/p2p"]
-files-e2e = ["files", "dep:futures"]
+gui-tests = ["files", "dep:zgui-platform-headless", "zbus?/p2p"]
+files-e2e = ["files", "dep:futures", "dep:zgui-platform-headless"]
 
 [dependencies]
 # Async runtime, errors and serialization shared by several capabilities.
@@ -254,6 +255,8 @@ zgui-ui = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e
 zgui-ui-tokens = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
 zgui-ui-primitives = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
 zgui-ui-icons = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
+zgui-image = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
+zgui-platform-headless = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400", optional = true }
 gds-settings-derive = { path = "macros/gds-settings-derive", optional = true }
 rust-embed = { version = "8", optional = true, features = ["debug-embed"] }
 unicode-segmentation = { version = "1", optional = true }
@@ -306,6 +309,7 @@ futures-lite = "2"
 regex = "1"
 serde_json = "1"
 tempfile = "3"
+zgui-platform-headless = { git = "https://github.com/zortax/zgui", rev = "dfe513c5f55248b10a67e1b3264887048016b400" }
 bas = { package = "bas-client", git = "https://github.com/GanDesktop/bas", branch = "main" }
 bas-server = { git = "https://github.com/GanDesktop/bas", branch = "main" }
 # Runtime-generated TLS fixtures for the imported connection tests.

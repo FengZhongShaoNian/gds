@@ -1,4 +1,4 @@
-//! Composable content-page anatomy for directories and collection tables.
+//! Shared content page layout containers and history stack.
 
 mod content;
 mod header;
@@ -6,42 +6,25 @@ mod notice;
 pub mod stack;
 mod table;
 
-use gds_uim::el;
-use gpui_kit::{IntoElement, prelude::*, *};
-
-use super::container::container_traits;
 pub use content::PageContent;
 pub use header::{PageActions, PageHeader, PageTitle};
 pub use notice::PageNotice;
 pub use table::PageTableArea;
 
-const HEADER_PADDING_X: f32 = 24.;
-const HEADER_PADDING_Y: f32 = 16.;
-const TITLE_SIZE: f32 = 22.;
-const ACTION_GAP: f32 = 8.;
+use zgui::prelude::*;
+use zgui::{component, view};
 
-/// A page column composed from headers, notices and flexible content.
-#[derive(IntoElement)]
-pub struct ContentPage {
-    base: Div,
-}
-
-impl Default for ContentPage {
-    fn default() -> Self {
-        Self {
-            base: el! { .div { flex; flex_col; flex_1; size_full; min_h_0; min_w_0; } },
+/// Top-level workspace content page container.
+#[component]
+pub fn ContentPage(
+    #[prop(into, optional)] class: Classes,
+    #[prop(attrs)] attrs: Attrs,
+    children: Children,
+) -> impl IntoView {
+    crate::ui::styles::install_ui_stylesheets();
+    view! {
+        column(class = "gds-content-page", class = class, {..attrs}) {
+            {children.into_view_once()}
         }
-    }
-}
-
-container_traits!(ContentPage);
-
-impl ContentPage {
-    pub const TABLE_INSET: f32 = 18.;
-}
-
-impl RenderOnce for ContentPage {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        self.base
     }
 }

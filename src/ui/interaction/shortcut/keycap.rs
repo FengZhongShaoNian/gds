@@ -1,36 +1,24 @@
-use super::*;
-use crate::app::AppExt as _;
-use gds_uim::el;
-use gpui_kit::IntoElement;
-use gpui_kit::component::ActiveTheme as _;
+use zgui::vocab::{Key, NamedKey};
 
-const KEY_HEIGHT: f32 = 22.;
-const KEY_PADDING: f32 = 6.;
-const KEY_TEXT_SIZE: f32 = 12.;
-
-#[derive(IntoElement)]
-pub(super) struct Keycap {
-    label: SharedString,
-}
-
-impl Keycap {
-    pub(super) fn new(label: SharedString) -> Self {
-        Self { label }
-    }
-}
-
-impl RenderOnce for Keycap {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let label = self.label;
-        el! {
-            $(gpui_kit::component::kbd::Kbd::new(Keystroke { key: label.to_string(), ..Keystroke::default() })) {
-                flex; items_center; justify_center;
-                h: KEY_HEIGHT.px; min_w: KEY_HEIGHT.px; px: KEY_PADDING.px;
-                rounded: KEY_GAP.px; border_1;
-                border_color: $cx.theme().border;
-                bg: $cx.theme().secondary; text_color: $cx.theme().muted_foreground;
-                text_size: $(cx.gds().appearance().typography().scaled(KEY_TEXT_SIZE));
+pub(super) fn display_key(key: &Key) -> String {
+    match key {
+        Key::Named(named) => match *named {
+            NamedKey::Escape => "Esc".to_owned(),
+            NamedKey::ArrowUp => "↑".to_owned(),
+            NamedKey::ArrowDown => "↓".to_owned(),
+            NamedKey::ArrowLeft => "←".to_owned(),
+            NamedKey::ArrowRight => "→".to_owned(),
+            other => other.as_str().to_owned(),
+        },
+        Key::Character(text) | Key::Other(text) => {
+            if text.as_str() == " " {
+                "Space".to_owned()
+            } else {
+                text.as_str().to_uppercase()
             }
         }
+        Key::Dead(Some(ch)) => ch.to_uppercase().to_string(),
+        Key::Dead(None) | Key::Unidentified => "?".to_owned(),
+        _ => "?".to_owned(),
     }
 }

@@ -14,7 +14,7 @@ let
     lib.mapAttrs' (key: value: lib.nameValuePair "${key}[${locale}]" value) entries
   ) (builtins.removeAttrs labels [ "default" ]);
   libraries = with pkgs; [
-    wayland libxkbcommon fontconfig freetype libGL vulkan-loader libxcb sqlite
+    wayland libxkbcommon libx11 libxcursor libxi libxrandr fontconfig freetype libGL vulkan-loader libxcb sqlite
   ] ++ extraBuildInputs;
 in
 rustPlatform.buildRustPackage {
@@ -44,7 +44,7 @@ rustPlatform.buildRustPackage {
   dontUseCmakeConfigure = true;
   cargoBuildFlags = [ "--bin" binary ];
   buildFeatures = features;
-  checkFeatures = features ++ [ "gpui-kit/test-support" ];
+  checkFeatures = features;
   cargoTestFlags = [ "--bin" binary "--lib" ];
 
   desktopItems = [ (makeDesktopItem (desktopItem // {

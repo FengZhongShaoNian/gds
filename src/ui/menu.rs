@@ -1,114 +1,158 @@
-//! Shared menu surfaces, command rows and in-window context menu placement.
+//! Declarative and model-driven popup / context menus wrapping `zgui-ui`.
 
-use gds_uim::el;
-use gpui_kit::{
-    component::menu::{PopupMenu, PopupMenuItem},
-    prelude::*,
-    *,
+use zgui::prelude::*;
+use zgui::reactive::{LocalStorage, UnsyncCallback};
+use zgui::{component, view};
+use zgui_ui::{
+    ContextMenuContentProps, ContextMenuProps, ContextMenuTriggerProps, DropdownMenuContentProps,
+    DropdownMenuProps, DropdownMenuTriggerProps, MenuCheckboxItemProps, MenuItemProps,
+    MenuLabelProps, MenuSeparatorProps, MenuSubContentProps, MenuSubProps, MenuSubTriggerProps,
 };
+use zgui_ui_primitives::{Binding, Placement};
 
-use super::{Shortcut, ShortcutBadge};
-use crate::appearance::tokens::SMALL;
+use crate::ui::Shortcut;
+use crate::ui::icon::{IconName, IconProps};
 
-pub const WIDTH: f32 = 320.;
-pub const MAX_WIDTH: f32 = 500.;
-pub const MAX_HEIGHT: f32 = 360.;
-const MIN_WIDTH: f32 = 220.;
-const ROW_MIN_WIDTH: f32 = 260.;
-const SHORTCUT_GAP: f32 = 24.;
-const EDGE_MARGIN: f32 = 8.;
-const SURFACE_BORDER: f32 = 1.;
-const DISABLED_OPACITY: f32 = 0.5;
-
-/// Keep Kit's menu colors, icons, borders and item states across applications.
-pub fn popup(menu: PopupMenu) -> PopupMenu {
-    menu.min_w(px(MIN_WIDTH))
-        .max_w(px(MAX_WIDTH))
-        .max_h(px(MAX_HEIGHT))
-        .scrollable(true)
+/// One entry inside a programmatic [`MenuModel`].
+#[derive(Clone)]
+pub enum MenuEntry {
+    Item {
+        label: String,
+        icon: Option<IconName>,
+        shortcut: Option<Shortcut>,
+        disabled: bool,
+        destructive: bool,
+        on_select: UnsyncCallback<()>,
+    },
+    Checkbox {
+        label: String,
+        checked: bool,
+        disabled: bool,
+        on_toggle: UnsyncCallback<bool>,
+    },
+    Submenu {
+        label: String,
+        icon: Option<IconName>,
+        entries: Vec<MenuEntry>,
+    },
+    Label(String),
+    Separator,
 }
 
-/// Let context menus use the window's height before scrolling. Kit applies the
-/// height limit to the items container, inside the popover's border.
-pub fn popup_in(menu: PopupMenu, window: &Window) -> PopupMenu {
-    let available = window.bounds().size.height - px(2. * (EDGE_MARGIN + SURFACE_BORDER));
-    popup(menu).max_h(available.max(px(0.)))
+/// Ordered list of menu entries used by dynamic popups and context menus.
+#[derive(Clone, Default)]
+pub struct MenuModel {
+    pub entries: Vec<MenuEntry>,
 }
 
-/// A command label and its effective shortcut, with one shared spacing rule.
-pub fn row(
-    label: impl Into<SharedString>,
-    shortcut: Option<Shortcut>,
-) -> impl Fn(&mut Window, &mut App) -> AnyElement {
-    row_with_state(label, shortcut, true)
+impl MenuModel {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, entry: MenuEntry) {
+        self.entries.push(entry);
+    }
 }
 
-/// Keep custom shortcut badges and the menu item's interaction state in sync.
-pub fn item(
-    label: impl Into<SharedString>,
-    shortcut: Option<Shortcut>,
-    enabled: bool,
-) -> PopupMenuItem {
-    PopupMenuItem::element(row_with_state(label.into(), shortcut, enabled)).disabled(!enabled)
+/// Compatibility helper wrapping menu state for `bin/files` context popup anchors.
+pub fn popup_in(model: MenuModel) -> MenuModel {
+    model
 }
 
-fn row_with_state(
-    label: impl Into<SharedString>,
-    shortcut: Option<Shortcut>,
-    enabled: bool,
-) -> impl Fn(&mut Window, &mut App) -> AnyElement {
-    let label = label.into();
-    move |window, _| {
-        let badge = shortcut
-            .as_ref()
-            .and_then(|shortcut| shortcut.binding(window))
-            .map(|binding| {
-                el! {
-                    .div { # "shortcut"; test_support; flex_shrink_0; } [
-                        $(ShortcutBadge::binding(binding)),
-                    ]
+fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
+    entries
+        .into_iter()
+        .map(|entry| match entry {
+            MenuEntry::Item {
+                label,
+                icon,
+                shortcut,
+                disabled,
+                destructive,
+                on_select,
+            } => {
+                let shortcut_str = shortcut.map(|s| s.label());
+                AnyView::new(view! {
+                    MenuItem(
+                        disabled = disabled,
+                        destructive = destructive,
+                        shortcut = shortcut_str,
+                        on_select = on_select
+                    ) {
+                        {icon.map(|name| view! { Icon(name = name) }.into_view())}
+                        text {{label}}
+                    }
+                })
+            }
+            MenuEntry::Checkbox {
+                label,
+                checked,
+                disabled,
+                on_toggle,
+            } => AnyView::new(view! {
+                MenuCheckboxItem(
+                    default_checked = checked,
+                    disabled = disabled,
+                    on_change = on_toggle
+                ) {
+                    {label}
                 }
-            });
-        el! {
-            .div {
-                # $(label.clone());
-                test_support;
-                role: Role::Label;
-                aria_label: $(label.clone());
-                flex;
-                items_center;
-                w_full;
-                min_w: ROW_MIN_WIDTH.px;
-                gap: SHORTCUT_GAP.px;
-                text_size: SMALL;
-                opacity: $(if enabled { 1.0 } else { DISABLED_OPACITY });
-            } [
-                .div { # "label"; test_support; flex_1; min_w_0; truncate } [$(label.clone())],
-                ..badge,
-            ]
+            }),
+            MenuEntry::Submenu {
+                label,
+                icon,
+                entries,
+            } => AnyView::new(view! {
+                MenuSub {
+                    MenuSubTrigger {
+                        {icon.map(|name| view! { Icon(name = name) }.into_view())}
+                        text {{label}}
+                    }
+                    MenuSubContent {
+                        {render_entries(entries.clone())}
+                    }
+                }
+            }),
+            MenuEntry::Label(title) => AnyView::new(view! { MenuLabel {{title}} }),
+            MenuEntry::Separator => AnyView::new(view! { MenuSeparator() }),
+        })
+        .collect()
+}
+
+/// Anchored dropdown popup driven by a reactive [`MenuModel`].
+#[component]
+pub fn PopupMenu(
+    #[prop(into, optional)] open: Binding<bool>,
+    #[prop(into)] model: Signal<MenuModel, LocalStorage>,
+    #[prop(default = Placement::BOTTOM)] placement: Placement,
+    trigger: Children,
+) -> impl IntoView {
+    view! {
+        DropdownMenu(open = open) {
+            DropdownMenuTrigger {{trigger.into_view_once()}}
+            DropdownMenuContent(placement = placement) {
+                {render_entries(model.get().entries)}
+            }
         }
-        .into_any_element()
     }
 }
 
-/// Regular windows host context menus in their own overlay, including at edges.
-pub fn overlay(menu: Entity<PopupMenu>, position: Point<Pixels>, window: &Window) -> AnyElement {
-    el! {
-        .anchored [
-            .div {
-                w: $(window.bounds().size.width);
-                h: $(window.bounds().size.height);
-                on_scroll: $(|_, _, cx| cx.stop_propagation());
-            } [
-                .anchored {
-                    position: position;
-                    snap_to_window_with_margin: EDGE_MARGIN.px;
-                    anchor: Anchor::TopLeft;
-                } [menu],
-            ],
-        ].deferred {
-            with_priority: gpui_kit::base::POPUP_PRIORITY
+/// Region wrapper providing a pointer/keyboard-anchored context menu from a builder closure.
+#[component]
+pub fn ContextMenuHost(
+    #[prop(into, optional)] open: Binding<bool>,
+    model: std::rc::Rc<dyn Fn() -> MenuModel>,
+    children: Children,
+) -> impl IntoView {
+    let build = model;
+    view! {
+        ContextMenu(open = open) {
+            ContextMenuTrigger {{children.into_view_once()}}
+            ContextMenuContent {
+                {render_entries(build().entries)}
+            }
         }
     }
-    .into_any_element()
 }

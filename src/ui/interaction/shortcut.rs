@@ -1,157 +1,123 @@
-//! Effective bindings and their shared visual and text presentation.
+//! Effective keybindings and their shared badge and tooltip presentation.
+
 mod badge;
 mod hint;
 mod keycap;
 
-pub use badge::ShortcutBadge;
-pub use hint::{ShortcutHint, command_tooltip, shortcut_tooltip};
+pub use badge::{ShortcutBadge, ShortcutBadgeProps};
+pub use hint::{ShortcutHint, ShortcutHintProps, command_tooltip, shortcut_tooltip};
+
+use zgui::vocab::{Key, Modifiers, NamedKey};
 
 use crate::ui::actions::Command;
-use gpui_kit::{prelude::*, *};
-use std::rc::Rc;
-const KEY_GAP: f32 = 4.;
 
-/// An action together with the key context whose binding applies to it.
-#[derive(Clone)]
+/// Held modifier hint state used by keytip/shortcut chrome.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HeldModifier {
+    #[default]
+    None,
+    Alt,
+    Control,
+    Shift,
+    Meta,
+}
+
+/// Platform-aware keyboard shortcut binding.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Shortcut {
-    action: Rc<dyn Action>,
-    context: Option<&'static str>,
+    pub key: Key,
+    pub modifiers: Modifiers,
 }
 
 impl Shortcut {
-    pub fn new(action: Box<dyn Action>, context: Option<&'static str>) -> Self {
-        Self {
-            action: Rc::from(action),
-            context,
+    #[must_use]
+    pub fn new(key: Key, modifiers: Modifiers) -> Self {
+        Self { key, modifiers }
+    }
+
+    #[must_use]
+    pub fn command(command: Command) -> Self {
+        command.default_stroke()
+    }
+
+    #[must_use]
+    pub fn parse(spec: &str) -> Option<Self> {
+        let mut modifiers = Modifiers::NONE;
+        let mut key: Option<Key> = None;
+        for part in spec.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+            match part.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => modifiers |= Modifiers::CONTROL,
+                "alt" | "option" => modifiers |= Modifiers::ALT,
+                "shift" => modifiers |= Modifiers::SHIFT,
+                "super" | "meta" | "cmd" | "win" => modifiers |= Modifiers::META,
+                "primary" => modifiers |= Modifiers::PRIMARY,
+                "esc" | "escape" => key = Some(Key::Named(NamedKey::Escape)),
+                "enter" | "return" => key = Some(Key::Named(NamedKey::Enter)),
+                "tab" => key = Some(Key::Named(NamedKey::Tab)),
+                "space" => key = Some(Key::character(" ")),
+                other => {
+                    if let Ok(named) = other.parse::<NamedKey>() {
+                        key = Some(Key::Named(named));
+                    } else if let Ok(pascal) = part.parse::<NamedKey>() {
+                        key = Some(Key::Named(pascal));
+                    } else {
+                        key = Some(Key::character(part.to_owned()));
+                    }
+                }
+            }
+        }
+        key.map(|key| Self { key, modifiers })
+    }
+
+    #[must_use]
+    pub fn matches(&self, key: &Key, modifiers: Modifiers) -> bool {
+        let held = modifiers.bits() & Modifiers::ALL.bits();
+        let wanted = self.modifiers.bits() & Modifiers::ALL.bits();
+        if held != wanted {
+            return false;
+        }
+        match (&self.key, key) {
+            (Key::Character(a), Key::Character(b)) => a.as_str().eq_ignore_ascii_case(b.as_str()),
+            _ => &self.key == key,
         }
     }
 
-    /// The same key names used by badges and held-modifier labels.
-    pub fn label(&self, window: &Window) -> Option<String> {
-        self.binding(window)
-            .map(|binding| Self::binding_label(&binding))
+    #[must_use]
+    pub fn display_tokens(&self) -> Vec<String> {
+        let mut tokens = Vec::new();
+        if self.modifiers.control() {
+            tokens.push("Ctrl".to_owned());
+        }
+        if self.modifiers.alt() {
+            tokens.push("Alt".to_owned());
+        }
+        if self.modifiers.shift() {
+            tokens.push("Shift".to_owned());
+        }
+        if self.modifiers.meta() {
+            tokens.push(if cfg!(target_os = "macos") {
+                "Cmd".to_owned()
+            } else {
+                "Super".to_owned()
+            });
+        }
+        tokens.push(keycap::display_key(&self.key));
+        tokens
     }
 
-    pub fn binding_label(binding: &KeyBinding) -> String {
-        binding
-            .keystrokes()
-            .iter()
-            .map(|stroke| {
-                stroke_labels(stroke.as_keystroke(), None)
-                    .iter()
-                    .map(AsRef::<str>::as_ref)
-                    .collect::<Vec<_>>()
-                    .join("+")
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+    #[must_use]
+    pub fn label(&self) -> String {
+        self.display_tokens().join("+")
     }
 
-    pub fn hint(&self, label: &str, window: &Window) -> String {
-        self.label(window)
-            .map_or_else(|| label.to_owned(), |keys| format!("{label} · {keys}"))
-    }
-
-    pub fn context(&self) -> Option<&'static str> {
-        self.context
-    }
-
-    pub fn action(&self) -> &dyn Action {
-        &*self.action
-    }
-
-    /// Whether both shortcuts name the same action in the same scope, so a
-    /// cached presentation does not have to be rebuilt.
-    pub fn same_scope(&self, other: &Self) -> bool {
-        self.context == other.context && self.action.partial_eq(&*other.action)
-    }
-
-    /// The highest-precedence binding currently in effect for this action.
-    pub fn binding(&self, window: &Window) -> Option<KeyBinding> {
-        let context = self
-            .context
-            .map(|value| KeyContext::parse(value).expect("bundled action contexts are valid"))
-            .unwrap_or_default();
-        window.highest_precedence_binding_for_action_in_context(&*self.action, context)
+    #[must_use]
+    pub fn hint(&self, label: &str) -> String {
+        format!("{label} · {}", self.label())
     }
 }
 
 impl From<Command> for Shortcut {
     fn from(command: Command) -> Self {
-        Self::new(command.action(), command.context())
+        Self::command(command)
     }
-}
-
-/// The modifier group a press reveals hint labels for.
-///
-/// The two groups never mix. Ctrl+Alt (what AltGr reports) selects neither, so
-/// such a press shows no labels instead of lighting the other group's keys.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HeldModifier {
-    Ctrl,
-    Alt,
-}
-
-impl HeldModifier {
-    /// The group the current modifier state asks for, if any.
-    pub fn from_modifiers(modifiers: Modifiers) -> Option<Self> {
-        if modifiers.platform {
-            return None;
-        }
-        match (modifiers.control, modifiers.alt) {
-            (true, false) => Some(Self::Ctrl),
-            (false, true) => Some(Self::Alt),
-            _ => None,
-        }
-    }
-
-    /// Whether a stroke carries this group's modifier.
-    pub fn matches(self, modifiers: Modifiers) -> bool {
-        match self {
-            Self::Ctrl => modifiers.control,
-            Self::Alt => modifiers.alt,
-        }
-    }
-}
-
-fn key_labels(binding: Option<&KeyBinding>) -> Vec<SharedString> {
-    key_labels_omitting(binding, None)
-}
-
-/// The key names of a binding's first stroke, minus the prefix of `held`.
-fn key_labels_omitting(
-    binding: Option<&KeyBinding>,
-    held: Option<HeldModifier>,
-) -> Vec<SharedString> {
-    binding
-        .and_then(|binding| binding.keystrokes().first())
-        .map(|stroke| stroke_labels(stroke.as_keystroke(), held))
-        .unwrap_or_default()
-}
-
-fn stroke_labels(stroke: &Keystroke, held: Option<HeldModifier>) -> Vec<SharedString> {
-    let mut labels = Vec::new();
-    if stroke.modifiers.control && held != Some(HeldModifier::Ctrl) {
-        labels.push("Ctrl".into());
-    }
-    if stroke.modifiers.alt && held != Some(HeldModifier::Alt) {
-        labels.push("Alt".into());
-    }
-    if stroke.modifiers.shift {
-        labels.push("Shift".into());
-    }
-    if stroke.modifiers.platform {
-        labels.push("Super".into());
-    }
-    labels.push(match stroke.key.as_str() {
-        "left" => "←".into(),
-        "right" => "→".into(),
-        "up" => "↑".into(),
-        "down" => "↓".into(),
-        "enter" => "Enter".into(),
-        "escape" => "Esc".into(),
-        "tab" => "Tab".into(),
-        key => key.to_uppercase().into(),
-    });
-    labels
 }

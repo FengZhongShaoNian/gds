@@ -1,22 +1,20 @@
-//! Shared timestamp presentation for GDS applications.
-//!
-//! [`Timestamp`] renders one value as a single line of text and inherits the
-//! surrounding text style. It uses the shared application [`Format`] unless the
-//! caller overrides it, and a single application clock refreshes relative text
-//! once a minute, so an open window never keeps showing a stale "1 minute ago".
+//! Shared timestamp presentation and reactive application clock for GDS.
 
 mod clock;
 mod presentation;
+#[cfg(test)]
+mod tests;
 mod timestamp;
 
-use std::time::SystemTime;
+use std::{cell::RefCell, time::SystemTime};
 
-use gpui_kit::{App, AppContext, Entity, Global};
 use serde::{Deserialize, Serialize};
+use zgui::reactive::{LocalStorage, RwSignal, prelude::*};
 
-use clock::Clock;
+use crate::app::Gds;
+pub use clock::{Clock, ClockProps};
 pub use presentation::{Presentation, precise};
-pub use timestamp::Timestamp;
+pub use timestamp::{Timestamp, TimestampView, TimestampViewProps};
 
 /// How shared timestamp elements present a value.
 #[derive(
@@ -33,40 +31,54 @@ pub enum Format {
     Relative,
 }
 
-struct Shared {
-    clock: Entity<Clock>,
+thread_local! {
+    static SHARED_FORMAT: RefCell<Option<RwSignal<Format, LocalStorage>>> = const { RefCell::new(None) };
+    static SHARED_TICK: RefCell<Option<RwSignal<u64, LocalStorage>>> = const { RefCell::new(None) };
 }
 
-impl Global for Shared {}
+fn ensure_format_signal() -> RwSignal<Format, LocalStorage> {
+    SHARED_FORMAT.with(|slot| {
+        if let Some(sig) = *slot.borrow() {
+            return sig;
+        }
+        let sig = if let Some(gds) = Gds::try_current() {
+            gds.with(|| RwSignal::new_local(Format::default()))
+        } else {
+            RwSignal::new_local(Format::default())
+        };
+        *slot.borrow_mut() = Some(sig);
+        sig
+    })
+}
+
+pub(crate) fn tick_signal() -> RwSignal<u64, LocalStorage> {
+    SHARED_TICK.with(|slot| {
+        if let Some(sig) = *slot.borrow() {
+            return sig;
+        }
+        let sig = if let Some(gds) = Gds::try_current() {
+            gds.with(|| RwSignal::new_local(0_u64))
+        } else {
+            RwSignal::new_local(0_u64)
+        };
+        *slot.borrow_mut() = Some(sig);
+        sig
+    })
+}
 
 /// Install or reconfigure the shared timestamp format.
-///
-/// The first call creates the application clock; later calls only reconfigure
-/// it, so preference changes never accumulate timers. Applications call this
-/// once at startup with the stored preference, then again whenever the
-/// preference changes.
-pub(crate) fn apply(format: Format, cx: &mut App) {
-    let existing = cx.try_global::<Shared>().map(|shared| shared.clock.clone());
-    match existing {
-        Some(clock) => clock.update(cx, |clock, cx| clock.set_format(format, cx)),
-        None => {
-            let clock = cx.new(|cx| Clock::new(format, cx));
-            cx.set_global(Shared { clock });
-        }
-    }
+pub fn apply(format: Format) {
+    ensure_format_signal().set(format);
 }
 
-/// The configured shared format, used by [`Timestamp`] by default.
-pub(crate) fn format(cx: &App) -> Format {
-    cx.try_global::<Shared>()
-        .map_or_else(Format::default, |shared| shared.clock.read(cx).format())
+/// Read the active shared timestamp format.
+#[must_use]
+pub fn format() -> Format {
+    ensure_format_signal().get()
 }
 
-/// Current wall-clock time for a render. The shared clock schedules refreshes,
-/// but a newly modified file must not look like a future value between ticks.
-pub(crate) fn now(_: &App) -> SystemTime {
+/// Current wall-clock timestamp used when classifying relative times.
+#[must_use]
+pub fn now() -> SystemTime {
     SystemTime::now()
 }
-
-#[cfg(test)]
-mod tests;

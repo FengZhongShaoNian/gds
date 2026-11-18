@@ -1,23 +1,16 @@
-use super::ACTION_GAP;
-use crate::ui::container::container_traits;
-use gds_uim::el;
-use gpui_kit::{IntoElement, prelude::*, *};
+use zgui::prelude::*;
+use zgui::{component, view};
 
-#[derive(IntoElement)]
-pub struct DialogFooter {
-    base: Div,
-}
-
-impl Default for DialogFooter {
-    fn default() -> Self {
-        Self {
-            base: el! { .div { flex; flex_wrap; items_center; justify_end; gap: ACTION_GAP.px; } },
+/// Footer band aligned to the trailing edge of a GDS modal dialog.
+#[component]
+pub fn DialogFooter(
+    #[prop(into, optional)] class: Classes,
+    #[prop(attrs)] attrs: Attrs,
+    children: Children,
+) -> impl IntoView {
+    view! {
+        row(class = "gds-dialog-footer", class = class, {..attrs}) {
+            {children.into_view_once()}
         }
-    }
-}
-container_traits!(DialogFooter);
-impl RenderOnce for DialogFooter {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        self.base
     }
 }

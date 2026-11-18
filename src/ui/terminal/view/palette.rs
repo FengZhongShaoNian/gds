@@ -1,5 +1,8 @@
-//! Terminal color semantics, shared by painting and OSC color-query replies.
-use crate::{app::AppExt as _, appearance::theme};
+//! Terminal color semantics shared by painting and OSC color-query replies.
+
+#[cfg(test)]
+mod tests;
+
 use alacritty_terminal::{
     term::{
         cell::Flags,
@@ -7,27 +10,32 @@ use alacritty_terminal::{
     },
     vte::ansi::{Color, NamedColor, Rgb},
 };
-use gpui_kit::{App, Hsla, rgb};
+use zgui::canvas::zgui_color::Color as ZguiColor;
 
+use crate::{app::Gds, appearance::theme};
+
+#[allow(dead_code)] // Seed skeleton for Wave 2 ui-terminal-tools.
 pub(in crate::ui::terminal) struct Palette {
-    pub background: Hsla,
-    pub foreground: Hsla,
-    pub selection: Hsla,
-    pub selected_text: Hsla,
-    pub cursor_text: Hsla,
+    pub background: ZguiColor,
+    pub foreground: ZguiColor,
+    pub selection: ZguiColor,
+    pub selected_text: ZguiColor,
+    pub cursor_text: ZguiColor,
     colors: [Rgb; COUNT],
 }
 
+#[allow(dead_code)]
 impl Palette {
-    pub fn new(cx: &App) -> Self {
-        let theme = cx.gds().appearance().theme();
+    pub fn current() -> Self {
+        let gds = Gds::current();
+        let theme = gds.appearance().theme();
         let roles = theme.colors().terminal;
-        Self::from_roles(roles, theme.content_background().a)
+        let alpha = theme.content_background().alpha();
+        Self::from_roles(roles, alpha)
     }
 
-    fn from_roles(roles: theme::TerminalColors, opacity: f32) -> Self {
-        let mut background = roles.background;
-        background.a = opacity;
+    pub(crate) fn from_roles(roles: theme::TerminalColors, opacity: f32) -> Self {
+        let background = roles.background.with_alpha(opacity);
         let mut colors = [Rgb { r: 0, g: 0, b: 0 }; COUNT];
         for i in 0..8 {
             colors[i] = to_rgb(roles.normal[i]);
@@ -66,7 +74,7 @@ impl Palette {
         self.colors
     }
 
-    pub fn resolve(&self, color: Color, overrides: &Colors) -> Hsla {
+    pub fn resolve(&self, color: Color, overrides: &Colors) -> ZguiColor {
         match color {
             Color::Spec(value) => from_rgb(value),
             Color::Named(index) => {
@@ -78,7 +86,7 @@ impl Palette {
         }
     }
 
-    pub fn foreground(&self, color: Color, flags: Flags, overrides: &Colors) -> Hsla {
+    pub fn foreground(&self, color: Color, flags: Flags, overrides: &Colors) -> ZguiColor {
         let resolved = self.resolve(color, overrides);
         if flags.contains(Flags::DIM) {
             from_rgb(dim(to_rgb(resolved)))
@@ -87,29 +95,35 @@ impl Palette {
         }
     }
 
-    pub fn background(&self, overrides: &Colors) -> Hsla {
-        let mut background = self.resolve(Color::Named(NamedColor::Background), overrides);
-        background.a = self.background.a;
-        background
+    pub fn background(&self, overrides: &Colors) -> ZguiColor {
+        self.resolve(Color::Named(NamedColor::Background), overrides)
+            .with_alpha(self.background.alpha())
     }
 }
 
-fn opaque(mut color: Hsla) -> Hsla {
-    color.a = 1.;
-    color
+fn opaque(color: ZguiColor) -> ZguiColor {
+    color.with_alpha(1.0)
 }
-fn to_rgb(color: Hsla) -> Rgb {
-    let color = color.to_rgb();
+
+pub(crate) fn to_rgb(color: ZguiColor) -> Rgb {
+    let [r, g, b] = color.components();
     let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u8;
     Rgb {
-        r: channel(color.r),
-        g: channel(color.g),
-        b: channel(color.b),
+        r: channel(r),
+        g: channel(g),
+        b: channel(b),
     }
 }
-fn from_rgb(color: Rgb) -> Hsla {
-    rgb((u32::from(color.r) << 16) | (u32::from(color.g) << 8) | u32::from(color.b)).into()
+
+fn from_rgb(color: Rgb) -> ZguiColor {
+    ZguiColor::srgb(
+        f32::from(color.r) / 255.0,
+        f32::from(color.g) / 255.0,
+        f32::from(color.b) / 255.0,
+        1.0,
+    )
 }
+
 fn dim(color: Rgb) -> Rgb {
     let channel = |value: u8| (f32::from(value) * 0.66).round() as u8;
     Rgb {
@@ -118,5 +132,3 @@ fn dim(color: Rgb) -> Rgb {
         b: channel(color.b),
     }
 }
-#[cfg(test)]
-mod tests;

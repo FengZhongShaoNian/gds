@@ -1,83 +1,64 @@
-use super::{Changed, DIVIDER_HEIGHT, KEY_CONTEXT, MoveDown, MoveUp};
-use gpui_kit::{prelude::*, *};
-use std::{cell::Cell, rc::Rc};
+use zgui::reactive::{LocalStorage, RwSignal, Signal, prelude::*};
 
-struct Bindings;
-impl Global for Bindings {}
+use super::DIVIDER_HEIGHT;
 
-pub struct State {
-    pub(super) focus: FocusHandle,
-    preferred: Option<f32>,
-    minimum_top: f32,
-    minimum_bottom: f32,
-    default_bottom: f32,
-    pub(super) bounds: Rc<Cell<Bounds<Pixels>>>,
-    pub(super) dragging: bool,
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub min: f32,
+    pub max: f32,
+    pub initial: f32,
+    pub collapse_below: Option<f32>,
 }
 
-impl EventEmitter<Changed> for State {}
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            min: 90.0,
+            max: 600.0,
+            initial: 220.0,
+            collapse_below: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct State {
+    width: RwSignal<f32, LocalStorage>,
+    collapsed: RwSignal<bool, LocalStorage>,
+    options: Options,
+}
 
 impl State {
-    pub fn new(
-        preferred: Option<f32>,
-        minimum_top: f32,
-        minimum_bottom: f32,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        if cx.try_global::<Bindings>().is_none() {
-            cx.bind_keys([
-                KeyBinding::new("up", MoveUp, Some(KEY_CONTEXT)),
-                KeyBinding::new("down", MoveDown, Some(KEY_CONTEXT)),
-            ]);
-            cx.set_global(Bindings);
-        }
+    #[must_use]
+    pub fn new(options: Options) -> Self {
         Self {
-            focus: cx.focus_handle(),
-            preferred: preferred.filter(|height| height.is_finite() && *height > 0.),
-            minimum_top,
-            minimum_bottom,
-            default_bottom: minimum_bottom,
-            bounds: Rc::new(Cell::new(Bounds::default())),
-            dragging: false,
+            width: RwSignal::new_local(options.initial.clamp(options.min, options.max)),
+            collapsed: RwSignal::new_local(false),
+            options,
         }
     }
 
-    pub fn default_bottom(&mut self, height: f32) {
-        self.default_bottom = height;
+    #[must_use]
+    pub fn width(self) -> Signal<f32, LocalStorage> {
+        self.width.into()
     }
 
-    pub fn height(&self) -> f32 {
-        constrained_height(
-            self.preferred,
-            self.bounds.get().size.height.into(),
-            self.minimum_top,
-            self.minimum_bottom,
-            self.default_bottom,
-        )
+    pub fn set_width(self, width: f32) {
+        self.width
+            .set(width.clamp(self.options.min, self.options.max));
     }
 
-    pub(super) fn adjust(&mut self, height: f32, cx: &mut Context<Self>) {
-        let available = f32::from(self.bounds.get().size.height);
-        if available <= 0. {
-            return;
-        }
-        self.preferred = Some(constrained_height(
-            Some(height),
-            available,
-            self.minimum_top,
-            self.minimum_bottom,
-            self.default_bottom,
-        ));
-        cx.notify();
+    #[must_use]
+    pub fn collapsed(self) -> Signal<bool, LocalStorage> {
+        self.collapsed.into()
     }
 
-    pub(super) fn commit(&self, cx: &mut Context<Self>) {
-        if let Some(height) = self.preferred {
-            cx.emit(Changed(height));
-        }
+    pub fn set_collapsed(self, collapsed: bool) {
+        self.collapsed.set(collapsed);
     }
 }
 
+#[must_use]
 pub fn constrained_height(
     preferred: Option<f32>,
     available: f32,

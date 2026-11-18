@@ -27,6 +27,7 @@ pub struct Request {
     pub cursor: Option<String>,
 }
 
+#[allow(dead_code)] // Seed skeleton for Wave 2 ui-overlays-data.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Navigation {
     Visit,
@@ -36,11 +37,13 @@ pub(super) enum Navigation {
     More,
 }
 
+#[allow(dead_code)] // Seed skeleton for Wave 2 ui-overlays-data.
 #[derive(Default)]
 pub(super) struct History {
     pub back: Vec<String>,
     pub forward: Vec<String>,
 }
+#[allow(dead_code)] // Seed skeleton for Wave 2 ui-overlays-data.
 impl History {
     pub fn commit(&mut self, kind: Navigation, previous: Option<&str>, current: &str) {
         let Some(previous) = previous.filter(|path| *path != current) else {

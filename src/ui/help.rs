@@ -1,104 +1,79 @@
-//! Read-only help content. Shortcut badges always resolve the live keymap.
-use super::{Shortcut, ShortcutBadge, container::container_traits};
-use crate::app::AppExt as _;
-use gds_uim::el;
-use gpui_kit::{
-    App, Div, IntoElement, SharedString, Stateful, TestSupportExt, Window, actions,
-    component::{ActiveTheme, StyledExt},
-    div,
-    prelude::*,
-};
+//! Read-only help content and shortcut reference components.
 
-actions!(help, [OpenHelp]);
+use zgui::prelude::*;
+use zgui::reactive::LocalStorage;
+use zgui::{component, view};
 
-#[derive(IntoElement)]
-pub struct HelpPage {
-    base: Stateful<Div>,
-}
-impl Default for HelpPage {
-    fn default() -> Self {
-        Self {
-            base: el! { .div { # "help-page"; size_full; min_h_0; overflow_y_scroll; p_6; } },
+use super::{Shortcut, ShortcutBadgeProps};
+
+/// Semantic trigger token for opening application help.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OpenHelp;
+
+/// Scrollable keyboard-shortcut and reference page container.
+#[component]
+pub fn HelpPage(
+    #[prop(into, optional)] class: Classes,
+    #[prop(attrs)] attrs: Attrs,
+    children: Children,
+) -> impl IntoView {
+    crate::ui::styles::install_ui_stylesheets();
+    view! {
+        scroll(class = "gds-help-page", class = class, {..attrs}) {
+            column(class = "gds-help-page__body") {
+                {children.into_view_once()}
+            }
         }
     }
 }
-container_traits!(HelpPage);
-impl RenderOnce for HelpPage {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        self.base
-            .bg(cx.gds().appearance().theme().content_background())
-            .test_support()
-    }
-}
 
-#[derive(IntoElement)]
-pub struct ShortcutSection {
-    base: Div,
-}
-impl Default for ShortcutSection {
-    fn default() -> Self {
-        Self {
-            base: el! { .div { pb_6; } },
+/// Group of related shortcuts inside a [`HelpPage`].
+#[component]
+pub fn ShortcutSection(
+    #[prop(into, optional)] class: Classes,
+    #[prop(attrs)] attrs: Attrs,
+    children: Children,
+) -> impl IntoView {
+    view! {
+        column(class = "gds-shortcut-section", class = class, {..attrs}) {
+            {children.into_view_once()}
         }
     }
 }
-container_traits!(ShortcutSection);
-impl RenderOnce for ShortcutSection {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        self.base
-    }
-}
 
-#[derive(IntoElement)]
-pub struct ShortcutHeading {
-    base: Div,
-}
-impl Default for ShortcutHeading {
-    fn default() -> Self {
-        Self {
-            base: el! { .div { text_2xl; font_semibold; pb_4; } },
+/// Section heading inside a [`ShortcutSection`].
+#[component]
+pub fn ShortcutHeading(
+    #[prop(into, optional)] class: Classes,
+    #[prop(attrs)] attrs: Attrs,
+    children: Children,
+) -> impl IntoView {
+    view! {
+        text(class = "gds-shortcut-heading", class = class, {..attrs}) {
+            {children.into_view_once()}
         }
     }
 }
-container_traits!(ShortcutHeading);
-impl RenderOnce for ShortcutHeading {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        self.base
-    }
-}
 
-#[derive(IntoElement)]
-pub struct ShortcutRow {
-    label: SharedString,
+/// Single labelled keyboard shortcut row (or range of two shortcuts).
+#[component]
+pub fn ShortcutRow(
+    #[prop(into)] label: Signal<String, LocalStorage>,
     shortcut: Shortcut,
-    range_end: Option<Shortcut>,
-}
-impl ShortcutRow {
-    pub fn new(label: impl Into<SharedString>, shortcut: impl Into<Shortcut>) -> Self {
-        Self {
-            label: label.into(),
-            shortcut: shortcut.into(),
-            range_end: None,
-        }
-    }
-    pub fn range(mut self, last: impl Into<Shortcut>) -> Self {
-        self.range_end = Some(last.into());
-        self
-    }
-}
-impl RenderOnce for ShortcutRow {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        el! {
-            .div { flex; items_center; justify_between; gap_6; py_2; border_b_1; border_color: $(cx.theme().border); } [
-                .div { flex_1; min_w_0; } [$self.label],
-                .div { flex; items_center; gap_2; } [
-                    $(self.shortcut).ShortcutBadge::bound,
-                    @if (let Some(last) = self.range_end)
-                        "–",
-                        last.ShortcutBadge::bound,
-                    @end,
-                ],
-            ]
+    #[prop(optional)] range_end: Option<Shortcut>,
+) -> impl IntoView {
+    view! {
+        row(class = "gds-shortcut-row") {
+            text(class = "gds-shortcut-row__label") {{move || label.get()}}
+            row(class = "gds-shortcut-row__keys") {
+                ShortcutBadge(shortcut = shortcut) {}
+                {range_end.map(|end| view! {
+                    row {
+                        text {"–"}
+                        ShortcutBadge(shortcut = end)
+                    }
+                })}
+            }
         }
     }
 }

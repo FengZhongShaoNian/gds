@@ -1,16 +1,4 @@
-//! Shared column geometry for the toolbar, content and footer.
-
-use super::*;
-use crate::app::AppExt as _;
-use crate::appearance::tokens::{ICON_BUTTON_SIZE, SIDEBAR_WIDTH};
-use gds_uim::el;
-use gpui_kit::component::ActiveTheme;
-use gpui_kit::{prelude::*, *};
-
-const MENU_PADDING: f32 = crate::appearance::tokens::CONTENT_PADDING;
-const STATUS_PADDING: f32 = 18.;
-const ITEM_GAP: f32 = 8.;
-const DIVIDER_WIDTH: f32 = 1.;
+//! Shared GDS outer CSD window frame, toolbar, footer, drag strip, and workspace wrapper.
 
 mod drag;
 mod footer;
@@ -18,33 +6,31 @@ mod toolbar;
 mod workspace;
 
 pub use drag::WindowDragArea;
+pub use footer::Footer;
+pub use toolbar::Toolbar;
+pub use workspace::WorkspaceFrame;
 
-/// One shared column width governs toolbar, workspace and footer geometry.
-#[gds_uim::component]
-pub struct Frame {
-    #[attr(into, option)]
-    sidebar_width: Option<f32>,
-}
+use zgui::prelude::*;
+use zgui::{component, view};
 
-impl Default for Frame {
-    fn default() -> Self {
-        Self {
-            sidebar_width: Some(SIDEBAR_WIDTH),
-        }
+use crate::app::Gds;
+
+/// Outer window shell installing `"gds-appearance"` + `"gds-ui-base"` and framing client chrome.
+#[component]
+pub fn Frame(
+    #[prop(into, optional)] class: Classes,
+    #[prop(attrs)] attrs: Attrs,
+    children: Children,
+) -> impl IntoView {
+    if let Some(gds) = Gds::try_current() {
+        let _ = gds.appearance().install_window_sheet();
     }
-}
-
-impl Frame {
-    /// A full-width page whose toolbar has no sidebar column or divider.
-    pub fn without_sidebar() -> Self {
-        Self {
-            sidebar_width: None,
+    crate::ui::styles::install_ui_stylesheets();
+    view! {
+        column(class = "gds-frame", class = class, {..attrs}) {
+            box(class = "gds-frame-content") {
+                {children.into_view_once()}
+            }
         }
-    }
-
-    fn vertical_divider(&self, cx: &App) -> Option<Div> {
-        self.sidebar_width.map(|boundary| el! {
-            .div { absolute; left: $(px(boundary - DIVIDER_WIDTH)); top_0; bottom_0; w: DIVIDER_WIDTH.px; bg: $(cx.theme().border) }
-        })
     }
 }

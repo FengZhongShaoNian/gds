@@ -1,93 +1,52 @@
-//! Shared dialog decisions preserve the modal's own callbacks and key bindings.
+//! Native modal dialog footer actions, decisions, and prompt hosts.
 
 mod anchor;
 mod command;
 mod decision;
 mod footer;
 
+pub use anchor::DialogAnchor;
 pub use command::DialogCommand;
 pub use decision::DialogDecision;
 pub use footer::DialogFooter;
 
-use gds_uim::component;
-use gpui_kit::assets::IconName;
-use gpui_kit::component::{StyledExt as _, button::ButtonVariant};
-use gpui_kit::{IntoElement, prelude::*, *};
+use zgui::prelude::*;
+use zgui::reactive::{LocalStorage, UnsyncCallback};
+use zgui::{component, view};
+use zgui_ui::{ButtonProps, ButtonVariant};
 
-pub const DIALOG_CONTEXT: &str = "Dialog";
-const ACTION_GAP: f32 = 8.;
-
-/// Bind the dialog decisions once at startup.
-pub(crate) fn register(cx: &mut App) {
-    let bindings = DialogCommand::ALL
-        .into_iter()
-        .map(|command| command.binding(cx))
-        .collect::<Vec<_>>();
-    cx.bind_keys(bindings);
-}
-
-/// The standard confirm/cancel composition; labels and appearance are optional overrides.
+/// Standard Confirm + Cancel button cluster used in modal dialog footers.
 #[component]
-#[derive(IntoElement)]
-pub struct DialogActions {
-    #[attr(into, option)]
-    primary_label: Option<SharedString>,
-    #[attr]
-    primary_icon: IconName,
-    #[attr(into, option)]
-    cancel_label: Option<SharedString>,
-    #[attr]
-    primary_disabled: bool,
-    danger: bool,
-    style: StyleRefinement,
-}
-
-impl Default for DialogActions {
-    fn default() -> Self {
-        Self {
-            primary_label: None,
-            primary_icon: IconName::Check,
-            cancel_label: None,
-            primary_disabled: false,
-            danger: false,
-            style: StyleRefinement::default(),
+pub fn DialogActions(
+    #[prop(into)] confirm_label: Signal<String, LocalStorage>,
+    #[prop(into, optional)] cancel_label: Option<String>,
+    #[prop(default = false)] destructive: bool,
+    #[prop(into, default = Signal::stored_local(false))] disabled: Signal<bool, LocalStorage>,
+    on_decision: UnsyncCallback<DialogDecision>,
+) -> impl IntoView {
+    let confirm_variant = if destructive {
+        ButtonVariant::Destructive
+    } else {
+        ButtonVariant::Default
+    };
+    view! {
+        row(class = "gds-dialog-actions") {
+            {cancel_label.map(|label| {
+                let on_cancel = on_decision;
+                view! {
+                    Button(
+                        variant = ButtonVariant::Outline,
+                        disabled = disabled,
+                        on:click = move |_| on_cancel.run(DialogDecision::Cancel)
+                    ) {{label}}
+                }
+                .into_view()
+            })}
+            Button(
+                variant = confirm_variant,
+                disabled = disabled,
+                on:click = move |_| on_decision.run(DialogDecision::Confirm)
+            ) {{move || confirm_label.get()}}
         }
-    }
-}
-
-impl DialogActions {
-    pub fn danger(mut self) -> Self {
-        self.danger = true;
-        self
-    }
-}
-
-impl Styled for DialogActions {
-    fn style(&mut self) -> &mut StyleRefinement {
-        &mut self.style
-    }
-}
-
-impl RenderOnce for DialogActions {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        let mut primary = DialogDecision::new(DialogCommand::Confirm)
-            .icon(self.primary_icon)
-            .disabled(self.primary_disabled)
-            .variant(if self.danger {
-                ButtonVariant::Danger
-            } else {
-                ButtonVariant::Primary
-            });
-        if let Some(label) = self.primary_label {
-            primary = primary.label(label);
-        }
-        let mut cancel = DialogDecision::new(DialogCommand::Cancel);
-        if let Some(label) = self.cancel_label {
-            cancel = cancel.label(label);
-        }
-        DialogFooter::default()
-            .refine_style(&self.style)
-            .child(cancel)
-            .child(primary)
     }
 }

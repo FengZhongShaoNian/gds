@@ -741,11 +741,6 @@ impl CustomElement for TerminalGrid {
                     painter.fill(cell_rect, 0.0, palette.selection);
                     selected_span.push_cell(width_cols, grapheme, false);
                 } else {
-                    painter.fill(
-                        cell_rect,
-                        0.0,
-                        palette.background(&self.snapshot.colors).with_alpha(1.0),
-                    );
                     normal_span.push_cell(width_cols, grapheme, false);
                 }
                 width_cols += cols;

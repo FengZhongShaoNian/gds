@@ -1,4 +1,4 @@
-//! Picker keyboard command definitions (`Back`, `Forward`, `Up`, `Refresh`, `EditLocation`, `Filter`).
+//! Picker keyboard command definitions (`Back`, `Forward`, `Up`, `Refresh`, `EditLocation`, `Filter`, `Hidden`).
 
 use zgui::vocab::{Key, KeyEvent, Modifiers, NamedKey};
 
@@ -12,6 +12,7 @@ pub enum PickerCommand {
     Refresh,
     EditLocation,
     Filter,
+    Hidden,
 }
 
 impl PickerCommand {
@@ -25,6 +26,7 @@ impl PickerCommand {
             Self::Refresh => "picker-refresh",
             Self::EditLocation => "picker-location",
             Self::Filter => "picker-filter",
+            Self::Hidden => "picker-hidden",
         }
     }
 
@@ -38,6 +40,7 @@ impl PickerCommand {
             Self::Refresh => Shortcut::new(Key::character("r"), Modifiers::PRIMARY),
             Self::EditLocation => Shortcut::new(Key::character("l"), Modifiers::PRIMARY),
             Self::Filter => Shortcut::new(Key::character("f"), Modifiers::PRIMARY),
+            Self::Hidden => Shortcut::new(Key::character("h"), Modifiers::PRIMARY),
         }
     }
 

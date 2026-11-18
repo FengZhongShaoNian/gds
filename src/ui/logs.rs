@@ -24,9 +24,10 @@ use crate::i18n;
 #[cfg(test)]
 use crate::service::logs::Snapshot;
 use crate::service::logs::{Entry, Level, Store};
-use crate::ui::button::{ButtonProps, ButtonSize, ButtonVariant, IconButtonProps};
+use crate::ui::button::{ButtonSize, IconButtonProps};
 use crate::ui::icon::{IconName, IconProps};
 use crate::ui::task_manager::TaskManagerViewProps;
+use crate::ui::tooltip::wrap_tokens;
 use filters::{ALL_KEY, FilterState, level_to_key};
 use navigation::NavigationStep;
 
@@ -38,7 +39,7 @@ mod window;
 mod tests;
 
 const PREVIEW_CHARS: usize = 240;
-const ROW_HEIGHT: f32 = 24.0;
+const ROW_HEIGHT: f32 = 22.0;
 const UPDATE_INTERVAL: Duration = Duration::from_millis(50);
 const SHEET: &str = "gds-logs";
 
@@ -52,6 +53,7 @@ const LOGS_CSS: &str = "
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+    outline: none;
     background-color: var(--gds-content-bg, var(--gds-content));
     color: var(--gds-foreground);
 }
@@ -70,9 +72,38 @@ const LOGS_CSS: &str = "
     flex-direction: row;
     align-items: center;
     flex-shrink: 0;
-    padding: 8px 12px 0 12px;
+    padding: 0 12px;
     border-bottom: 1px solid var(--gds-border);
-    background-color: var(--gds-surface);
+    background: transparent;
+}
+.gds-logs-tabs-list.zui-tabs__list {
+    height: 36px;
+    padding: 0;
+    gap: 16px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+}
+.gds-logs-tabs-trigger.zui-tabs__trigger {
+    height: 36px;
+    padding: 0 4px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    color: var(--gds-muted-foreground);
+    font-size: var(--gds-font-size-small, 14px);
+    cursor: pointer;
+}
+.gds-logs-tabs-trigger.zui-tabs__trigger:hover {
+    color: var(--gds-foreground);
+}
+.gds-logs-tabs-trigger.zui-tabs__trigger[data-state=\"active\"] {
+    background: transparent;
+    box-shadow: none;
+    color: var(--gds-foreground);
+    border-bottom-color: var(--gds-primary);
 }
 .gds-logs-panel {
     display: flex;
@@ -90,9 +121,8 @@ const LOGS_CSS: &str = "
     align-items: center;
     flex-shrink: 0;
     gap: 8px;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--gds-border);
-    background-color: var(--gds-surface);
+    padding: 8px;
+    background: transparent;
 }
 .gds-logs-select {
     width: 140px;
@@ -102,9 +132,22 @@ const LOGS_CSS: &str = "
     width: 180px;
     flex-shrink: 0;
 }
-.gds-logs-search {
+.gds-logs-search-wrap {
     flex: 1 1 0;
     min-width: 0;
+}
+.gds-logs-search-group.gds-logs-search-group {
+    width: 100%;
+    height: 32px;
+    border-radius: 6px;
+    background-color: var(--gds-content);
+    border: 1px solid var(--gds-outline);
+    box-shadow: none;
+}
+.gds-logs-search-group.gds-logs-search-group:focus-within {
+    border-color: var(--gds-primary);
+    box-shadow: none;
+    outline: none;
 }
 .gds-logs-list-host {
     display: flex;
@@ -120,6 +163,7 @@ const LOGS_CSS: &str = "
     width: 100%;
     height: 100%;
     min-height: 0;
+    overflow-x: hidden;
 }
 .gds-logs-row {
     display: flex;
@@ -127,39 +171,43 @@ const LOGS_CSS: &str = "
     align-items: center;
     gap: 8px;
     width: 100%;
-    height: 24px;
-    padding: 0 12px;
+    height: 22px;
+    padding: 0 8px;
+    font-family: var(--gds-font-mono);
     font-size: 12px;
     cursor: pointer;
     box-sizing: border-box;
+    white-space: nowrap;
+    overflow: hidden;
 }
 .gds-logs-row:hover {
     background-color: var(--gds-hover);
 }
-.gds-logs-row--selected {
+.gds-logs-row--selected,
+.gds-logs-row--selected:hover {
     background-color: var(--gds-selection);
     color: var(--gds-selection-foreground);
 }
 .gds-logs-time {
-    width: 96px;
+    width: 100px;
     flex-shrink: 0;
-    font-family: var(--gds-font-mono);
     color: var(--gds-muted-foreground);
     white-space: nowrap;
+}
+.gds-logs-row--selected .gds-logs-time,
+.gds-logs-row--selected .gds-logs-target {
+    color: inherit;
 }
 .gds-logs-level {
-    width: 48px;
+    width: 44px;
     flex-shrink: 0;
-    font-family: var(--gds-font-mono);
-    font-weight: 600;
     white-space: nowrap;
 }
-.gds-logs-level--trace,
-.gds-logs-level--debug {
-    color: var(--gds-muted-foreground);
+.gds-logs-level--default {
+    color: var(--gds-foreground);
 }
-.gds-logs-level--info {
-    color: var(--gds-primary);
+.gds-logs-row--selected .gds-logs-level--default {
+    color: inherit;
 }
 .gds-logs-level--warn {
     color: var(--gds-warning, #d97706);
@@ -168,7 +216,7 @@ const LOGS_CSS: &str = "
     color: var(--gds-error);
 }
 .gds-logs-target {
-    width: 180px;
+    width: 200px;
     flex-shrink: 0;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -186,48 +234,35 @@ const LOGS_CSS: &str = "
     max-height: 180px;
     flex-shrink: 0;
     border-top: 1px solid var(--gds-border);
-    background-color: var(--gds-surface);
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-.gds-logs-detail-bar {
+    background: transparent;
+    padding: 8px;
     display: flex;
     flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
+    align-items: flex-start;
     gap: 8px;
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--gds-border);
+    min-width: 0;
 }
-.gds-logs-detail-meta {
+.gds-logs-detail-body {
+    flex: 1 1 0;
+    min-width: 0;
+    max-height: 164px;
+    overflow-y: auto;
     font-family: var(--gds-font-mono);
     font-size: 12px;
-    color: var(--gds-muted-foreground);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    user-select: text;
 }
 .gds-logs-detail-actions {
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 6px;
-}
-.gds-logs-detail-body {
-    flex: 1 1 0;
-    min-height: 0;
-    padding: 8px 12px;
-    overflow: auto;
-    font-family: var(--gds-font-mono);
-    font-size: 12px;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
+    flex-shrink: 0;
+    gap: 4px;
 }
 .gds-logs-footer {
-    padding: 4px 12px;
-    border-top: 1px solid var(--gds-border);
-    background-color: var(--gds-surface);
+    padding: 4px 8px;
+    background: transparent;
     color: var(--gds-muted-foreground);
     font-size: 12px;
 }
@@ -239,29 +274,29 @@ fn format_time(time: std::time::SystemTime) -> String {
 }
 
 fn preview_text(message: &str) -> String {
-    let mut out = String::new();
-    for (count, ch) in message.chars().enumerate() {
-        if count >= PREVIEW_CHARS {
-            out.push('…');
-            break;
-        }
-        if matches!(ch, '\n' | '\r') {
-            out.push(' ');
-        } else {
-            out.push(ch);
-        }
+    let mut chars = message.chars();
+    let mut preview: String = chars
+        .by_ref()
+        .take(PREVIEW_CHARS)
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    if chars.next().is_some() {
+        preview.push('…');
     }
-    out
+    preview
 }
 
 fn level_class(level: Level) -> &'static str {
     match level {
-        Level::Trace => "gds-logs-level--trace",
-        Level::Debug => "gds-logs-level--debug",
-        Level::Info => "gds-logs-level--info",
-        Level::Warn => "gds-logs-level--warn",
         Level::Error => "gds-logs-level--error",
+        Level::Warn => "gds-logs-level--warn",
+        Level::Trace | Level::Debug | Level::Info => "gds-logs-level--default",
     }
+}
+
+#[must_use]
+pub(crate) fn toggle_selected_id(current: Option<u64>, clicked: u64) -> Option<u64> {
+    (current != Some(clicked)).then_some(clicked)
 }
 
 fn active_store() -> Option<Store> {
@@ -323,6 +358,7 @@ pub fn LogViewer() -> impl IntoView {
 
     let root_ref = NodeRef::new();
     let list_ref = NodeRef::new();
+    let search_ref = NodeRef::new();
     let clipboard = try_use_clipboard();
     let pending_timer: Rc<std::cell::RefCell<Option<TimeoutHandle>>> =
         Rc::new(std::cell::RefCell::new(None));
@@ -447,6 +483,7 @@ pub fn LogViewer() -> impl IntoView {
     });
 
     let search_placeholder = Signal::derive_local(|| i18n::text("logs-search"));
+    let clear_search_label = Signal::derive_local(|| i18n::text("close"));
     let clear_label = Signal::derive_local(|| i18n::text("logs-clear"));
     let copy_label = Signal::derive_local(|| i18n::text("logs-copy-selected"));
     let close_detail_label = Signal::derive_local(|| i18n::text("logs-close-detail"));
@@ -581,44 +618,34 @@ pub fn LogViewer() -> impl IntoView {
     let detail_panel = move || {
         let entry = selected_entry.get()?;
         let copy_text = entry.text();
-        let meta = format!(
-            "{} · {} · {}",
-            format_time(entry.time),
-            entry.level.as_str(),
-            entry.target
-        );
+        let wrapped = wrap_tokens(&copy_text);
         let clip = clipboard.clone();
         Some(view! {
             box(class = "gds-logs-detail", attr:data-testid = "logs-detail") {
-                box(class = "gds-logs-detail-bar") {
-                    text(class = "gds-logs-detail-meta") {{meta}}
-                    box(class = "gds-logs-detail-actions") {
-                        Button(
-                            variant = ButtonVariant::Outline,
-                            size = ButtonSize::Sm,
-                            attr:data-testid = "logs-copy",
-                            on:click = move |_| {
-                                if let Some(clip) = clip.as_ref() {
-                                    clip.set_text(ClipboardKind::Standard, copy_text.clone());
-                                }
-                            },
-                        ) {
-                            Icon(name = IconName::Copy, size = 14.0)
-                            text {{move || copy_label.get()}}
-                        }
-                        IconButton(
-                            icon = IconName::X,
-                            label = close_detail_label,
-                            size = ButtonSize::IconSm,
-                            attr:data-testid = "logs-close-detail",
-                            on:click = move |_| {
-                                selected.set(None);
-                            },
-                        )
-                    }
+                scroll(class = "gds-logs-detail-body", attr:data-testid = "logs-detail-text") {
+                    text {{wrapped}}
                 }
-                scroll(class = "gds-logs-detail-body") {
-                    text {{entry.text()}}
+                box(class = "gds-logs-detail-actions") {
+                    IconButton(
+                        icon = IconName::Copy,
+                        label = copy_label,
+                        size = ButtonSize::IconSm,
+                        attr:data-testid = "logs-copy",
+                        on:click = move |_| {
+                            if let Some(clip) = clip.as_ref() {
+                                clip.set_text(ClipboardKind::Standard, copy_text.clone());
+                            }
+                        },
+                    )
+                    IconButton(
+                        icon = IconName::X,
+                        label = close_detail_label,
+                        size = ButtonSize::IconSm,
+                        attr:data-testid = "logs-close-detail",
+                        on:click = move |_| {
+                            selected.set(None);
+                        },
+                    )
                 }
             }
         })
@@ -655,11 +682,42 @@ pub fn LogViewer() -> impl IntoView {
                             {target_options_view}
                         }
                     }
-                    Input(
-                        value = query,
-                        placeholder = search_placeholder.get_untracked(),
-                        class = "gds-logs-search",
-                    )
+                    box(class = "gds-logs-search-wrap") {
+                        InputGroup(class = "gds-logs-search-group") {
+                            InputGroupAddon {
+                                Icon(name = IconName::Search, size = 16.0)
+                            }
+                            InputGroupInput(
+                                node_ref = search_ref,
+                                value = Binding::from(query),
+                                placeholder = search_placeholder.get_untracked(),
+                                a11y:label = search_placeholder.get_untracked(),
+                            ) {}
+                            {move || {
+                                if query.get().is_empty() {
+                                    return None;
+                                }
+                                let s_ref = search_ref;
+                                Some(
+                                    view! {
+                                        InputGroupAddon(align = InputGroupAddonAlign::InlineEnd) {
+                                            InputGroupButton(
+                                                size = InputGroupButtonSize::IconXs,
+                                                a11y:label = clear_search_label.get_untracked(),
+                                                on:click = move |_| {
+                                                    query.set(String::new());
+                                                    s_ref.focus();
+                                                },
+                                            ) {
+                                                Icon(name = IconName::X, size = 14.0)
+                                            }
+                                        }
+                                    }
+                                    .into_view(),
+                                )
+                            }}
+                        }
+                    }
                     IconButton(
                         icon = IconName::ListX,
                         label = clear_label,
@@ -688,6 +746,7 @@ pub fn LogViewer() -> impl IntoView {
                                 let lvl_cls = level_class(entry.level);
                                 let tgt = entry.target.clone();
                                 let preview = preview_text(&entry.message);
+                                let r_ref = root_ref;
                                 Some(view! {
                                     box(
                                         class = "gds-logs-row",
@@ -698,7 +757,10 @@ pub fn LogViewer() -> impl IntoView {
                                         },
                                         attr:data-log-entry = {id.to_string()},
                                         on:click = move |_| {
-                                            selected.set(Some(id));
+                                            r_ref.focus();
+                                            selected.update(|current| {
+                                                *current = toggle_selected_id(*current, id);
+                                            });
                                         },
                                     ) {
                                         text(class = "gds-logs-time") {{time_str}}
@@ -734,9 +796,13 @@ pub fn LogViewer() -> impl IntoView {
         AnyView::new(view! {
             Tabs(value = active_tab, class = "gds-logs-tabs") {
                 box(class = "gds-logs-tabs-header") {
-                    TabsList {
-                        TabsTrigger(value = "logs") {{move || i18n::text("logs-tab-logs")}}
-                        TabsTrigger(value = "tasks") {{move || i18n::text("logs-tab-tasks")}}
+                    TabsList(class = "gds-logs-tabs-list") {
+                        TabsTrigger(value = "logs", class = "gds-logs-tabs-trigger") {
+                            {move || i18n::text("logs-tab-logs")}
+                        }
+                        TabsTrigger(value = "tasks", class = "gds-logs-tabs-trigger") {
+                            {move || i18n::text("logs-tab-tasks")}
+                        }
                     }
                 }
                 TabsContent(value = "logs", keep_mounted = true, class = "gds-logs-panel") {
@@ -771,6 +837,7 @@ pub fn LogViewer() -> impl IntoView {
             node_ref = root_ref,
             tabindex = {Focus::Programmatic},
             class = "gds-logs-root",
+            attr:data-testid = "logs-window",
             on:key_down = on_key_down,
         ) {
             {content}

@@ -1,20 +1,26 @@
 use std::cell::{Cell, RefCell};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use zgui::app::app;
+use zgui::geom::{CssPx, Point};
 use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, Signal, UnsyncCallback};
 use zgui::view;
 use zgui::view::focused_node;
-use zgui::vocab::{Key, KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, Timestamp};
+use zgui::vocab::{
+    Key, KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, PointerAction,
+    PointerButton, PointerEvent, Timestamp,
+};
 use zgui_platform_headless::Harness;
 
 use super::{BLINK_INTERVAL, TerminalViewProps};
 use crate::app::Gds;
 use crate::service::task_manager::Supervisor;
 use crate::service::terminal::{Session, SpawnOptions};
+use crate::ui::drag::DragOverlayState;
 use crate::ui::terminal::{Preferences, Terminal};
 
 #[derive(Default)]
@@ -74,6 +80,7 @@ struct TestHostState {
     next_ref: NodeRef,
     terminal_ref: NodeRef,
     focused: Signal<Option<NodeId>, LocalStorage>,
+    drag: DragOverlayState<Vec<PathBuf>>,
     workspace_actions: Rc<Cell<usize>>,
     settings: Rc<Cell<usize>>,
     toggles: Rc<Cell<usize>>,
@@ -125,6 +132,7 @@ fn run_headless_terminal(
             let next_ref = NodeRef::new();
             let terminal_ref = NodeRef::new();
             let focused = focused_node();
+            let drag = DragOverlayState::<Vec<PathBuf>>::new();
             let workspace_actions = Rc::new(Cell::new(0));
             let settings = Rc::new(Cell::new(0));
             let toggles = Rc::new(Cell::new(0));
@@ -136,6 +144,7 @@ fn run_headless_terminal(
                 next_ref,
                 terminal_ref,
                 focused,
+                drag,
                 workspace_actions: Rc::clone(&workspace_actions),
                 settings: Rc::clone(&settings),
                 toggles: Rc::clone(&toggles),
@@ -198,6 +207,7 @@ fn run_headless_terminal(
                 }
             });
 
+            let term_for_drop = terminal.clone();
             AnyView::new(view! {
                 box(
                     style = "display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0;",
@@ -213,10 +223,19 @@ fn run_headless_terminal(
                         tabindex = {Focus::Sequential},
                         style = "width: 20px; height: 10px;",
                     )
-                    box(style = "flex: 1 1 0; width: 100%; min-height: 0; display: flex;") {
+                    box(
+                        style = "flex: 1 1 0; width: 100%; min-height: 0; display: flex;",
+                        on:pointer_up = move |_| {
+                            if let Some(paths) = drag.end() {
+                                term_for_drop.paste_paths(&paths);
+                                term_for_drop.focus();
+                            }
+                        },
+                    ) {
                         TerminalView(
                             terminal = terminal,
                             on_key = on_terminal_key,
+                            drag_active = drag.is_active(),
                             node_ref = terminal_ref,
                         )
                     }
@@ -559,6 +578,64 @@ fn terminal_grid_renders_tabs_and_combining_marks() {
         host.terminal.focus();
         pump_frames(harness);
         assert!(host.terminal.test_geometry().columns > 0);
+    });
+}
+
+#[test]
+fn internal_file_drag_pointer_up_bubbles_past_terminal_to_paste_escaped_paths() {
+    let options = SpawnOptions {
+        cwd: std::env::temp_dir(),
+        args: vec![
+            "-c".into(),
+            "printf '\\033]0;ready\\007'; IFS= read -r line; printf 'DROPPED:%s\\n' \"$line\"; sleep 60".into(),
+        ],
+        ..SpawnOptions::default()
+    };
+    run_headless_terminal(options, Preferences::default(), |harness, host| {
+        wait_for_pty(harness, || {
+            host.terminal.session().and_then(|s| s.title()).as_deref() == Some("ready")
+        });
+
+        host.drag.begin(
+            vec![
+                PathBuf::from("/tmp/alpha file.txt"),
+                PathBuf::from("/tmp/beta'quote.rs"),
+            ],
+            10.0,
+            5.0,
+        );
+        let drop_pos = Point::new(CssPx(200.0), CssPx(200.0));
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Moved,
+            event: PointerEvent::mouse(drop_pos),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::from_origin(Duration::from_millis(10)),
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(drop_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::from_origin(Duration::from_millis(20)),
+        });
+        pump_frames(harness);
+
+        assert!(
+            !host.drag.is_active().get_untracked(),
+            "PointerUp over TerminalView must bubble to host drop target during active drag"
+        );
+        assert!(is_node_focused(host, host.terminal_ref));
+
+        press_key(
+            harness,
+            KeyEvent::named(NamedKey::Enter, PhysicalKey::Code(KeyCode::Enter)),
+            Modifiers::NONE,
+            40,
+        );
+        let session = host.terminal.session().expect("session running");
+        wait_for_pty(harness, || {
+            let text = screen(&session);
+            text.contains("DROPPED:'/tmp/alpha file.txt'") && text.contains("beta")
+        });
     });
 }
 

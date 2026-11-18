@@ -19,7 +19,8 @@ use zgui::custom::custom;
 use zgui::geom::{Css, CssPx, Point};
 use zgui::prelude::*;
 use zgui::reactive::{
-    RenderEffect, RwSignal, StoredValue, UnsyncCallback, on_cleanup_local, use_context,
+    LocalStorage, RenderEffect, RwSignal, Signal, StoredValue, UnsyncCallback, on_cleanup_local,
+    use_context, use_local_context,
 };
 use zgui::view::install_stylesheet;
 use zgui::view::time::{IntervalHandle, set_interval};
@@ -48,11 +49,15 @@ const TERMINAL_CSS: &str = "
     min-height: 0;
     position: relative;
     overflow: hidden;
+    background: transparent;
     outline: none;
+    box-shadow: none;
     cursor: text;
 }
-.gds-terminal-root:focus {
-    box-shadow: inset 0 0 0 1px var(--gds-outline);
+.gds-terminal-root:focus,
+.gds-terminal-root:focus-visible {
+    outline: none;
+    box-shadow: none;
 }
 .gds-terminal-canvas-host {
     flex: 1 1 0;
@@ -61,6 +66,7 @@ const TERMINAL_CSS: &str = "
     min-height: 0;
     overflow: hidden;
     display: flex;
+    background: transparent;
 }
 .gds-terminal-canvas {
     width: 100%;
@@ -69,20 +75,18 @@ const TERMINAL_CSS: &str = "
     min-width: 0;
     min-height: 0;
     display: block;
+    background: transparent;
 }
-.gds-terminal-footer {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 6px 12px;
+.gds-terminal-status-line {
+    padding: 2px 12px;
     font-size: var(--gds-font-size-xs, 12px);
-    border-top: 1px solid var(--gds-border);
-    background-color: var(--gds-surface);
+    background-color: var(--gds-content-bg, var(--gds-content));
     color: var(--gds-muted-foreground);
 }
-.gds-terminal-error {
+.gds-terminal-error-line {
+    padding: 2px 12px;
+    font-size: var(--gds-font-size-xs, 12px);
+    background-color: var(--gds-content-bg, var(--gds-content));
     color: var(--gds-error);
 }
 ";
@@ -218,6 +222,7 @@ fn pointer_local_dev(
 pub fn TerminalView(
     terminal: Terminal,
     #[prop(optional)] on_key: Option<UnsyncCallback<(Key, Modifiers), bool>>,
+    #[prop(into, optional)] drag_active: Option<Signal<bool, LocalStorage>>,
     #[prop(optional)] node_ref: Option<NodeRef>,
     #[prop(into, optional)] class: Classes,
 ) -> impl IntoView {
@@ -231,6 +236,8 @@ pub fn TerminalView(
     let gds = Gds::try_current();
     let fonts = use_context::<Fonts>().unwrap_or_else(Fonts::system);
     let clipboard = try_use_clipboard();
+    let context_path_drag =
+        use_local_context::<crate::ui::drag::DragOverlayState<Vec<std::path::PathBuf>>>();
 
     let initial_prefs = terminal.preferences().get_untracked();
     let focused_sig = terminal.focused_signal();
@@ -378,10 +385,16 @@ pub fn TerminalView(
 
     let on_focus_out = {
         let terminal = terminal.clone();
+        let pointer = Rc::clone(&pointer_state);
         move |_: &mut EventCx<'_, zgui::view::events::FocusOut>| {
             focused_sig.set(false);
             cursor_on.set(true);
             preedit_sig.update(PreeditState::clear);
+            {
+                let mut state = pointer.borrow_mut();
+                state.selecting = false;
+                state.pressed_button = None;
+            }
             if let Some(session) = terminal.session()
                 && session.with_term(|term| term.mode().contains(TermMode::FOCUS_IN_OUT))
                 && session.is_running()
@@ -625,14 +638,25 @@ pub fn TerminalView(
         let pointer = Rc::clone(&pointer_state);
         let clipboard = clipboard.clone();
         move |ev: &mut EventCx<'_, zgui::view::events::PointerUp>| {
+            let active_drag = drag_active.is_some_and(|sig| sig.get_untracked())
+                || context_path_drag.is_some_and(|drag| drag.is_active().get_untracked());
+            let (was_selecting, pressed) = {
+                let mut state = pointer.borrow_mut();
+                let selecting = state.selecting;
+                let button = state.pressed_button.take();
+                state.selecting = false;
+                (selecting, button)
+            };
+            // File drags belong to the host's drop target rather than PTY mouse reporting;
+            // let PointerUp bubble so the enclosing drop surface receives the payload.
+            if active_drag || (!was_selecting && pressed.is_none()) {
+                return;
+            }
+
             ev.release_pointer();
             let geometry = geom_ref.get();
             let (local_x, local_y) =
                 pointer_local_dev(canvas_ref, ev.position, &geometry, ev.bounds());
-            let mut state = pointer.borrow_mut();
-            let was_selecting = state.selecting;
-            state.selecting = false;
-            state.pressed_button = None;
 
             if let Some(session) = terminal.session() {
                 if was_selecting {
@@ -659,6 +683,16 @@ pub fn TerminalView(
             }
             terminal.request_redraw();
             ev.stop_propagation();
+        }
+    };
+
+    let on_pointer_cancel = {
+        let pointer = Rc::clone(&pointer_state);
+        move |ev: &mut EventCx<'_, zgui::view::events::PointerCancel>| {
+            ev.release_pointer();
+            let mut state = pointer.borrow_mut();
+            state.selecting = false;
+            state.pressed_button = None;
         }
     };
 
@@ -733,16 +767,17 @@ pub fn TerminalView(
 
     let status_sig = terminal.status();
     let error_sig = terminal.error();
-    let footer_view = move || {
+    let status_lines_view = move || {
         let status = status_sig.get();
         let error = error_sig.get();
+        let non_duplicate_error =
+            error.filter(|err| !matches!(&status, Status::Failed(failed_msg) if failed_msg == err));
         let status_notice = match status {
-            Status::Running => None,
-            Status::Starting => Some((crate::i18n::text("gds-terminal-starting"), false)),
+            Status::Starting | Status::Running => None,
             Status::Stopping => Some((crate::i18n::text("gds-terminal-stopping"), false)),
             Status::Closed => Some((crate::i18n::text("gds-terminal-exited"), false)),
             Status::Failed(msg) => Some((
-                format!("{}: {msg}", crate::i18n::text("gds-terminal-start-failed")),
+                format!("{}: {msg}", crate::i18n::text("gds-terminal-io-failed")),
                 true,
             )),
             Status::Exited { code, signal } => Some((
@@ -755,16 +790,27 @@ pub fn TerminalView(
             )),
         };
 
-        if status_notice.is_none() && error.is_none() {
+        if non_duplicate_error.is_none() && status_notice.is_none() {
             return None;
         }
         Some(view! {
-            box(class = "gds-terminal-footer") {
-                {status_notice.map(|(label, is_err)| view! {
-                    text(class = if is_err { "gds-terminal-error" } else { "" }) {{label}}
+            column {
+                {non_duplicate_error.map(|err| view! {
+                    box(class = "gds-terminal-error-line", attr:data-testid = "terminal-error") {
+                        text {{err}}
+                    }
                 })}
-                {error.map(|err| view! {
-                    text(class = "gds-terminal-error") {{err}}
+                {status_notice.map(|(label, is_err)| view! {
+                    box(
+                        class = if is_err {
+                            "gds-terminal-error-line"
+                        } else {
+                            "gds-terminal-status-line"
+                        },
+                        attr:data-testid = "terminal-status",
+                    ) {
+                        text {{label}}
+                    }
                 })}
             }
         })
@@ -787,13 +833,14 @@ pub fn TerminalView(
             on:pointer_down = on_pointer_down,
             on:pointer_move = on_pointer_move,
             on:pointer_up = on_pointer_up,
+            on:pointer_cancel = on_pointer_cancel,
             on:wheel = on_wheel,
             on:drop = on_drop,
         ) {
             box(node_ref = canvas_ref, class = "gds-terminal-canvas-host") {
                 {grid_element}
             }
-            {footer_view}
+            {status_lines_view}
         }
     }
 }

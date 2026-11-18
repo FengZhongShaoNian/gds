@@ -20,14 +20,24 @@ pub use view::{
 };
 use zgui::reactive::{LocalStorage, RwSignal, Signal, Task, prelude::*, spawn_local};
 
+use crate::appearance::tokens::DataListStyle;
 use model::{History, Navigation};
 use table::DirectoryRows;
 
-/// Minimum filtered rows before pagination automatically prefetches another page.
-pub const MIN_SCROLLABLE_ROWS: usize = 8;
+pub(crate) const MAX_PICKER_HEIGHT: f32 = 440.0;
+pub(crate) const MIN_PICKER_HEIGHT: f32 = 200.0;
+const SCROLL_PREFETCH_MARGIN: usize = 9;
 
 /// Fixed row height in CSS pixels passed to [`zgui_ui::VirtualList`].
-pub const ROW_HEIGHT: f32 = 34.0;
+pub const ROW_HEIGHT: f32 = DataListStyle::ROW_HEIGHT;
+
+/// Minimum filtered rows before pagination stops automatic prefetching (`20`).
+pub const MIN_SCROLLABLE_ROWS: usize = (MAX_PICKER_HEIGHT as usize)
+    .div_ceil(DataListStyle::ROW_HEIGHT as usize)
+    + SCROLL_PREFETCH_MARGIN;
+
+/// Remaining-row scroll-prefetch threshold kept strictly smaller than `SCROLL_PREFETCH_MARGIN`.
+pub const TABLE_LOAD_MORE_THRESHOLD: usize = 5;
 
 /// Asynchronous directory page loader; dropping the future cancels in-flight work.
 pub type Loader = Rc<dyn Fn(Request) -> Pin<Box<dyn Future<Output = Result<Page, String>>>>>;
@@ -43,6 +53,7 @@ struct PickerSignals {
     filter: RwSignal<String, LocalStorage>,
     show_hidden: RwSignal<bool, LocalStorage>,
     pending: RwSignal<bool, LocalStorage>,
+    pending_request: RwSignal<Option<Request>, LocalStorage>,
     loading_more: RwSignal<bool, LocalStorage>,
     failed: RwSignal<Option<String>, LocalStorage>,
     can_back: RwSignal<bool, LocalStorage>,
@@ -62,6 +73,7 @@ impl PickerSignals {
             filter: RwSignal::new_local(String::new()),
             show_hidden: RwSignal::new_local(false),
             pending: RwSignal::new_local(false),
+            pending_request: RwSignal::new_local(None),
             loading_more: RwSignal::new_local(false),
             failed: RwSignal::new_local(None),
             can_back: RwSignal::new_local(false),
@@ -75,6 +87,7 @@ struct PickerRuntime {
     history: History,
     generation: u64,
     in_flight: Option<Task>,
+    failed_request: Option<(Request, Navigation)>,
 }
 
 /// Reactive state controller backing [`DirectoryPickerView`].
@@ -93,6 +106,7 @@ impl DirectoryPicker {
             history: History::default(),
             generation: 0,
             in_flight: None,
+            failed_request: None,
         };
         Self {
             loader,
@@ -109,9 +123,11 @@ impl DirectoryPicker {
         picker
     }
 
-    /// Starts the initial directory load when no page or active request is present.
+    /// Starts the initial directory load when no page, error, or active request is present.
     pub fn start(&self) {
-        if self.signals.page.with_untracked(Option::is_some) || self.signals.pending.get_untracked()
+        if self.signals.page.with_untracked(Option::is_some)
+            || self.signals.pending.get_untracked()
+            || self.signals.failed.with_untracked(Option::is_some)
         {
             return;
         }
@@ -160,16 +176,24 @@ impl DirectoryPicker {
         }
     }
 
-    /// Reloads the current location (or retries the initial load).
+    /// Retries a failed request or reloads the current location.
     pub fn refresh(&self) {
-        let current = self.current_path();
-        self.load(Navigation::Refresh, current, None);
+        let retry = self.runtime.borrow_mut().failed_request.take();
+        if let Some((request, kind)) = retry {
+            self.load(kind, request.path, request.cursor);
+        } else {
+            let current = self.current_path();
+            self.load(Navigation::Refresh, current, None);
+        }
     }
 
     /// Fetches the next page of directory entries if a continuation cursor is present and no
-    /// request is currently active.
+    /// request or error is currently active.
     pub fn load_more(&self) {
-        if self.signals.pending.get_untracked() || self.signals.loading_more.get_untracked() {
+        if self.signals.pending.get_untracked()
+            || self.signals.loading_more.get_untracked()
+            || self.signals.failed.with_untracked(Option::is_some)
+        {
             return;
         }
         let next = self.signals.page.with_untracked(|page| {
@@ -186,18 +210,26 @@ impl DirectoryPicker {
         let cancelled = {
             let mut rt = self.runtime.borrow_mut();
             rt.generation = rt.generation.saturating_add(1);
+            rt.failed_request = None;
             rt.in_flight.take()
         };
         if let Some(task) = cancelled {
             task.cancel();
         }
         self.signals.pending.set(false);
+        self.signals.pending_request.set(None);
         self.signals.loading_more.set(false);
+        self.signals.failed.set(None);
+        self.signals.editing_location.set(false);
+        if let Some(current) = self.current_path() {
+            self.signals.address.set(current);
+        }
     }
 
     /// Toggles visibility of hidden (`dot`) directories and prefetches more pages if needed.
     pub fn toggle_hidden(&self) {
         self.signals.show_hidden.update(|show| *show = !*show);
+        self.clear_selection();
         self.recompute_rows();
         self.maybe_prefetch_more(true);
     }
@@ -206,6 +238,7 @@ impl DirectoryPicker {
     /// [`MIN_SCROLLABLE_ROWS`] match.
     pub fn set_filter(&self, query: impl Into<String>) {
         self.signals.filter.set(query.into());
+        self.clear_selection();
         self.recompute_rows();
         self.maybe_prefetch_more(true);
     }
@@ -220,6 +253,9 @@ impl DirectoryPicker {
     /// Closes the inline editable address bar without navigating.
     pub fn cancel_edit_location(&self) {
         self.signals.editing_location.set(false);
+        if let Some(current) = self.current_path() {
+            self.signals.address.set(current);
+        }
     }
 
     /// Updates the editable address string buffer.
@@ -230,9 +266,10 @@ impl DirectoryPicker {
     /// Submits `address` and navigates to the trimmed path when non-empty.
     pub fn apply_address(&self, address: impl Into<String>) {
         let trimmed = address.into().trim().to_owned();
-        self.signals.editing_location.set(false);
         if !trimmed.is_empty() {
             self.navigate(trimmed);
+        } else {
+            self.cancel_edit_location();
         }
     }
 
@@ -303,16 +340,25 @@ impl DirectoryPicker {
     }
 
     /// Selected child directory path if a row is highlighted, otherwise the currently open
-    /// directory path.
+    /// directory path. Pending navigation, failed reads, and unsubmitted location edits return
+    /// `None`.
     #[must_use]
     pub fn selected_path(&self) -> Option<String> {
         self.selected_location().map(|loc| loc.path)
     }
 
     /// Selected child [`Location`] if a row is highlighted, otherwise the currently open page's
-    /// [`Location`].
+    /// [`Location`]. Pending navigation, failed reads, and unsubmitted location edits return
+    /// `None`.
     #[must_use]
     pub fn selected_location(&self) -> Option<Location> {
+        if self.signals.pending.get_untracked()
+            || self.signals.loading_more.get_untracked()
+            || self.signals.failed.with_untracked(Option::is_some)
+            || self.signals.editing_location.get_untracked()
+        {
+            return None;
+        }
         if let Some(selected) = self.signals.selected_path.get_untracked()
             && let Some(loc) = self.signals.rows.with_untracked(|rows| {
                 rows.entries
@@ -326,6 +372,46 @@ impl DirectoryPicker {
         self.signals
             .page
             .with_untracked(|page| page.as_ref().map(|p| p.location.clone()))
+    }
+
+    /// Reactive signal indicating whether the current choice can be accepted (`selected_path().is_some()`).
+    #[must_use]
+    pub fn can_accept(&self) -> Signal<bool, LocalStorage> {
+        let sigs = self.signals;
+        Signal::derive_local(move || {
+            !sigs.pending.get()
+                && !sigs.loading_more.get()
+                && sigs.failed.with(Option::is_none)
+                && !sigs.editing_location.get()
+                && sigs.page.with(Option::is_some)
+        })
+    }
+
+    /// Reactive signal carrying the currently chosen path (selected child or loaded page path)
+    /// displayed in [`crate::ui::picker::PickerStatus`].
+    #[must_use]
+    pub fn chosen_path(&self) -> Signal<String, LocalStorage> {
+        let sigs = self.signals;
+        Signal::derive_local(move || {
+            if let Some(selected) = sigs.selected_path.get()
+                && sigs.rows.with(|rows| {
+                    rows.entries
+                        .iter()
+                        .any(|entry| entry.location.path == selected)
+                })
+            {
+                return selected;
+            }
+            sigs.page
+                .with(|page| page.as_ref().map(|p| p.location.path.clone()))
+                .unwrap_or_default()
+        })
+    }
+
+    /// Signal carrying the active in-flight navigation [`Request`], if any.
+    #[must_use]
+    pub fn pending_request(&self) -> Signal<Option<Request>, LocalStorage> {
+        self.signals.pending_request.into()
     }
 
     /// Signal carrying the active directory [`Page`].
@@ -412,6 +498,7 @@ impl DirectoryPicker {
         let (previous_task, load_gen) = {
             let mut rt = self.runtime.borrow_mut();
             rt.generation = rt.generation.saturating_add(1);
+            rt.failed_request = None;
             let load_gen = rt.generation;
             let prev = rt.in_flight.take();
             (prev, load_gen)
@@ -420,20 +507,23 @@ impl DirectoryPicker {
             prev.cancel();
         }
 
-        let previous_path = self.current_path();
-        if is_more {
-            self.signals.loading_more.set(true);
-        } else {
-            self.signals.pending.set(true);
-            self.signals.loading_more.set(false);
-        }
-        self.signals.failed.set(None);
-
         let request = Request {
             path,
             cursor: cursor.clone(),
         };
-        let future = loader(request);
+
+        let previous_path = self.current_path();
+        if is_more {
+            self.signals.loading_more.set(true);
+            self.signals.pending_request.set(None);
+        } else {
+            self.signals.pending.set(true);
+            self.signals.pending_request.set(Some(request.clone()));
+            self.signals.loading_more.set(false);
+        }
+        self.signals.failed.set(None);
+
+        let future = loader(request.clone());
 
         let weak_rt: Weak<RefCell<PickerRuntime>> = Rc::downgrade(&self.runtime);
         let picker_clone = self.clone();
@@ -456,7 +546,7 @@ impl DirectoryPicker {
             if !is_current {
                 return;
             }
-            picker_clone.finish_load(kind, previous_path, cursor, result);
+            picker_clone.finish_load(kind, previous_path, request, result);
         });
 
         let stale_task = {
@@ -476,10 +566,11 @@ impl DirectoryPicker {
         &self,
         kind: Navigation,
         previous_path: Option<String>,
-        requested_cursor: Option<String>,
+        request: Request,
         result: Result<Page, String>,
     ) {
         self.signals.pending.set(false);
+        self.signals.pending_request.set(None);
         self.signals.loading_more.set(false);
 
         let mut cursor_progressed = false;
@@ -487,8 +578,12 @@ impl DirectoryPicker {
             Ok(loaded) => {
                 self.signals.failed.set(None);
                 if kind == Navigation::More {
+                    let mut accepted = false;
                     self.signals.page.update(|slot| {
-                        if let Some(existing) = slot {
+                        if let Some(existing) = slot
+                            && existing.location.path == loaded.location.path
+                        {
+                            accepted = true;
                             let mut seen: HashSet<String> = existing
                                 .entries
                                 .iter()
@@ -499,10 +594,13 @@ impl DirectoryPicker {
                                     existing.entries.push(entry);
                                 }
                             }
-                            cursor_progressed = loaded.next_cursor != requested_cursor;
+                            cursor_progressed = loaded.next_cursor != request.cursor;
                             existing.next_cursor = loaded.next_cursor;
                         }
                     });
+                    if !accepted {
+                        return;
+                    }
                 } else {
                     let (can_back, can_forward) = {
                         let mut rt = self.runtime.borrow_mut();
@@ -515,15 +613,15 @@ impl DirectoryPicker {
                     self.signals.can_forward.set(can_forward);
                     self.signals.can_parent.set(loaded.parent.is_some());
                     self.signals.address.set(loaded.location.path.clone());
+                    self.signals.editing_location.set(false);
                     self.signals.page.set(Some(loaded));
                 }
                 self.recompute_rows();
                 self.maybe_prefetch_more(cursor_progressed);
             }
             Err(message) => {
-                if kind != Navigation::More {
-                    self.signals.failed.set(Some(message));
-                }
+                self.runtime.borrow_mut().failed_request = Some((request, kind));
+                self.signals.failed.set(Some(message));
             }
         }
     }

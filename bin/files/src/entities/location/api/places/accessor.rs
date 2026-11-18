@@ -104,11 +104,9 @@ impl<'tx, 'db> Accessor<'tx, 'db> {
                 self.save_location(Kind::Favorite, location, *present)
                     .await?;
             }
-            #[cfg(test)]
             Change::Pin { location, present } => {
                 self.save_location(Kind::Pin, location, *present).await?
             }
-            #[cfg(test)]
             Change::PinOrder(order) => {
                 let mut locations = self.snapshot().await?.pinned;
                 crate::entities::location::model::places::reorder_existing(&mut locations, order);

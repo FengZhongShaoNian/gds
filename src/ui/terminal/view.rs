@@ -52,7 +52,7 @@ const TERMINAL_CSS: &str = "
     cursor: text;
 }
 .gds-terminal-root:focus {
-    box-shadow: inset 0 0 0 1px var(--zui-ring);
+    box-shadow: inset 0 0 0 1px var(--gds-outline);
 }
 .gds-terminal-canvas-host {
     flex: 1 1 0;
@@ -77,10 +77,10 @@ const TERMINAL_CSS: &str = "
     justify-content: space-between;
     gap: 8px;
     padding: 6px 12px;
-    font-size: var(--gds-font-size-caption, 12px);
+    font-size: var(--gds-font-size-xs, 12px);
     border-top: 1px solid var(--gds-border);
-    background-color: var(--gds-surface-muted);
-    color: var(--gds-fg-muted);
+    background-color: var(--gds-surface);
+    color: var(--gds-muted-foreground);
 }
 .gds-terminal-error {
     color: var(--gds-error);
@@ -221,6 +221,7 @@ pub fn TerminalView(
     #[prop(optional)] node_ref: Option<NodeRef>,
     #[prop(into, optional)] class: Classes,
 ) -> impl IntoView {
+    crate::ui::styles::install_ui_stylesheets();
     install_stylesheet(SHEET, TERMINAL_CSS);
 
     let root_ref = node_ref.unwrap_or_default();

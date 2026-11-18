@@ -46,13 +46,14 @@ const LOGS_CSS: &str = "
 .gds-logs-root {
     display: flex;
     flex-direction: column;
+    flex: 1 1 0;
     width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    background-color: var(--gds-bg);
-    color: var(--gds-fg);
+    background-color: var(--gds-content-bg, var(--gds-content));
+    color: var(--gds-foreground);
 }
 .gds-logs-tabs {
     display: flex;
@@ -71,7 +72,7 @@ const LOGS_CSS: &str = "
     flex-shrink: 0;
     padding: 8px 12px 0 12px;
     border-bottom: 1px solid var(--gds-border);
-    background-color: var(--gds-surface-muted);
+    background-color: var(--gds-surface);
 }
 .gds-logs-panel {
     display: flex;
@@ -91,7 +92,7 @@ const LOGS_CSS: &str = "
     gap: 8px;
     padding: 8px 12px;
     border-bottom: 1px solid var(--gds-border);
-    background-color: var(--gds-surface-muted);
+    background-color: var(--gds-surface);
 }
 .gds-logs-select {
     width: 140px;
@@ -133,17 +134,17 @@ const LOGS_CSS: &str = "
     box-sizing: border-box;
 }
 .gds-logs-row:hover {
-    background-color: var(--gds-surface-hover);
+    background-color: var(--gds-hover);
 }
 .gds-logs-row--selected {
-    background-color: var(--zui-accent);
-    color: var(--zui-accent-foreground);
+    background-color: var(--gds-selection);
+    color: var(--gds-selection-foreground);
 }
 .gds-logs-time {
     width: 96px;
     flex-shrink: 0;
     font-family: var(--gds-font-mono);
-    color: var(--gds-fg-muted);
+    color: var(--gds-muted-foreground);
     white-space: nowrap;
 }
 .gds-logs-level {
@@ -155,10 +156,10 @@ const LOGS_CSS: &str = "
 }
 .gds-logs-level--trace,
 .gds-logs-level--debug {
-    color: var(--gds-fg-muted);
+    color: var(--gds-muted-foreground);
 }
 .gds-logs-level--info {
-    color: var(--gds-accent, var(--gds-fg));
+    color: var(--gds-primary);
 }
 .gds-logs-level--warn {
     color: var(--gds-warning, #d97706);
@@ -172,7 +173,7 @@ const LOGS_CSS: &str = "
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--gds-fg-muted);
+    color: var(--gds-muted-foreground);
 }
 .gds-logs-message {
     flex: 1 1 0;
@@ -185,7 +186,7 @@ const LOGS_CSS: &str = "
     max-height: 180px;
     flex-shrink: 0;
     border-top: 1px solid var(--gds-border);
-    background-color: var(--gds-surface-muted);
+    background-color: var(--gds-surface);
     display: flex;
     flex-direction: column;
     min-width: 0;
@@ -202,7 +203,7 @@ const LOGS_CSS: &str = "
 .gds-logs-detail-meta {
     font-family: var(--gds-font-mono);
     font-size: 12px;
-    color: var(--gds-fg-muted);
+    color: var(--gds-muted-foreground);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -226,8 +227,8 @@ const LOGS_CSS: &str = "
 .gds-logs-footer {
     padding: 4px 12px;
     border-top: 1px solid var(--gds-border);
-    background-color: var(--gds-surface-muted);
-    color: var(--gds-fg-muted);
+    background-color: var(--gds-surface);
+    color: var(--gds-muted-foreground);
     font-size: 12px;
 }
 ";

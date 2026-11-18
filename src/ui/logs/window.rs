@@ -11,7 +11,8 @@ use zgui::vocab::{Key, Modifiers};
 use super::LogViewerProps;
 use crate::i18n;
 use crate::service::logs::Store;
-use crate::ui::window::workspace_options;
+use crate::ui::frame::FrameProps;
+use crate::ui::window::{TitleBarProps, workspace_options};
 
 pub(crate) const INITIAL_WIDTH: f32 = 960.0;
 pub(crate) const INITIAL_HEIGHT: f32 = 640.0;
@@ -90,7 +91,14 @@ pub fn open() {
     let options = workspace_options(i18n::text("logs-title"), state.options.app_id.as_deref())
         .with_size(INITIAL_WIDTH, INITIAL_HEIGHT)
         .with_min_size(MIN_WIDTH, MIN_HEIGHT);
-    let handle = windows.open(options, || view! { LogViewer() });
+    let handle = windows.open(options, || {
+        view! {
+            Frame {
+                TitleBar(title = i18n::text("logs-title"))
+                LogViewer()
+            }
+        }
+    });
     LOG_WINDOW.with(|slot| {
         *slot.borrow_mut() = Some(handle);
     });

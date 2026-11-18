@@ -35,9 +35,9 @@ const TASK_MANAGER_CSS: &str = "
     gap: 8px;
     padding: 4px 12px;
     border-bottom: 1px solid var(--gds-border);
-    background-color: var(--gds-surface-muted);
-    color: var(--gds-fg-muted);
-    font-size: var(--gds-font-size-caption, 12px);
+    background-color: var(--gds-surface);
+    color: var(--gds-muted-foreground);
+    font-size: var(--gds-font-size-xs, 12px);
     font-weight: 500;
 }
 .gds-tasks-col-name {
@@ -87,11 +87,11 @@ const TASK_MANAGER_CSS: &str = "
     box-sizing: border-box;
 }
 .gds-tasks-row:hover {
-    background-color: var(--gds-surface-hover);
+    background-color: var(--gds-hover);
 }
 .gds-tasks-row--selected {
-    background-color: var(--zui-accent);
-    color: var(--zui-accent-foreground);
+    background-color: var(--gds-selection);
+    color: var(--gds-selection-foreground);
 }
 .gds-tasks-row-name {
     flex: 1 1 0;
@@ -108,7 +108,7 @@ const TASK_MANAGER_CSS: &str = "
     white-space: nowrap;
 }
 .gds-tasks-row-id {
-    color: var(--gds-fg-muted);
+    color: var(--gds-muted-foreground);
     font-family: var(--gds-font-mono);
     font-size: 11px;
     flex-shrink: 0;
@@ -116,13 +116,13 @@ const TASK_MANAGER_CSS: &str = "
 .gds-tasks-empty {
     padding: 16px;
     font-size: 13px;
-    color: var(--gds-fg-muted);
+    color: var(--gds-muted-foreground);
 }
 .gds-tasks-detail {
     max-height: 180px;
     flex-shrink: 0;
     border-top: 1px solid var(--gds-border);
-    background-color: var(--gds-surface-muted);
+    background-color: var(--gds-surface);
     padding: 8px 12px;
     overflow: auto;
     display: flex;
@@ -133,10 +133,10 @@ const TASK_MANAGER_CSS: &str = "
 }
 .gds-tasks-detail-title {
     font-weight: 600;
-    color: var(--gds-fg);
+    color: var(--gds-foreground);
 }
 .gds-tasks-detail-source {
-    color: var(--gds-fg-muted);
+    color: var(--gds-muted-foreground);
     white-space: pre-wrap;
     word-break: break-all;
 }
@@ -210,6 +210,7 @@ pub(crate) mod test_probe {
 /// Live task and scope hierarchy inspector bound to the application task supervisor.
 #[component]
 pub fn TaskManagerView() -> impl IntoView {
+    crate::ui::styles::install_ui_stylesheets();
     install_stylesheet(SHEET, TASK_MANAGER_CSS);
 
     let inspector = Gds::try_current().and_then(|gds| gds.tasks().inspector());

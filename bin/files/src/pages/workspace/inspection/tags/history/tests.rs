@@ -58,6 +58,35 @@ fn text_and_tag_changes_share_the_same_undo_order() {
     assert_eq!(history.current, typed);
 }
 
+#[test]
+fn break_typing_splits_undo_groups_and_ignores_unchanged_snapshots() {
+    let mut history = History::default();
+    assert!(!history.step(false));
+    assert!(!history.step(true));
+
+    record_draft(&mut history, "ab");
+    history.break_typing();
+    record_draft(&mut history, "abcd");
+
+    assert_eq!(history.undo.len(), 2);
+    assert!(history.step(false));
+    assert_eq!(history.current.draft, "ab");
+
+    // Same tags & draft only updates selection/metadata without pushing undo or clearing redo.
+    history.record(
+        Snapshot {
+            tags: vec!["existing".into()],
+            draft: "ab".into(),
+            selection: 0..2,
+            reversed: true,
+        },
+        false,
+    );
+    assert_eq!(history.undo.len(), 1);
+    assert!(history.step(true));
+    assert_eq!(history.current.draft, "abcd");
+}
+
 fn record_draft(history: &mut History, draft: &str) {
     history.record(
         Snapshot {

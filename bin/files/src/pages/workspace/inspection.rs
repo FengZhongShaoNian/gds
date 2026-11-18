@@ -18,7 +18,7 @@ use gds::ui::feedback::dialog::{
 use gds::ui::feedback::tooltip::HintTooltipProps;
 use gds::ui::file_inspection::{Cache, Options, State as InspectionState};
 use gds::ui::frame::FrameProps;
-use gds::ui::thumbnail::ThumbnailProps;
+use gds::ui::thumbnail::{ThumbnailProps, ViewFn};
 use gds::ui::time::Timestamp;
 use gds::ui::window::{TitleBarProps, workspace_options};
 use gds::ui::{IconName, IconProps, Shortcut};
@@ -60,6 +60,19 @@ const INSPECTION_CSS: &str = css!(
         position: relative;
         overflow: visible;
         border-radius: var(--gds-radius-control, 6px);
+        color: var(--gds-muted-foreground);
+    }
+
+    .gds-files-artwork-slot[data-directory="true"] {
+        color: var(--gds-primary);
+    }
+
+    .gds-files-artwork-slot[data-selected="true"] {
+        color: var(--gds-selection-foreground);
+    }
+
+    .gds-files-artwork-slot[data-selected="true"] .gds-files-artwork-slot {
+        color: var(--gds-selection-foreground);
     }
 
     .gds-files-artwork-thumb {
@@ -78,7 +91,7 @@ const INSPECTION_CSS: &str = css!(
         justify-content: center;
         border-radius: 999px;
         background: var(--gds-panel);
-        color: var(--gds-foreground);
+        color: inherit;
         padding: 1px;
         pointer-events: none;
         z-index: 1;
@@ -153,7 +166,7 @@ const INSPECTION_CSS: &str = css!(
         font-size: var(--gds-font-size-xs, 12px);
         color: var(--gds-muted-foreground);
         text-align: center;
-        word-break: break-all;
+        overflow-wrap: anywhere;
     }
 
     .gds-files-details__rows {
@@ -231,6 +244,7 @@ const INSPECTION_CSS: &str = css!(
         overflow-y: auto;
         padding: 16px;
         gap: 14px;
+        background-color: var(--gds-content-bg, var(--gds-content));
     }
 
     .gds-files-dialog-body {
@@ -377,7 +391,7 @@ fn badge_pill_view(badge_icon: IconName, size: f32) -> AnyView {
     })
 }
 
-fn file_artwork_view(icon: FileIcon, size: f32) -> AnyView {
+fn file_artwork_view(icon: FileIcon, size: f32, is_directory: bool) -> AnyView {
     let badge_overlay = icon
         .badge()
         .map(|badge_icon| badge_pill_view(badge_icon, size));
@@ -386,6 +400,7 @@ fn file_artwork_view(icon: FileIcon, size: f32) -> AnyView {
             class = "gds-files-artwork-slot",
             style:width = format!("{size:.1}px"),
             style:height = format!("{size:.1}px"),
+            attr:data-directory = is_directory.then(|| "true".to_owned()),
         ) {
             Icon(name = icon.base(), size = size) {}
             {badge_overlay}
@@ -414,7 +429,6 @@ struct PropertiesInner {
 pub(crate) struct Properties(Rc<PropertiesInner>);
 
 impl Properties {
-    #[allow(dead_code)]
     pub(crate) fn new(path: PathBuf, scope: Scope) -> Self {
         let tags_enabled = preferences::Service::current().snapshot().tags.enabled;
         Self::new_with_tags(path, scope, tags_enabled)
@@ -485,8 +499,7 @@ impl Properties {
         let handle = windows.open(options, move || {
             let _ = Gds::current().appearance().install_window_sheet();
             install_inspection_stylesheet();
-            let tags_enabled = preferences::Service::current().snapshot().tags.enabled;
-            let props = Properties::new_with_tags(window_path.clone(), scope.clone(), tags_enabled);
+            let props = Properties::new(window_path.clone(), scope.clone());
             let title_text = title.clone();
             let root_ref = NodeRef::new();
             let close_win = try_use_window();
@@ -522,7 +535,7 @@ impl Properties {
                         }
                     },
                 ) {
-                    Frame {
+                    Frame(without_sidebar = true) {
                         TitleBar(title = title_text)
                         column(class = "gds-files-properties-window") {
                             {props.view(None, false)}
@@ -839,6 +852,7 @@ impl Properties {
                             _ => None,
                         };
                         let icon = FileIcon::for_entry(&entry);
+                        let is_dir = FileIcon::is_directory(&entry);
                         let hero_visual = if let Some(thumb_src) = entry.thumbnail_source() {
                             let _ = props.0.cache.request(&thumb_src, Request::Thumbnail);
                             let badge_overlay = icon
@@ -849,6 +863,7 @@ impl Properties {
                                     Thumbnail(
                                         cache = props.0.cache.clone(),
                                         source = thumb_src,
+                                        fallback = ViewFn::new(move || file_artwork_view(icon, 64.0, is_dir)),
                                         show_status = true,
                                         class = "gds-files-details__thumb",
                                     ) {}
@@ -856,7 +871,7 @@ impl Properties {
                                 }
                             })
                         } else {
-                            file_artwork_view(icon, 64.0)
+                            file_artwork_view(icon, 64.0, is_dir)
                         };
 
                         let mut all_rows = props.base_rows(&entry, metadata_ref);
@@ -871,7 +886,7 @@ impl Properties {
                                 column(class = "gds-files-details__hero") {
                                     {hero_visual}
                                     text(class = "gds-files-details__title") {{entry.display_name.clone()}}
-                                    text(class = "gds-files-details__subtitle") {{entry.path.display().to_string()}}
+                                    text(class = "gds-files-details__subtitle") {{gds::ui::feedback::tooltip::wrap_tokens(&entry.path.display().to_string())}}
                                 }
                                 column(class = "gds-files-details__rows") {
                                     {all_rows}
@@ -1217,7 +1232,11 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
         Row::Place(location) => AnyView::new(view! {
             column(class = "gds-files-details") {
                 column(class = "gds-files-details__hero") {
-                    {file_artwork_view(FileIcon::plain(location.icon()), 64.0)}
+                    {file_artwork_view(
+                        FileIcon::plain(location.icon()),
+                        64.0,
+                        matches!(location, Location::Directory(_)),
+                    )}
                     text(class = "gds-files-details__title") {{location.label()}}
                     text(class = "gds-files-details__subtitle") {{location.display_address()}}
                 }
@@ -1232,10 +1251,11 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
                 .map(EntryPresentation::format_size)
                 .or_else(|| entry.items.map(|n| i18n::count("item-count", n)))
                 .unwrap_or_else(|| UNKNOWN_VALUE.to_owned());
+            let is_dir = entry.kind == EntryKind::Directory;
             AnyView::new(view! {
                 column(class = "gds-files-details") {
                     column(class = "gds-files-details__hero") {
-                        {file_artwork_view(FileIcon::plain(row.icon()), 64.0)}
+                        {file_artwork_view(FileIcon::plain(row.icon()), 64.0, is_dir)}
                         text(class = "gds-files-details__title") {{row.label()}}
                     }
                     column(class = "gds-files-details__rows") {
@@ -1249,7 +1269,7 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
         Row::Tag(tag) => AnyView::new(view! {
             column(class = "gds-files-details") {
                 column(class = "gds-files-details__hero") {
-                    {file_artwork_view(FileIcon::plain(IconName::Tag), 64.0)}
+                    {file_artwork_view(FileIcon::plain(IconName::Tag), 64.0, false)}
                     text(class = "gds-files-details__title") {{row.label()}}
                     text(class = "gds-files-details__subtitle") {{tag.clone()}}
                 }
@@ -1260,10 +1280,11 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
                 .size
                 .map(EntryPresentation::format_size)
                 .unwrap_or_else(|| UNKNOWN_VALUE.to_owned());
+            let is_dir = entry.kind == gds::service::remote::EntryKind::Directory;
             AnyView::new(view! {
                 column(class = "gds-files-details") {
                     column(class = "gds-files-details__hero") {
-                        {file_artwork_view(FileIcon::plain(row.icon()), 64.0)}
+                        {file_artwork_view(FileIcon::plain(row.icon()), 64.0, is_dir)}
                         text(class = "gds-files-details__title") {{entry.name.clone()}}
                         text(class = "gds-files-details__subtitle") {{entry.address.uri().to_owned()}}
                     }
@@ -1313,7 +1334,7 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
             AnyView::new(view! {
                 column(class = "gds-files-details") {
                     column(class = "gds-files-details__hero") {
-                        {file_artwork_view(FileIcon::plain(IconName::HardDrive), 64.0)}
+                        {file_artwork_view(FileIcon::plain(IconName::HardDrive), 64.0, false)}
                         text(class = "gds-files-details__title") {{volume.name.clone()}}
                     }
                     column(class = "gds-files-details__rows") {
@@ -1553,6 +1574,13 @@ impl Browser {
         selected: Signal<f32, LocalStorage>,
     ) -> AnyView {
         install_inspection_stylesheet();
+        let is_directory = match row {
+            Row::File(entry) => FileIcon::is_directory(entry),
+            Row::Trash(entry) => entry.kind == EntryKind::Directory,
+            Row::Remote(entry) => entry.kind == gds::service::remote::EntryKind::Directory,
+            Row::Place(Location::Directory(_)) => true,
+            _ => false,
+        };
         let inner = match row {
             Row::File(entry) => {
                 let icon = FileIcon::for_entry(entry);
@@ -1569,11 +1597,13 @@ impl Browser {
                             class = "gds-files-artwork-slot",
                             style:width = format!("{size:.1}px"),
                             style:height = format!("{size:.1}px"),
+                            attr:data-directory = is_directory.then(|| "true".to_owned()),
                         ) {
                             box(class = "gds-files-artwork-thumb") {
                                 Thumbnail(
                                     cache = cache,
                                     source = source,
+                                    fallback = ViewFn::new(move || file_artwork_view(icon, size, is_directory)),
                                     show_status = false,
                                 )
                             }
@@ -1581,11 +1611,11 @@ impl Browser {
                         }
                     })
                 } else {
-                    file_artwork_view(icon, size)
+                    file_artwork_view(icon, size, is_directory)
                 }
             }
-            Row::Trash(_) => file_artwork_view(FileIcon::plain(row.icon()), size),
-            _ => file_artwork_view(FileIcon::plain(row.icon()), size),
+            Row::Trash(_) => file_artwork_view(FileIcon::plain(row.icon()), size, is_directory),
+            _ => file_artwork_view(FileIcon::plain(row.icon()), size, is_directory),
         };
 
         AnyView::new(view! {
@@ -1593,6 +1623,7 @@ impl Browser {
                 class = "gds-files-artwork-slot",
                 style:width = format!("{size:.1}px"),
                 style:height = format!("{size:.1}px"),
+                attr:data-directory = is_directory.then(|| "true".to_owned()),
                 attr:data-selected = move || (selected.get() > 0.5).then(|| "true".to_owned()),
             ) {
                 {inner}
@@ -1636,7 +1667,7 @@ impl Browser {
                 let count = selected.len();
                 return AnyView::new(view! {
                     column(class = "gds-files-details__empty") {
-                        {file_artwork_view(FileIcon::multiple(), 48.0)}
+                        {file_artwork_view(FileIcon::multiple(), 48.0, false)}
                         text(class = "gds-files-details__empty-text") {{t!("preview-multiple", count)}}
                     }
                 });

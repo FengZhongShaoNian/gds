@@ -126,12 +126,31 @@ mod driven {
         let height = u32::try_from(size.height.max(1)).unwrap_or(1);
         let raw = pixels.bytes();
         let mut rgba = Vec::with_capacity(raw.len());
+        let [bg_r, bg_g, bg_b, _] = CLEAR_PIXEL.0;
+        // `WgpuRenderer` composites into a premultiplied offscreen target; blend over the
+        // headless desktop backdrop (`CLEAR_PIXEL`) so PNG captures store unpremultiplied
+        // opaque RGBA matching a Wayland compositor screenshot.
+        let blend = |r: u8, g: u8, b: u8, a: u8| -> [u8; 4] {
+            if a == 255 {
+                [r, g, b, 255]
+            } else {
+                let inv = u16::from(255 - a);
+                [
+                    (u16::from(r) + (u16::from(bg_r) * inv + 127) / 255).min(255) as u8,
+                    (u16::from(g) + (u16::from(bg_g) * inv + 127) / 255).min(255) as u8,
+                    (u16::from(b) + (u16::from(bg_b) * inv + 127) / 255).min(255) as u8,
+                    255,
+                ]
+            }
+        };
         if pixels.is_bgra() {
             for &[b, g, r, a] in raw.as_chunks::<4>().0 {
-                rgba.extend_from_slice(&[r, g, b, a]);
+                rgba.extend_from_slice(&blend(r, g, b, a));
             }
         } else {
-            rgba.extend_from_slice(raw);
+            for &[r, g, b, a] in raw.as_chunks::<4>().0 {
+                rgba.extend_from_slice(&blend(r, g, b, a));
+            }
         }
         image::RgbaImage::from_raw(width, height, rgba)
             .unwrap_or_else(|| image::RgbaImage::from_pixel(width, height, CLEAR_PIXEL))
@@ -1122,9 +1141,25 @@ mod driven {
         harness.deliver_to_first(SurfaceEvent::Key {
             state: KeyState::Released,
             event,
-            modifiers,
+            modifiers: Modifiers::NONE,
             timestamp: up_ts,
         });
+        if modifiers.alt() {
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Released,
+                event: KeyEvent::named(NamedKey::Alt, PhysicalKey::Code(KeyCode::AltLeft)),
+                modifiers: Modifiers::NONE,
+                timestamp: up_ts,
+            });
+        }
+        if modifiers.control() {
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Released,
+                event: KeyEvent::named(NamedKey::Control, PhysicalKey::Code(KeyCode::ControlLeft)),
+                modifiers: Modifiers::NONE,
+                timestamp: up_ts,
+            });
+        }
         pump_frames(harness);
     }
 
@@ -1298,7 +1333,12 @@ mod driven {
                             capture_state.borrow().frames > 0
                                 && semantic.find_entry_center("original.txt").is_some()
                         }),
-                        "01: initial workspace listing did not render"
+                        "01: initial workspace listing did not render (frames={}, rows={}, loading={}, root={:?}, dump={})",
+                        capture_state.borrow().frames,
+                        browser.read_untracked(|s| s.tab().rows.len()),
+                        browser.read_untracked(|s| s.tab().navigation.is_loading()),
+                        semantic.root,
+                        semantic.dump()
                     );
                     capture_checkpoint(
                         "01-open",
@@ -1842,6 +1882,7 @@ mod driven {
     struct GalleryCtx<'a> {
         harness: &'a mut Harness<Box<dyn AppHandler>>,
         semantic: &'a mut SemanticStore,
+        secondary_semantics: HashMap<SurfaceId, SemanticStore>,
         registry: &'a CaptureRegistry,
         artifacts: &'a Path,
         captured: &'a mut Vec<String>,
@@ -1859,12 +1900,11 @@ mod driven {
 
         fn snap_surface(&mut self, name: &str, surface: &Arc<OffscreenSurface>) -> Result<()> {
             pump_frames(self.harness);
-            let mut sec_semantic = SemanticStore::default();
+            let id = zgui::platform::Surface::id(surface.as_ref());
+            let sec_semantic = self.secondary_semantics.entry(id).or_default();
             sec_semantic.ingest(surface);
-            let state = self
-                .registry
-                .state_for(zgui::platform::Surface::id(surface.as_ref()));
-            write_snapshot_files(name, &sec_semantic, &state, self.artifacts)?;
+            let state = self.registry.state_for(id);
+            write_snapshot_files(name, sec_semantic, &state, self.artifacts)?;
             self.captured.push(name.to_owned());
             Ok(())
         }
@@ -1875,7 +1915,9 @@ mod driven {
             source: Source::Builtin,
             builtin: BuiltinTheme::Bamboo,
             mode,
-            ..Appearance::default()
+            content_opacity: 1.0,
+            sidebar_opacity: 0.85,
+            rounded_corners: false,
         }
     }
 
@@ -1901,7 +1943,7 @@ mod driven {
             .with_context(|| format!("write sample PNG {}", path.display()))
     }
 
-    fn install_mock_baloo(bin_dir: &Path) -> Result<tags::Preferences> {
+    fn install_mock_baloo(bin_dir: &Path, home: &Path) -> Result<tags::Preferences> {
         fs::create_dir_all(bin_dir)?;
         let balooctl = bin_dir.join("balooctl6");
         fs::write(
@@ -1910,11 +1952,29 @@ mod driven {
         )?;
         fs::set_permissions(&balooctl, fs::Permissions::from_mode(0o755))?;
 
+        let docs_dir = home.join("Documents");
+        let readme = docs_dir.join("README.md");
+        let preview = docs_dir.join("preview.png");
         let kioclient = bin_dir.join("kioclient");
-        fs::write(
-            &kioclient,
-            "#!/bin/sh\nif [ \"$1\" = \"ls\" ]; then\n  printf 'design\\ndocumentation\\nmilestone\\nurgent\\n'\nfi\n",
-        )?;
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"ls\" ]; then\n\
+               case \"$2\" in\n\
+                 tags:/milestone) printf 'v1\\nREADME.md\\n' ;;\n\
+                 tags:/milestone/v1|tags:/design) printf 'README.md\\npreview.png\\n' ;;\n\
+                 *) printf 'design\\ndocumentation\\nmilestone\\nurgent\\n' ;;\n\
+               esac\n\
+             elif [ \"$1\" = \"stat\" ]; then\n\
+               case \"$2\" in\n\
+                 *README*md) printf 'LOCAL_PATH            %s\\n' \"{}\" ;;\n\
+                 *preview*png) printf 'LOCAL_PATH            %s\\n' \"{}\" ;;\n\
+                 *) printf 'DISPLAY_TYPE          Tag Fragment\\n' ;;\n\
+               esac\n\
+             fi\n",
+            readme.display(),
+            preview.display()
+        );
+        fs::write(&kioclient, script)?;
         fs::set_permissions(&kioclient, fs::Permissions::from_mode(0o755))?;
 
         Ok(tags::Preferences {
@@ -1954,6 +2014,7 @@ mod driven {
             .find(|s| !existing.contains(&zgui::platform::Surface::id(s.as_ref())))
             .context("secondary window surface missing after wait")?;
         let id = zgui::platform::Surface::id(surface.as_ref());
+        surface.set_a11y_listener(true);
         harness.deliver(id, SurfaceEvent::Focused(true));
         pump_frames(harness);
         Ok(surface)
@@ -1998,6 +2059,10 @@ mod driven {
 
             let exe = std::env::current_exe().context("resolve current gds-files binary")?;
             let status = std::process::Command::new(exe)
+                .env_remove("XDG_CURRENT_DESKTOP")
+                .env_remove("NIRI_SOCKET")
+                .env_remove("SWAYSOCK")
+                .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
                 .env("GDS_E2E_MODE", "gallery")
                 .env("GDS_E2E_GALLERY_SANDBOXED", "1")
                 .env("GDS_E2E_ARTIFACTS", &artifacts)
@@ -2022,7 +2087,8 @@ mod driven {
         for folder in ["Desktop", "Documents", "Downloads", "Github", "Pictures"] {
             fs::create_dir_all(home.join(folder))?;
         }
-        let tag_prefs = install_mock_baloo(&home.join(".local/bin"))?;
+        let _ = std::os::unix::fs::symlink(home.join("Documents"), home.join("Docs-Shortcut"));
+        let tag_prefs = install_mock_baloo(&home.join(".local/bin"), &home)?;
 
         let logs_store = gds::service::logs::init_tracing("info,gds=debug,gds_files=debug", true)
             .context("initialize gallery tracing store")?;
@@ -2090,6 +2156,9 @@ mod driven {
             .drive(move |app| -> Result<(), PlatformError> {
                 let mut harness = Harness::new(app);
                 harness.redraw_on_configure(true);
+                if let Some(offscreen) = harness.platform().offscreens().first() {
+                    offscreen.set_a11y_listener(true);
+                }
                 harness.deliver_to_first(SurfaceEvent::Focused(true));
                 pump_frames(&mut harness);
 
@@ -2104,6 +2173,7 @@ mod driven {
                     let mut ctx = GalleryCtx {
                         harness: &mut harness,
                         semantic: &mut semantic,
+                        secondary_semantics: HashMap::new(),
                         registry: &registry_for_scenario,
                         artifacts: &artifacts,
                         captured: &mut captured,
@@ -2130,18 +2200,23 @@ mod driven {
                     park_pointer(ctx.harness, ctx.ts);
                     ctx.snap_primary("01-browser-list-light")?;
 
-                    // 02: Browser list keyboard focus mode (0 rows selected, keyboard focus visible).
+                    // 02: Browser list keyboard focus mode (0 rows selected, Alt+Space focuses content).
                     browser.update_selection(|state| {
                         let view = state.tab_mut().navigation.view_mut();
                         view.selection.clear();
                         view.anchor = None;
                         view.cursor = None;
                     });
-                    browser.focus_content();
-                    browser.0.list_focus_visible.set(true);
+                    send_key(
+                        ctx.harness,
+                        KeyEvent::named(NamedKey::Space, PhysicalKey::Code(KeyCode::Space)),
+                        Modifiers::ALT,
+                        ctx.ts,
+                    );
                     ctx.snap_primary("02-browser-list-keyboard-focus")?;
 
-                    // 03: Browser list in Dark Bamboo.
+                    // 03: Browser list in Dark Bamboo (advance timestamp past double-click window).
+                    ctx.ts.set(ctx.ts.get() + 1_000);
                     apply_bamboo_mode(&browser, ModePreference::Dark);
                     send_click(ctx.harness, desktop_pos, PointerButton::Primary, ctx.ts);
                     park_pointer(ctx.harness, ctx.ts);
@@ -2162,7 +2237,9 @@ mod driven {
                     )?;
                     fs::write(&arch_path, b"pub fn render_workspace() {}\n")?;
                     fs::write(&csv_path, b"page,fps,frame_ms\nbrowser,144,1.2\n")?;
+                    fs::write(docs.join("release-notes.txt"), b"v0.1.0 release notes\n")?;
                     fs::write(&hidden_path, b"GDS_LOG=info\n")?;
+                    let _ = std::os::unix::fs::symlink(&arch_path, docs.join("arch-link.rs"));
                     write_sample_png(&preview_png)?;
                     let _ = gds::service::file_tags::write(
                         &readme_path,
@@ -2182,9 +2259,13 @@ mod driven {
                     let _ = wait_until(ctx.harness, Duration::from_secs(2), |_| {
                         browser.read_untracked(|state| state.tab().mode == ViewMode::Grid)
                     });
-                    // Allow thumbnail pipeline to decode preview.png.
+                    // Allow directory enrichment + thumbnail pipeline to decode preview.png.
+                    let _ = wait_until(ctx.harness, Duration::from_secs(3), |_| {
+                        let cache = browser.0.inspections.get_untracked();
+                        cache.entry_count() > 0 && cache.running_count() == 0 && cache.pending_count() == 0
+                    });
                     for _ in 0..8 {
-                        std::thread::sleep(Duration::from_millis(40));
+                        std::thread::sleep(Duration::from_millis(25));
                         pump_frames(ctx.harness);
                     }
                     ctx.semantic.ingest_from(ctx.harness);
@@ -2214,6 +2295,10 @@ mod driven {
                         DevicePx(GALLERY_WIDTH),
                         DevicePx(GALLERY_HEIGHT),
                     )));
+                    pump_frames(ctx.harness);
+                    browser.0.sidebar.set(false);
+                    ctx.snap_primary("05c-browser-desktop-collapsed-rail")?;
+                    browser.0.sidebar.set(true);
                     pump_frames(ctx.harness);
 
                     // 06: Recent page.
@@ -2325,7 +2410,16 @@ mod driven {
                     });
                     ctx.snap_primary("11-page-tags-catalogue")?;
 
-                    // 12: Tag Editor dialog.
+                    let nested_tag = TagAddress::new("milestone/v1")
+                        .map_err(|err| anyhow::anyhow!("invalid nested tag address: {err:?}"))?;
+                    browser.open(Location::Tags(nested_tag));
+                    let _ = wait_until(ctx.harness, Duration::from_secs(3), |h| {
+                        ctx.semantic.ingest_from(h);
+                        ctx.semantic.find_entry_center("README.md").is_some()
+                    });
+                    ctx.snap_primary("11b-page-tags-items")?;
+
+                    // 12: Tag Editor dialog + Destructive Confirm 5-item preview dialog.
                     browser.open(Location::from(&docs));
                     let _ = wait_until(ctx.harness, Duration::from_secs(2), |h| {
                         ctx.semantic.ingest_from(h);
@@ -2344,6 +2438,23 @@ mod driven {
                         Modifiers::NONE,
                         ctx.ts,
                     );
+
+                    browser.select_all();
+                    pump_frames(ctx.harness);
+                    browser.delete(true);
+                    let _ = wait_until(ctx.harness, Duration::from_secs(2), |h| {
+                        ctx.semantic.ingest_from(h);
+                        ctx.semantic.has_role(Role::Dialog)
+                    });
+                    ctx.snap_primary("12b-dialog-destructive-confirm")?;
+                    browser.cancel_prompt();
+                    browser.update_selection(|state| {
+                        let view = state.tab_mut().navigation.view_mut();
+                        view.selection.clear();
+                        view.anchor = None;
+                        view.cursor = None;
+                    });
+                    pump_frames(ctx.harness);
 
                     // 13: Details panel + embedded Terminal dock (Light & Dark).
                     ctx.semantic.ingest_from(ctx.harness);
@@ -2428,7 +2539,9 @@ mod driven {
                         }
                     }
                     ctx.semantic.ingest_from(ctx.harness);
-                    if let Some(unlock_btn) = ctx.semantic.find_button_center("Unlock") {
+                    if let Some(unlock_btn) =
+                        ctx.semantic.find_button_center("I understand, enable editing")
+                    {
                         send_click(ctx.harness, unlock_btn, PointerButton::Primary, ctx.ts);
                         ctx.snap_primary("16g-settings-performance-unlocked")?;
                     }
@@ -2525,6 +2638,9 @@ mod driven {
                     let save_docs = docs.clone();
                     let save_home = home.clone();
                     let save_volumes = browser.0.volumes.clone();
+                    let save_picker_browser: Rc<RefCell<Option<Browser>>> =
+                        Rc::new(RefCell::new(None));
+                    let save_picker_slot = Rc::clone(&save_picker_browser);
                     let save_picker_surface = open_secondary_and_wait(ctx.harness, || {
                         browser.0.owner.with(|| {
                             if let Some(windows) = try_use_windows() {
@@ -2536,6 +2652,7 @@ mod driven {
                                     home: save_home,
                                     picker: Some(save_opts),
                                 }));
+                                let picker_out = Rc::clone(&save_picker_slot);
                                 windows.open(opts, move || {
                                     let _ = Gds::current().appearance().install_window_sheet();
                                     let Some(launch) = launch_slot.borrow_mut().take() else {
@@ -2543,6 +2660,7 @@ mod driven {
                                     };
                                     let picker_browser =
                                         Browser::new(launch, save_volumes.clone(), Rc::new(|_| {}));
+                                    *picker_out.borrow_mut() = Some(picker_browser.clone());
                                     AnyView::new(picker_browser.view())
                                 });
                             }
@@ -2550,6 +2668,19 @@ mod driven {
                     })?;
                     std::thread::sleep(Duration::from_millis(120));
                     ctx.snap_surface("17-picker-open-and-save", &save_picker_surface)?;
+                    if let Some(ref picker_b) = *save_picker_browser.borrow()
+                        && let Ok(remote_addr) =
+                            Address::parse("sftp://atlas@files.gandesktop.org:22/srv/shared")
+                    {
+                        picker_b.update(|state| {
+                            state.places.set_remote_favorite(remote_addr.clone(), true);
+                        });
+                        picker_b.open(Location::Network);
+                        pump_frames(ctx.harness);
+                        picker_b.open(Location::Remote(remote_addr));
+                        pump_frames(ctx.harness);
+                        ctx.snap_surface("18b-picker-remote-local-notice", &save_picker_surface)?;
+                    }
                     close_secondary(ctx.harness, &save_picker_surface);
 
                     // 18: Remote Directory Picker modal dialog (`DirectoryPickerDialog`).
@@ -2628,13 +2759,18 @@ mod driven {
                                         DirectoryPicker::with_path(loader, "/srv/shared/projects");
                                     let open_sig = RwSignal::new_local(true);
                                     view! {
-                                        Frame {
+                                        Frame(without_sidebar = true) {
                                             TitleBar(title = "sftp://files.gandesktop.org/srv/shared")
-                                            DirectoryPickerDialog(
-                                                open = open_sig,
-                                                picker = dir_picker,
-                                                on_select = UnsyncCallback::new(|_| {}),
-                                            )
+                                            box(
+                                                style:flex = "1 1 0%",
+                                                style:background-color = "var(--gds-content-bg, var(--gds-content))"
+                                            ) {
+                                                DirectoryPickerDialog(
+                                                    open = open_sig,
+                                                    picker = dir_picker,
+                                                    on_select = UnsyncCallback::new(|_| {}),
+                                                )
+                                            }
                                         }
                                     }
                                 });
@@ -2655,6 +2791,7 @@ mod driven {
                     });
                     if let Some(pos) = ctx.semantic.find_entry_center("README.md") {
                         send_click(ctx.harness, pos, PointerButton::Primary, ctx.ts);
+                        park_pointer(ctx.harness, ctx.ts);
                     }
                     send_key(
                         ctx.harness,
@@ -2663,7 +2800,19 @@ mod driven {
                         ctx.ts,
                     );
                     Clipboard::current().refresh();
-                    pump_frames(ctx.harness);
+                    send_key(
+                        ctx.harness,
+                        KeyEvent::character("X"),
+                        Modifiers::ALT | Modifiers::SHIFT,
+                        ctx.ts,
+                    );
+                    send_click(
+                        ctx.harness,
+                        Point::new(CssPx(980.0), CssPx(6.0)),
+                        PointerButton::Primary,
+                        ctx.ts,
+                    );
+                    park_pointer(ctx.harness, ctx.ts);
 
                     browser.show_app_menu();
                     ctx.snap_primary("19a-menu-application")?;
@@ -2689,6 +2838,27 @@ mod driven {
                     browser.0.menus.close();
                     pump_frames(ctx.harness);
 
+                    let _ = browser.begin_background_task("files", "Copying 12 items");
+                    browser.set_background_task_detail("files", Some("preview.png".into()));
+                    let _ = browser.begin_background_task(
+                        "remote-task-1",
+                        "Uploading to files.gandesktop.org",
+                    );
+                    browser.set_background_task_detail(
+                        "remote-task-1",
+                        Some("4 · 18.4 MB · release-notes.txt".into()),
+                    );
+                    browser
+                        .0
+                        .menus
+                        .surface
+                        .set(MenuSurface::Status(StatusKind::Tasks));
+                    ctx.snap_primary("19e-popover-status-tasks")?;
+                    browser.0.menus.close();
+                    let _ = browser.finish_background_task("files");
+                    let _ = browser.finish_background_task("remote-task-1");
+                    pump_frames(ctx.harness);
+
                     // 20: Overlays — About dialog, Help page, Keytips + Toast notifications.
                     browser.show_about();
                     ctx.snap_primary("20a-dialog-about")?;
@@ -2704,6 +2874,7 @@ mod driven {
                         gds::ui::feedback::notifications::success("Copied 2 items to Documents");
                         gds::ui::feedback::notifications::info("Indexed 4 workspace tags");
                     });
+                    pump_frames(ctx.harness);
                     let alt_down_ts = Timestamp::from_origin(Duration::from_millis(ctx.ts.get()));
                     ctx.ts.set(ctx.ts.get() + 200);
                     ctx.harness.deliver_to_first(SurfaceEvent::Key {
@@ -2712,12 +2883,39 @@ mod driven {
                         modifiers: Modifiers::ALT,
                         timestamp: alt_down_ts,
                     });
-                    ctx.harness.pump();
-                    ctx.harness.advance(Duration::from_millis(200));
+                    pump_frames(ctx.harness);
                     ctx.snap_primary("20-overlays-about-help-keytips-notifications")?;
                     ctx.harness.deliver_to_first(SurfaceEvent::Key {
                         state: KeyState::Released,
                         event: KeyEvent::named(NamedKey::Alt, PhysicalKey::Code(KeyCode::AltLeft)),
+                        modifiers: Modifiers::NONE,
+                        timestamp: Timestamp::from_origin(Duration::from_millis(ctx.ts.get())),
+                    });
+                    send_key(
+                        ctx.harness,
+                        KeyEvent::character("X"),
+                        Modifiers::ALT | Modifiers::SHIFT,
+                        ctx.ts,
+                    );
+                    let ctrl_down_ts = Timestamp::from_origin(Duration::from_millis(ctx.ts.get() + 40));
+                    ctx.ts.set(ctx.ts.get() + 240);
+                    ctx.harness.deliver_to_first(SurfaceEvent::Key {
+                        state: KeyState::Pressed,
+                        event: KeyEvent::named(
+                            NamedKey::Control,
+                            PhysicalKey::Code(KeyCode::ControlLeft),
+                        ),
+                        modifiers: Modifiers::CONTROL,
+                        timestamp: ctrl_down_ts,
+                    });
+                    pump_frames(ctx.harness);
+                    ctx.snap_primary("20c-overlays-ctrl-keytips")?;
+                    ctx.harness.deliver_to_first(SurfaceEvent::Key {
+                        state: KeyState::Released,
+                        event: KeyEvent::named(
+                            NamedKey::Control,
+                            PhysicalKey::Code(KeyCode::ControlLeft),
+                        ),
                         modifiers: Modifiers::NONE,
                         timestamp: Timestamp::from_origin(Duration::from_millis(ctx.ts.get())),
                     });
@@ -2737,28 +2935,25 @@ mod driven {
                     let logs_id = zgui::platform::Surface::id(logs_surface.as_ref());
                     std::thread::sleep(Duration::from_millis(100));
                     pump_frames(ctx.harness);
-                    // Select a log row so the detail pane also mounts.
+                    // Select the first log row (y = 148..170) so the detail pane mounts.
                     send_click_on(
                         ctx.harness,
                         logs_id,
-                        Point::new(CssPx(320.0), CssPx(140.0)),
+                        Point::new(CssPx(320.0), CssPx(160.0)),
                         PointerButton::Primary,
                         ctx.ts,
                     );
                     ctx.snap_surface("21-window-logs-and-tasks", &logs_surface)?;
 
-                    let mut logs_sem = SemanticStore::default();
-                    logs_sem.ingest(&logs_surface);
-                    if let Some(tasks_tab) = logs_sem.find_button_center("Tasks") {
-                        send_click_on(
-                            ctx.harness,
-                            logs_id,
-                            tasks_tab,
-                            PointerButton::Primary,
-                            ctx.ts,
-                        );
-                        ctx.snap_surface("21b-window-tasks-tab", &logs_surface)?;
-                    }
+                    // Switch to the Tasks tab (bounds [69..113, 53..92]) and capture live TaskManagerView.
+                    send_click_on(
+                        ctx.harness,
+                        logs_id,
+                        Point::new(CssPx(90.0), CssPx(72.0)),
+                        PointerButton::Primary,
+                        ctx.ts,
+                    );
+                    ctx.snap_surface("21b-window-tasks-tab", &logs_surface)?;
                     close_secondary(ctx.harness, &logs_surface);
 
                     let primary_guard = ctx.registry.primary.borrow();

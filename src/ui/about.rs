@@ -597,7 +597,6 @@ fn DetailsSection(
                     label = Signal::derive_local(|| localized("gds-about-back", "Back")),
                     shortcut = back_shortcut,
                     attr:data-testid = "about-back",
-                    on_activate = UnsyncCallback::new(move |()| go_back()),
                     on:click = move |_| go_back(),
                 )
                 text(

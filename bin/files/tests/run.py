@@ -1,4 +1,5 @@
 """Run the driven zgui E2E suite and native headless Weston smoke check; retain artifacts."""
+import argparse
 import hashlib
 import json
 import os
@@ -134,7 +135,15 @@ def build_base_env(
     weston: Path,
 ) -> dict[str, str]:
     env = os.environ.copy()
-    for key in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS"):
+    for key in (
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "XDG_CURRENT_DESKTOP",
+        "NIRI_SOCKET",
+        "SWAYSOCK",
+        "HYPRLAND_INSTANCE_SIGNATURE",
+    ):
         env.pop(key, None)
     env.update(
         HOME=str(home),
@@ -382,13 +391,65 @@ def run_wayland_smoke(
     return wayland_png
 
 
+def resolve_default_binary(repository: Path) -> Path:
+    candidate = repository / "target/debug/gds-files"
+    subprocess.run(
+        [
+            "cargo",
+            "build",
+            "--bin",
+            "gds-files",
+            "--no-default-features",
+            "--features",
+            "files-e2e",
+        ],
+        cwd=repository,
+        check=True,
+    )
+    return candidate.resolve()
+
+
+def resolve_default_weston(repository: Path) -> Path:
+    found = shutil.which("weston")
+    if found:
+        return Path(found).resolve()
+    store_path = subprocess.check_output(
+        [
+            "nix",
+            "build",
+            "--impure",
+            "--no-link",
+            "--print-out-paths",
+            "--expr",
+            "let lock = builtins.fromJSON (builtins.readFile ./flake.lock); "
+            "source = builtins.fetchTree lock.nodes.nixpkgs.locked; "
+            "pkgs = import source.outPath {}; in pkgs.weston",
+        ],
+        cwd=repository,
+        text=True,
+    ).strip()
+    return (Path(store_path) / "bin/weston").resolve()
+
+
 def main() -> None:
     repository = Path(__file__).resolve().parents[3]
-    binary = Path(sys.argv[1]).resolve()
-    weston = Path(sys.argv[2]).resolve()
-    output = repository / "target/files-e2e"
-    output.mkdir(parents=True, exist_ok=True)
-    artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=output))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary", nargs="?", help="Path to built gds-files binary")
+    parser.add_argument("weston", nargs="?", help="Path to weston binary")
+    parser.add_argument("--artifacts", help="Explicit output artifacts directory")
+    args = parser.parse_args()
+
+    binary = Path(args.binary).resolve() if args.binary else resolve_default_binary(repository)
+    weston = Path(args.weston).resolve() if args.weston else resolve_default_weston(repository)
+    if args.artifacts:
+        artifacts = Path(args.artifacts).resolve()
+        if artifacts.exists():
+            shutil.rmtree(artifacts)
+        artifacts.mkdir(parents=True, exist_ok=True)
+    else:
+        output = repository / "target/files-e2e"
+        output.mkdir(parents=True, exist_ok=True)
+        artifacts = Path(tempfile.mkdtemp(prefix="run-", dir=output))
 
     home = artifacts / "home"
     work = home / "work"
@@ -466,6 +527,9 @@ def main() -> None:
 
         driven_passed = run_driven(binary, work, artifacts, base_env)
         wayland_png = run_wayland_smoke(binary, weston, work, runtime, artifacts, base_env)
+        wayland_subdir = artifacts / "wayland"
+        wayland_subdir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(wayland_png, wayland_subdir / "wayland-window.png")
 
     summary = (
         driven_passed.read_text(encoding="utf-8", errors="replace").rstrip()

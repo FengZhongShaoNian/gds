@@ -156,7 +156,6 @@ pub(super) struct Tab {
     pub work: Option<TaskOwner>,
     pub enrichment: Option<super::enrichment::Enrichment>,
     pub reveal: Vec<PathBuf>,
-    #[allow(dead_code)]
     pub reveal_hidden: bool,
 }
 
@@ -213,29 +212,25 @@ impl Drop for Tab {
     }
 }
 
-#[allow(dead_code)]
 pub(super) const FILES_TASK_KEY: &str = "files";
-#[allow(dead_code)]
 pub(super) const TRASH_TASK_KEY: &str = "trash";
 
-#[allow(dead_code)]
 pub(super) fn remote_task_key(id: u64) -> String {
     format!("remote-task-{id}")
 }
 
 /// Concurrent window-owned background operation entry shown in the footer `ListTodo` popover.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(super) struct BackgroundTask {
     pub key: String,
     pub label: String,
     pub detail: Option<String>,
+    #[cfg(test)]
     pub progress: Option<f32>,
     pub cancel: tokio_util::sync::CancellationToken,
     on_cancel: Option<Rc<dyn Fn()>>,
 }
 
-#[allow(dead_code)]
 impl BackgroundTask {
     pub fn new(
         key: impl Into<String>,
@@ -246,23 +241,27 @@ impl BackgroundTask {
             key: key.into(),
             label: label.into(),
             detail: None,
+            #[cfg(test)]
             progress: None,
             cancel,
             on_cancel: None,
         }
     }
 
+    #[cfg(test)]
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         let detail = detail.into();
         self.detail = (!detail.is_empty()).then_some(detail);
         self
     }
 
+    #[cfg(test)]
     pub fn with_progress(mut self, progress: f32) -> Self {
         self.progress = progress.is_finite().then(|| progress.clamp(0.0, 1.0));
         self
     }
 
+    #[cfg(test)]
     pub fn with_on_cancel(mut self, on_cancel: impl Fn() + 'static) -> Self {
         self.on_cancel = Some(Rc::new(on_cancel));
         self
@@ -290,17 +289,16 @@ impl BackgroundTask {
 
 /// Ordered map of concurrent background tasks (`"files"`, `"trash"`, `"remote-task-{id}"`).
 #[derive(Clone, Default)]
-#[allow(dead_code)]
 pub(super) struct BackgroundTasks {
     items: Vec<BackgroundTask>,
 }
 
-#[allow(dead_code)]
 impl BackgroundTasks {
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.items.len()
     }
@@ -321,10 +319,6 @@ impl BackgroundTasks {
         self.contains(key)
     }
 
-    pub fn token(&self, key: &str) -> Option<tokio_util::sync::CancellationToken> {
-        self.get(key).map(|item| item.cancel.clone())
-    }
-
     pub fn begin(
         &mut self,
         key: impl Into<String>,
@@ -339,6 +333,7 @@ impl BackgroundTasks {
         true
     }
 
+    #[cfg(test)]
     pub fn upsert(&mut self, task: BackgroundTask) {
         if let Some(existing) = self.items.iter_mut().find(|item| item.key == task.key) {
             *existing = task;
@@ -359,6 +354,7 @@ impl BackgroundTasks {
         true
     }
 
+    #[cfg(test)]
     pub fn update_progress(
         &mut self,
         key: &str,
@@ -471,7 +467,6 @@ impl Pages {
 
 /// Optional visual metadata and frozen item preview for [`Prompt::Confirm`].
 #[derive(Clone, Default)]
-#[allow(dead_code)]
 pub(super) struct ConfirmOptions {
     pub icon: Option<gds::ui::IconName>,
     pub primary_icon: Option<gds::ui::IconName>,
@@ -508,7 +503,6 @@ pub(super) struct State {
     pub operation: Operation,
     pub saving_places: bool,
     pub favorites_reload: Option<Vec<Location>>,
-    #[allow(dead_code)]
     pub pending_device_removals: Vec<volumes::DeviceAction>,
 }
 

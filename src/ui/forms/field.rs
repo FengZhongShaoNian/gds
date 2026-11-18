@@ -31,6 +31,8 @@ const FIELD_CSS: &str = css!(
         min-width: 0px;
         height: var(--gds-control-height, 36px);
         min-height: var(--gds-control-height, 36px);
+        padding: 0px 10px;
+        box-sizing: border-box;
         background: var(--gds-content);
         color: var(--gds-foreground);
         border: 1px solid var(--gds-outline);
@@ -38,6 +40,15 @@ const FIELD_CSS: &str = css!(
         box-shadow: none;
         outline: none;
         transition: border-color var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
+    }
+    .gds-input-field.gds-input-field[data-has-leading=\"true\"] {
+        padding-left: 0px;
+    }
+    .gds-input-field.gds-input-field[data-has-trailing=\"true\"] {
+        padding-right: 0px;
+    }
+    .gds-input-field:not([data-has-trailing=\"true\"]) > .gds-input-field__trailing {
+        display: none;
     }
     .gds-input-field.gds-input-field[data-compact=\"true\"] {
         height: var(--gds-icon-button-size, 32px);
@@ -112,7 +123,7 @@ const FIELD_CSS: &str = css!(
         width: auto;
         height: 100%;
         min-width: 0px;
-        padding: 0px 10px;
+        padding: 0px;
         border: 0px solid transparent;
         border-radius: 0px;
         background: transparent;

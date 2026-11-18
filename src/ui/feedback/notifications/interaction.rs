@@ -61,9 +61,10 @@ pub(crate) fn close_all_in(queue: NotificationQueue) {
 /// Returns `true` when keyboard focus currently sits inside the notification stack.
 #[must_use]
 pub fn is_focused() -> bool {
-    let focused = NotificationQueue::active().focused();
-    focused.track();
-    focused.get_untracked()
+    NotificationQueue::active()
+        .focused()
+        .try_get_untracked()
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

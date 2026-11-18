@@ -25,7 +25,10 @@ fn installed_themes_reach_starting_and_hidden_terminals_without_paint() {
         let gds = Gds::install(supervisor.scope());
         gds.appearance()
             .theme()
-            .apply(&theme::Appearance::default())
+            .apply(&theme::Appearance {
+                source: theme::Source::Builtin,
+                ..theme::Appearance::default()
+            })
             .expect("initial theme");
 
         let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
@@ -84,6 +87,7 @@ fn install_and_expect(gds: &Gds, mode: theme::ModePreference) -> String {
     gds.appearance()
         .theme()
         .apply(&theme::Appearance {
+            source: theme::Source::Builtin,
             mode,
             ..Default::default()
         })

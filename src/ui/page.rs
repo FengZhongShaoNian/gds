@@ -86,7 +86,7 @@ const PAGE_CSS: &str = css!(
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
-        padding: 0px 18px;
+        padding: 0px 18px 4px 18px;
     }"
 );
 

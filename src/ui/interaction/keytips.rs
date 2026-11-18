@@ -15,8 +15,8 @@ use std::rc::Rc;
 use zgui::geom::{Css, CssPx, Point, Rect, Size};
 use zgui::prelude::*;
 use zgui::reactive::{
-    LocalStorage, RenderEffect, RwSignal, Signal, UnsyncCallback, on_cleanup_local,
-    provide_local_context, use_local_context,
+    LocalStorage, RenderEffect, RwSignal, Signal, on_cleanup_local, provide_local_context,
+    use_local_context,
 };
 use zgui::view::time::{FrameHandle, Timers};
 use zgui::view::{ListenerGuard, OverlayLayer, PortalProps, ShowProps, current_host, events};
@@ -188,14 +188,6 @@ pub struct StagedHint {
     pub badge_ref: NodeRef,
 }
 
-/// Legacy mnemonic binding retained for backward compatibility with existing callers.
-#[derive(Clone)]
-pub struct KeytipBinding {
-    pub chord: &'static str,
-    pub target: NodeRef,
-    pub on_activate: UnsyncCallback<()>,
-}
-
 /// Window-local passive modifier-hold state and staged keytip registry.
 #[derive(Clone, Copy)]
 pub struct KeytipRegistry {
@@ -311,34 +303,6 @@ impl KeytipRegistry {
             hints.update(|list| list.retain(|entry| entry.id != id));
         });
     }
-
-    /// Compatibility registration for legacy string chords (`Alt+<chord>` corner badge).
-    pub fn register(self, chord: &'static str, target: NodeRef, _on_activate: UnsyncCallback<()>) {
-        if let Some(shortcut) = legacy_chord_to_shortcut(chord) {
-            self.stage(
-                target,
-                shortcut,
-                HintPlacement::Corner,
-                Signal::stored_local(true),
-            );
-        }
-    }
-}
-
-fn legacy_chord_to_shortcut(chord: &str) -> Option<Shortcut> {
-    let trimmed = chord.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.contains('+') || trimmed.contains('-') {
-        return Shortcut::parse(trimmed);
-    }
-    match trimmed {
-        "AL" => Shortcut::parse("Alt+Left"),
-        "AR" => Shortcut::parse("Alt+Right"),
-        "W" => Shortcut::parse("Alt+Space"),
-        single => Shortcut::parse(&format!("Alt+{single}")),
-    }
 }
 
 /// Stages a [`Shortcut`] on `target` with explicit [`HintPlacement`] and reactive `enabled` guard.
@@ -400,13 +364,6 @@ pub fn bottom_corner_anchor(target: NodeRef, shortcut: impl Into<Shortcut>) {
         HintPlacement::BottomLeadingCorner,
         Signal::stored_local(true),
     );
-}
-
-/// Compatibility helper registering a legacy chord keytip in the active [`KeytipHost`].
-pub fn register_keytip(chord: &'static str, target: NodeRef, on_activate: UnsyncCallback<()>) {
-    if let Some(registry) = KeytipRegistry::current() {
-        registry.register(chord, target, on_activate);
-    }
 }
 
 /// Computes the modifier bit contributed by pressing/releasing `key` itself so Wayland, winit,
@@ -1131,8 +1088,12 @@ pub fn KeytipHost(
                             let active_modals = modal_scopes.get();
                             let staged = hints.get();
 
-                            let content = host_ref
-                                .window_root()
+                            let window_root = host_ref.window_root();
+                            let toast_occlusion =
+                                crate::ui::feedback::notifications::active_stack_occlusion(
+                                    window_root.and_then(|r| r.get_untracked()),
+                                );
+                            let content = window_root
                                 .and_then(|root| {
                                     let bounds = root.window_bounds()?;
                                     let scale = root.scale().max(0.01);
@@ -1195,6 +1156,36 @@ pub fn KeytipHost(
                                     })
                                     .filter(|sz| sz.width.0 > 1.0 && sz.height.0 > 1.0)
                                     .unwrap_or_else(|| estimated_badge_size(&label));
+
+                                if let Some((toast_ref, toast_rect)) = toast_occlusion {
+                                    let is_toast_hint = entry.target == toast_ref
+                                        || entry
+                                            .target
+                                            .get_untracked()
+                                            .is_some_and(|id| toast_ref.contains(id));
+                                    if !is_toast_hint {
+                                        let control_occluded =
+                                            anchor.size.width.0 <= toast_rect.size.width.0
+                                                && anchor.size.height.0 <= toast_rect.size.height.0
+                                                && rects_intersect(anchor, toast_rect);
+                                        let slot = LabelSlot {
+                                            anchor,
+                                            size: badge_size,
+                                            placement: entry.placement,
+                                        };
+                                        let badge_occluded = candidates(slot, content)
+                                            .first()
+                                            .is_some_and(|origin| {
+                                                rects_intersect(
+                                                    Rect::new(*origin, badge_size),
+                                                    toast_rect,
+                                                )
+                                            });
+                                        if control_occluded || badge_occluded {
+                                            continue;
+                                        }
+                                    }
+                                }
 
                                 candidates_list.push((entry, label, anchor, badge_size));
                             }

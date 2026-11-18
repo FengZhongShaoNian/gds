@@ -6,7 +6,7 @@ pub mod surface;
 mod tests;
 
 use std::any::TypeId;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 use std::time::Duration;
@@ -282,6 +282,8 @@ pub(crate) struct NotificationQueue {
 }
 
 thread_local! {
+    static MOUNTED_HOSTS: RefCell<Vec<(u64, NotificationQueue)>> = const { RefCell::new(Vec::new()) };
+    static NEXT_HOST_ID: Cell<u64> = const { Cell::new(0) };
     static FALLBACK_QUEUE: RefCell<Option<NotificationQueue>> = const { RefCell::new(None) };
 }
 
@@ -299,18 +301,31 @@ impl NotificationQueue {
         }
     }
 
+    fn is_alive(self) -> bool {
+        self.next_id.try_get_untracked().is_some()
+    }
+
     fn runtime_rc(self) -> Option<Rc<RefCell<QueueRuntime>>> {
         self.runtime.try_get_untracked().flatten()
     }
 
     pub(crate) fn active() -> Self {
         if zgui::reactive::is_ui_thread()
-            && let Some(queue) = use_local_context::<Self>()
+            && let Some(queue) = use_local_context::<Self>().filter(|q| q.is_alive())
         {
             return queue;
         }
+        if let Some(mounted) = MOUNTED_HOSTS.with(|hosts| {
+            let mut list = hosts.borrow_mut();
+            list.retain(|&(_, q)| q.is_alive());
+            list.last().map(|&(_, q)| q)
+        }) {
+            return mounted;
+        }
         FALLBACK_QUEUE.with(|slot| {
-            if let Some(queue) = *slot.borrow() {
+            if let Some(queue) = *slot.borrow()
+                && queue.is_alive()
+            {
                 return queue;
             }
             let queue = Self::new();
@@ -780,8 +795,13 @@ pub fn NotificationHost(children: Children) -> impl IntoView {
 
     let queue = NotificationQueue::new();
     provide_local_context(queue);
-    FALLBACK_QUEUE.with(|slot| {
-        *slot.borrow_mut() = Some(queue);
+    let host_id = NEXT_HOST_ID.with(|cell| {
+        let next = cell.get().wrapping_add(1);
+        cell.set(next);
+        next
+    });
+    MOUNTED_HOSTS.with(|hosts| {
+        hosts.borrow_mut().push((host_id, queue));
     });
     let items = queue.items();
 
@@ -842,6 +862,9 @@ pub fn NotificationHost(children: Children) -> impl IntoView {
     on_cleanup_local(move || {
         drop(watch);
         drop(root_guard.borrow_mut().take());
+        MOUNTED_HOSTS.with(|hosts| {
+            hosts.borrow_mut().retain(|&(id, _)| id != host_id);
+        });
         queue.clear_timers();
     });
 
@@ -897,4 +920,44 @@ pub fn warning(message: impl Into<String>) {
 /// Pushes an error notification.
 pub fn error(message: impl Into<String>) {
     report(Report::new(Level::Error, message));
+}
+
+/// Returns the mounted notification stack `NodeRef` and CSS-pixel window bounds for `window_root_id`
+/// while at least one toast is visible, subscribing to queue item changes reactively.
+pub(crate) fn active_stack_occlusion(
+    window_root_id: Option<NodeId>,
+) -> Option<(
+    NodeRef,
+    zgui::geom::Rect<zgui::geom::CssPx, zgui::geom::Css>,
+)> {
+    use zgui::geom::{CssPx, Point, Rect, Size};
+    if !zgui::reactive::is_ui_thread() {
+        return None;
+    }
+    let root_id = window_root_id?;
+    let queue = MOUNTED_HOSTS.with(|hosts| {
+        let list = hosts.borrow();
+        list.iter().rev().find_map(|&(_, q)| {
+            if !q.is_alive() {
+                return None;
+            }
+            let col_ref = q.runtime_rc()?.borrow().host_ref?;
+            let host_root_id = col_ref.window_root().and_then(|r| r.get_untracked());
+            (host_root_id == Some(root_id)).then_some(q)
+        })
+    })?;
+    if queue.items.get().is_empty() {
+        return None;
+    }
+    let col_ref = queue.runtime_rc()?.borrow().host_ref?;
+    let dev = col_ref.window_bounds()?;
+    let scale = col_ref.scale().max(0.01);
+    let rect = Rect::new(
+        Point::new(CssPx(dev.origin.x.0 / scale), CssPx(dev.origin.y.0 / scale)),
+        Size::new(
+            CssPx(dev.size.width.0 / scale),
+            CssPx(dev.size.height.0 / scale),
+        ),
+    );
+    (rect.size.width.0 > 0.0 && rect.size.height.0 > 0.0).then_some((col_ref, rect))
 }

@@ -209,6 +209,11 @@ const SURFACES_CSS: &str = css!(
         overflow: hidden;
     }
 
+    .gds-files-collection-cell > * {
+        min-width: 0;
+        max-width: 100%;
+    }
+
     .gds-files-collection-cell--meta {
         font-size: 12px;
         color: var(--gds-muted-foreground);
@@ -502,23 +507,15 @@ fn meta_text_cell(
             attr:data-emphasis = emphasis.then(|| "true".to_owned()),
         ) {{text}}
     };
-    let inner = match tooltip {
-        Some(tip) => AnyView::new(view! {
-            HintTooltip(text = tip) {
-                {label}
-            }
-        }),
-        None => AnyView::new(label),
-    };
     let align_attr = right_aligned.then(|| "end".to_owned());
-    match width {
+    let cell = match width {
         Some(w) => AnyView::new(view! {
             row(
                 class = "gds-files-collection-cell gds-files-collection-cell--meta",
                 attr:data-align = align_attr,
                 style:width = format!("{w:.1}px"),
             ) {
-                {inner}
+                {label}
             }
         }),
         None => AnyView::new(view! {
@@ -526,9 +523,17 @@ fn meta_text_cell(
                 class = "gds-files-collection-cell gds-files-collection-cell--meta",
                 attr:data-align = align_attr,
             ) {
-                {inner}
+                {label}
             }
         }),
+    };
+    match tooltip {
+        Some(tip) => AnyView::new(view! {
+            HintTooltip(text = tip) {
+                {cell}
+            }
+        }),
+        None => cell,
     }
 }
 

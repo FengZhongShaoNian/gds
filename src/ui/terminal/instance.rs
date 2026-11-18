@@ -373,8 +373,13 @@ impl Terminal {
     }
 
     pub(super) fn set_error(&self, message: Option<String>) {
-        if self.0.error.get_untracked() != message {
-            self.0.error.set(message);
+        if self
+            .0
+            .error
+            .try_get_untracked()
+            .is_some_and(|cur| cur != message)
+        {
+            let _ = self.0.error.try_set(message);
         }
     }
 
@@ -423,22 +428,30 @@ fn sync_from_service(inner: &TerminalInner) {
 
     *inner.observed.borrow_mut() = (next_status.clone(), next_title.clone());
 
-    if inner.status.get_untracked() != next_status {
+    if inner
+        .status
+        .try_get_untracked()
+        .is_some_and(|cur| cur != next_status)
+    {
         let error_text = match &next_status {
             Status::Failed(message) => Some(message.clone()),
             _ => None,
         };
-        inner.status.set(next_status);
+        let _ = inner.status.try_set(next_status);
         if let Some(error_text) = error_text {
-            inner.error.set(Some(error_text));
+            let _ = inner.error.try_set(Some(error_text));
         }
     }
-    if inner.title.get_untracked() != next_title {
-        inner.title.set(next_title.clone());
+    if inner
+        .title
+        .try_get_untracked()
+        .is_some_and(|cur| cur != next_title)
+    {
+        let _ = inner.title.try_set(next_title.clone());
     }
-    inner
+    let _ = inner
         .redraw
-        .update(|revision| *revision = revision.wrapping_add(1));
+        .try_update(|revision| *revision = revision.wrapping_add(1));
 
     if title_changed && let Some(title) = next_title {
         emit_event(inner, &Event::TitleChanged(title));

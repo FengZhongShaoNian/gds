@@ -10,8 +10,8 @@ use std::sync::OnceLock;
 
 use zgui::view::install_stylesheet;
 use zgui_ui::{
-    ButtonStyle, InputGroupStyle, InputStyle, NativeSelectStyle, SelectStyle, SwitchStyle,
-    TextareaStyle,
+    ButtonStyle, InputGroupStyle, InputStyle, NativeSelectStyle, SelectStyle, SliderStyle,
+    SwitchStyle, TextareaStyle,
 };
 
 const BASE_SHEET: &str = "gds-ui-base";
@@ -398,7 +398,7 @@ const STATIC_BASE_CSS: &str = r#"
     width: 100%;
     height: 4px;
     border-radius: 2px;
-    background: var(--gds-surface);
+    background: color-mix(in srgb, var(--gds-foreground) 12%, transparent);
     border: none;
     overflow: hidden;
 }
@@ -775,6 +775,7 @@ fn base_css() -> &'static str {
         let grp = InputGroupStyle::CLASS;
         let sel = SelectStyle::CLASS;
         let nsel = NativeSelectStyle::CLASS;
+        let sld = SliderStyle::CLASS;
         let sw = SwitchStyle::CLASS;
 
         format!(
@@ -788,6 +789,16 @@ fn base_css() -> &'static str {
 .{sw}.{sw} {{
     --zui-button-ring: 0 0 transparent;
     box-shadow: none;
+}}
+
+.zui-slider.{sld} > .zui-slider__track {{
+    background-color: color-mix(in srgb, var(--gds-foreground) 14%, transparent);
+}}
+
+.zui-slider.{sld}:focus-visible > .zui-slider__thumb {{
+    box-shadow: none;
+    outline: 1px solid var(--gds-primary);
+    outline-offset: 1px;
 }}
 
 .zui-button.{btn}:focus:not(:focus-visible) {{

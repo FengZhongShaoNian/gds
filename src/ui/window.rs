@@ -204,8 +204,10 @@ pub(crate) fn drag_pointer_down_handler(
             {
                 show_window_menu(w, ev.position);
             }
+            ev.stop_propagation();
         } else if let Some(ref handler) = move_handler {
             handler(ev);
+            ev.stop_propagation();
         }
     }
 }

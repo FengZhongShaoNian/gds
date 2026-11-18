@@ -173,10 +173,6 @@ impl Browser {
         self.0.window_width.get_untracked() < COMPACT_WINDOW_WIDTH
     }
 
-    pub(super) fn sidebar_expanded(&self) -> bool {
-        self.0.sidebar.get() && !self.compact()
-    }
-
     pub(super) fn grid_geometry(&self) -> Grid {
         let scale = Gds::current().appearance().typography().scaled(1.0);
         Grid::new(self.0.content_width.get(), scale)

@@ -118,10 +118,8 @@ impl WeakBrowser {
 }
 
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 pub(super) struct DragSources(RwSignal<HashSet<PathBuf>, LocalStorage>);
 
-#[allow(dead_code)]
 impl DragSources {
     pub fn new() -> Self {
         Self(RwSignal::new_local(HashSet::new()))
@@ -149,13 +147,10 @@ impl DragSources {
             .with(|sources| !sources.is_empty() && sources.contains(path))
     }
 
+    #[cfg(test)]
     pub fn contains_untracked(self, path: &Path) -> bool {
         self.0
             .with_untracked(|sources| !sources.is_empty() && sources.contains(path))
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.0.with(HashSet::is_empty)
     }
 
     pub fn is_empty_untracked(self) -> bool {
@@ -187,7 +182,6 @@ pub(super) struct Workspace {
     pub prompt: RwSignal<Prompt, LocalStorage>,
     pub prompt_generation: RwSignal<u64, LocalStorage>,
     pub prompt_about: RwSignal<bool, LocalStorage>,
-    #[allow(dead_code)]
     pub confirm_options: RwSignal<ConfirmOptions, LocalStorage>,
     pub address: RwSignal<String, LocalStorage>,
     pub filter: RwSignal<String, LocalStorage>,
@@ -705,22 +699,6 @@ impl Browser {
         self.0.prompt.set(prompt);
     }
 
-    pub(super) fn confirm_labelled(
-        &self,
-        title: String,
-        message: String,
-        primary: String,
-        accept: impl Fn() + 'static,
-    ) {
-        self.open_prompt(Prompt::Confirm {
-            title,
-            message,
-            primary,
-            accept: Rc::new(accept),
-        });
-    }
-
-    #[allow(dead_code)]
     pub(super) fn confirm_with_options(
         &self,
         title: String,
@@ -736,11 +714,6 @@ impl Browser {
             accept: Rc::new(accept),
         });
         self.0.confirm_options.set(options);
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn confirm_options(&self) -> ConfirmOptions {
-        self.0.confirm_options.get_untracked()
     }
 
     pub(super) fn prompt_name(
@@ -913,9 +886,8 @@ impl Browser {
     }
 }
 
-/// Shared Phase 6 seam accessors for synchronized sidebar presentation, concurrent background
+/// Shared workspace accessors for synchronized sidebar presentation, concurrent background
 /// tasks, active drag-source ghosting, and preference helpers.
-#[allow(dead_code)]
 impl Browser {
     pub(super) fn sidebar_presentation(&self) -> Signal<SidebarPresentation, LocalStorage> {
         self.0.sidebar_presentation
@@ -923,10 +895,6 @@ impl Browser {
 
     pub(super) fn sidebar_width(&self) -> Signal<f32, LocalStorage> {
         self.0.sidebar_width
-    }
-
-    pub(super) fn sidebar_collapsed(&self) -> bool {
-        !self.sidebar_expanded()
     }
 
     pub(super) fn tags_enabled(&self) -> bool {
@@ -951,10 +919,6 @@ impl Browser {
         };
     }
 
-    pub(super) fn background_tasks(&self) -> ReadSignal<BackgroundTasks, LocalStorage> {
-        self.0.background_tasks.read_only()
-    }
-
     pub(super) fn background_tasks_revision(&self) -> ReadSignal<u64, LocalStorage> {
         self.0.background_tasks_revision.read_only()
     }
@@ -962,16 +926,6 @@ impl Browser {
     pub(super) fn background_task_list(&self) -> Vec<BackgroundTask> {
         let _ = self.0.background_tasks_revision.get();
         self.0.background_tasks.with(|tasks| tasks.items().to_vec())
-    }
-
-    pub(super) fn background_task_count(&self) -> usize {
-        let _ = self.0.background_tasks_revision.get();
-        self.0.background_tasks.with(BackgroundTasks::len)
-    }
-
-    pub(super) fn has_background_tasks(&self) -> bool {
-        let _ = self.0.background_tasks_revision.get();
-        self.0.background_tasks.with(|tasks| !tasks.is_empty())
     }
 
     pub(super) fn has_background_tasks_untracked(&self) -> bool {
@@ -989,12 +943,6 @@ impl Browser {
         self.0
             .background_tasks
             .with_untracked(|tasks| tasks.is_busy(key))
-    }
-
-    pub(super) fn background_task_token(&self, key: &str) -> Option<CancellationToken> {
-        self.0
-            .background_tasks
-            .with_untracked(|tasks| tasks.token(key))
     }
 
     pub(super) fn begin_background_task(
@@ -1029,15 +977,6 @@ impl Browser {
         Some(cancel)
     }
 
-    pub(super) fn upsert_background_task(&self, task: BackgroundTask) {
-        if task.key == FILES_TASK_KEY {
-            self.mirror_files_operation(Some((task.label.clone(), task.cancel.clone())));
-        }
-        self.0.background_tasks.update(|tasks| tasks.upsert(task));
-        self.bump_background_tasks_revision();
-        self.changed();
-    }
-
     pub(super) fn set_background_task_detail(&self, key: &str, detail: Option<String>) {
         let mut updated = false;
         self.0.background_tasks.update(|tasks| {
@@ -1046,49 +985,6 @@ impl Browser {
         if updated {
             self.bump_background_tasks_revision();
         }
-    }
-
-    pub(super) fn update_background_task(
-        &self,
-        key: &str,
-        label: Option<String>,
-        detail: Option<String>,
-        progress: Option<f32>,
-    ) {
-        if key == FILES_TASK_KEY
-            && let Some(ref next_label) = label
-        {
-            let mut state = self.0.state.borrow_mut();
-            if let Operation::Running {
-                label: op_label, ..
-            } = &mut state.operation
-            {
-                *op_label = next_label.clone();
-            }
-        }
-        let mut updated = false;
-        self.0.background_tasks.update(|tasks| {
-            updated = tasks.update_progress(key, label, detail, progress);
-        });
-        if updated {
-            self.bump_background_tasks_revision();
-        }
-    }
-
-    pub(super) fn sync_background_task(
-        &self,
-        key: impl Into<String>,
-        task: Option<(String, CancellationToken)>,
-    ) {
-        let key = key.into();
-        if key == FILES_TASK_KEY {
-            self.mirror_files_operation(task.clone());
-        }
-        self.0
-            .background_tasks
-            .update(|tasks| tasks.sync(key, task));
-        self.bump_background_tasks_revision();
-        self.changed();
     }
 
     pub(super) fn cancel_background_task(&self, key: &str) -> bool {
@@ -1135,14 +1031,6 @@ impl Browser {
 
     pub(super) fn is_drag_source(&self, path: &Path) -> bool {
         self.0.drag_sources.contains(path)
-    }
-
-    pub(super) fn is_drag_source_untracked(&self, path: &Path) -> bool {
-        self.0.drag_sources.contains_untracked(path)
-    }
-
-    pub(super) fn has_drag_sources(&self) -> bool {
-        !self.0.drag_sources.is_empty()
     }
 
     pub(super) fn has_drag_sources_untracked(&self) -> bool {

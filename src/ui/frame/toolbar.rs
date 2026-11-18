@@ -8,6 +8,7 @@ use crate::ui::window::WindowControlsProps;
 /// Fixed-height window top toolbar aligned to [`super::Frame`]'s single-column split.
 #[component]
 pub fn Toolbar(
+    #[prop(optional)] left: Option<AnyView>,
     #[prop(optional)] menu: Option<AnyView>,
     #[prop(optional)] controls: Option<AnyView>,
     #[prop(optional)] window_controls: Option<AnyView>,
@@ -19,7 +20,7 @@ pub fn Toolbar(
     let window = zgui::prelude::try_use_window();
     let drag_handler = crate::ui::window::drag_pointer_down_handler(window.clone());
 
-    if menu.is_none() && controls.is_none() && window_controls.is_none() {
+    if left.is_none() && menu.is_none() && controls.is_none() && window_controls.is_none() {
         return AnyView::new(view! {
             row(
                 class = "gds-toolbar gds-toolbar--legacy",
@@ -47,6 +48,25 @@ pub fn Toolbar(
         "gds-toolbar__left gds-toolbar__left--sidebar"
     } else {
         "gds-toolbar__left gds-toolbar__left--content"
+    };
+
+    let left_body = if let Some(leading) = left {
+        leading
+    } else {
+        AnyView::new(view! {
+            box(
+                class = "gds-toolbar__menu",
+                on:pointer_down = move |ev: &mut zgui::view::EventCx<'_, zgui::view::events::PointerDown>| {
+                    if let Some(ref handler) = no_drag {
+                        handler(ev);
+                    } else {
+                        ev.stop_propagation();
+                    }
+                }
+            ) {
+                {menu}
+            }
+        })
     };
 
     AnyView::new(view! {
@@ -78,18 +98,7 @@ pub fn Toolbar(
                 },
                 style:padding-right = format!("{MENU_PADDING}px")
             ) {
-                box(
-                    class = "gds-toolbar__menu",
-                    on:pointer_down = move |ev: &mut zgui::view::EventCx<'_, zgui::view::events::PointerDown>| {
-                        if let Some(ref handler) = no_drag {
-                            handler(ev);
-                        } else {
-                            ev.stop_propagation();
-                        }
-                    }
-                ) {
-                    {menu}
-                }
+                {left_body}
             }
             row(class = "gds-toolbar__right") {
                 row(class = "gds-toolbar__controls") {

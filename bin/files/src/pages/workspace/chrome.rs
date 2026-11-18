@@ -75,7 +75,7 @@ const COMPACT_CAPACITY_THRESHOLD: f32 = 120.0;
 
 const CHROME_SHEET: &str = "gds-files-chrome";
 
-const CHROME_CSS: &str = css!(
+pub(super) const CHROME_CSS: &str = css!(
     r#"
     .gds-files-toolbar-leading.gds-files-toolbar-leading {
         display: flex;
@@ -204,7 +204,8 @@ const CHROME_CSS: &str = css!(
         height: 100%;
         overflow-x: auto;
         overflow-y: hidden;
-        scrollbar-width: none;
+        --zgui-scrollbar-thumb: transparent;
+        --zgui-scrollbar-track: transparent;
     }
 
     .gds-files-breadcrumbs-track.gds-files-breadcrumbs-track {
@@ -593,20 +594,28 @@ impl Browser {
     pub(super) fn menu_controls(&self) -> AnyView {
         install_chrome_stylesheets();
         let browser = self.clone();
+        let no_drag = self.0.window.as_ref().map(WindowHandle::no_drag_handler);
         AnyView::new(view! {
-            row(class = "gds-files-menu-controls") {
+            row(
+                class = "gds-files-menu-controls",
+                on:pointer_down = move |ev: &mut zgui::view::EventCx<'_, zgui::view::events::PointerDown>| {
+                    if let Some(ref handler) = no_drag {
+                        handler(ev);
+                    } else {
+                        ev.stop_propagation();
+                    }
+                }
+            ) {
                 {{move || {
                     if browser.pane() == Pane::Files {
                         browser.app_menu()
                     } else {
                         let back = browser.clone();
-                        let act = browser.clone();
                         AnyView::new(view! {
                             IconButton(
                                 icon = IconName::ArrowLeft,
                                 label = Signal::derive_local(|| i18n::text("page-return")),
                                 shortcut = Some(Command::Cancel.shortcut()),
-                                on_activate = UnsyncCallback::new(move |()| act.back_page()),
                                 on:click = move |_| back.back_page()
                             )
                         })
@@ -617,7 +626,6 @@ impl Browser {
     }
 
     /// Leading `sidebar_width` toolbar cell (`[ApplicationMenuButton / ArrowLeft] + [WindowDragArea]`).
-    #[allow(dead_code)]
     pub(super) fn toolbar_leading(&self) -> AnyView {
         install_chrome_stylesheets();
         let menu = self.menu_controls();
@@ -646,15 +654,11 @@ impl Browser {
                 Show(when = move || show_sidebar_toggle.get()) {
                     {{
                         let click_b = toggle_b.clone();
-                        let act_b = toggle_b.clone();
                         view! {
                             IconButton(
                                 icon = IconName::PanelLeft,
                                 label = Signal::derive_local(|| i18n::text("sidebar-toggle")),
                                 shortcut = Some(Command::Sidebar.shortcut()),
-                                on_activate = UnsyncCallback::new(move |()| {
-                                    act_b.0.sidebar.update(|open| *open = !*open);
-                                }),
                                 on:click = move |_| {
                                     click_b.0.sidebar.update(|open| *open = !*open);
                                 }
@@ -690,10 +694,6 @@ impl Browser {
         })
     }
 
-    pub(super) fn toolbar(&self) -> AnyView {
-        self.toolbar_controls()
-    }
-
     fn navigation_buttons(&self) -> AnyView {
         let browser = self.clone();
         let state_sig = Signal::derive_local(move || {
@@ -720,7 +720,6 @@ impl Browser {
                 {{move || {
                     let (tab, backward, forward, can_up) = state_sig.get();
                     let b_click = parent_browser.clone();
-                    let b_act = parent_browser.clone();
                     view! {
                         row(class = "gds-files-nav-group") {
                             {{parent_browser.history_button(tab, backward, false)}}
@@ -730,7 +729,6 @@ impl Browser {
                                 label = Signal::derive_local(|| i18n::text("parent")),
                                 disabled = Signal::stored_local(!can_up),
                                 shortcut = Some(Command::Parent.shortcut()),
-                                on_activate = UnsyncCallback::new(move |()| b_act.parent()),
                                 on:click = move |_| b_click.parent()
                             )
                         }
@@ -754,7 +752,6 @@ impl Browser {
             Command::Back.shortcut()
         };
         let click_browser = self.clone();
-        let act_browser = self.clone();
 
         let button = AnyView::new(view! {
             IconButton(
@@ -762,7 +759,6 @@ impl Browser {
                 label = Signal::derive_local(move || i18n::text(label_key)),
                 disabled = Signal::stored_local(disabled),
                 shortcut = Some(shortcut),
-                on_activate = UnsyncCallback::new(move |()| act_browser.history(forward)),
                 on:click = move |_| click_browser.history(forward)
             )
         });
@@ -904,7 +900,6 @@ impl Browser {
                     } else {
                         let (location, path, is_pending) = destination.get();
                         let b_click = edit_btn.clone();
-                        let b_act = edit_btn.clone();
                         let body = if is_pending {
                             let label = pending_destination_label(&location, path.as_deref());
                             let a11y_label = label.clone();
@@ -950,7 +945,6 @@ impl Browser {
                                     size = ButtonSize::IconSm,
                                     shortcut = Some(Command::EditLocation.shortcut()),
                                     class = "gds-files-address-edit",
-                                    on_activate = UnsyncCallback::new(move |()| b_act.start_address_edit()),
                                     on:click = move |ev: &mut EventCx<'_, events::Click>| {
                                         ev.stop_propagation();
                                         b_click.start_address_edit();
@@ -1316,7 +1310,6 @@ impl Browser {
                 let tabs_b = tabs_b.clone();
                 let focus_b = focus_b.clone();
                 let out_b = out_b.clone();
-                let new_tab_act = new_tab_b.clone();
                 let new_tab_clk = new_tab_b.clone();
                 view! {
                     column(
@@ -1358,10 +1351,6 @@ impl Browser {
                                 icon = IconName::Plus,
                                 label = Signal::derive_local(|| i18n::text("new-tab")),
                                 shortcut = Some(Command::NewTab.shortcut()),
-                                on_activate = UnsyncCallback::new(move |()| {
-                                    new_tab_act.new_tab(None);
-                                    new_tab_act.focus_content_after_mount();
-                                }),
                                 on:click = move |_| {
                                     new_tab_clk.new_tab(None);
                                     new_tab_clk.focus_content_after_mount();
@@ -2159,10 +2148,6 @@ impl Browser {
                         label = Signal::derive_local(move || i18n::text(action_label_key)),
                         shortcut = close_shortcut,
                         shortcut_enabled = expanded_close_shortcut_enabled,
-                        on_activate = UnsyncCallback::new({
-                            let b = action_expanded.clone();
-                            move |()| b.trigger_tab_action(id, pinned)
-                        }),
                         on:click = move |ev: &mut EventCx<'_, events::Click>| {
                             ev.stop_propagation();
                             action_expanded.trigger_tab_action(id, pinned);

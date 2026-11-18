@@ -24,7 +24,7 @@ use crate::app::Gds;
 use crate::appearance::tokens::ICON_SIZE;
 use crate::ui::actions::Command;
 use crate::ui::icon::{IconName, IconProps};
-use crate::ui::keytips::{KeytipSuffixProps, register_keytip};
+use crate::ui::keytips::KeytipSuffixProps;
 use crate::ui::shortcut::install_shortcut_hint_stylesheet;
 use crate::ui::tooltip::{TOOLTIP_DELAY, TooltipTextProps};
 use crate::ui::{Shortcut, ShortcutBadgeProps};
@@ -207,27 +207,6 @@ pub(super) fn button_attrs(
     attrs
 }
 
-pub(super) fn register_button_keytip(
-    chord: &'static str,
-    target: NodeRef,
-    disabled: Signal<bool, LocalStorage>,
-    on_activate: Option<UnsyncCallback<()>>,
-) {
-    register_keytip(
-        chord,
-        target,
-        UnsyncCallback::new(move |()| {
-            if disabled.get_untracked() {
-                return;
-            }
-            target.focus();
-            if let Some(callback) = &on_activate {
-                callback.run(());
-            }
-        }),
-    );
-}
-
 pub(super) fn wrap_tooltip(
     core: AnyView,
     label: Option<Signal<String, LocalStorage>>,
@@ -292,8 +271,6 @@ pub fn Button(
         bool,
         LocalStorage,
     >,
-    #[prop(default = None)] keytip: Option<&'static str>,
-    #[prop(optional)] on_activate: Option<UnsyncCallback<()>>,
     #[prop(optional)] node_ref: Option<NodeRef>,
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
@@ -305,12 +282,6 @@ pub fn Button(
     let effective_shortcut = shortcut.or_else(|| command.map(Shortcut::command));
     let can_advertise =
         Signal::derive_local(move || shortcut_enabled.get() && !effective_disabled.get());
-
-    if effective_shortcut.is_none()
-        && let Some(chord) = keytip
-    {
-        register_button_keytip(chord, resolved_ref, effective_disabled, on_activate);
-    }
 
     let advertised_a11y = effective_shortcut
         .as_ref()

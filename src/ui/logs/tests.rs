@@ -116,7 +116,10 @@ pub(super) fn run_headless_logs(
             let gds = Gds::install_with_logs(scope.clone(), log_store);
             gds.appearance()
                 .theme()
-                .apply(&crate::appearance::theme::Appearance::default())
+                .apply(&crate::appearance::theme::Appearance {
+                    source: crate::appearance::theme::Source::Builtin,
+                    ..crate::appearance::theme::Appearance::default()
+                })
                 .expect("default test theme");
             *gds_for_ctx.borrow_mut() = Some(gds);
         })

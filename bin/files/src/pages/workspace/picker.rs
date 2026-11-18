@@ -8,7 +8,6 @@ use std::{
     rc::Rc,
 };
 
-use gds::appearance::tokens;
 use gds::service::desktop::protocol::chooser;
 use gds::ui::button::{ButtonProps as GdsButtonProps, ButtonSize, ButtonVariant};
 use gds::ui::keytips::{HintPlacement, KeytipRegistry};
@@ -51,24 +50,7 @@ const PICKER_CSS: &str = css!(
         box-sizing: border-box;
     }
 
-    .gds-files-picker-overlay-bar {
-        position: fixed;
-        bottom: 0;
-        right: 0;
-        height: var(--gds-footer-height, 36px);
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 0 18px;
-        pointer-events: none;
-        z-index: 5;
-        box-sizing: border-box;
-    }
-
     .gds-files-picker-name-slot {
-        pointer-events: auto;
         display: flex;
         flex-direction: row;
         align-items: center;
@@ -76,30 +58,26 @@ const PICKER_CSS: &str = css!(
         min-width: 140px;
         max-width: 480px;
         height: 100%;
-        background: var(--gds-surface);
-        padding-right: 8px;
         box-sizing: border-box;
     }
 
+    .gds-files-picker-name-input.zui-field,
     .gds-files-picker-name-input.zui-input,
-    .gds-files-picker-name-input {
+    .gds-files-picker-name-input.gds-files-picker-name-input {
         width: 100%;
-        height: 26px;
-        min-height: 26px;
+        height: 28px;
+        min-height: 28px;
+        max-height: 28px;
         padding: 0 8px;
         font-size: var(--gds-font-size-small, 14px);
     }
 
     .gds-files-picker-controls-slot {
-        pointer-events: auto;
-        margin-left: auto;
         display: flex;
         flex-direction: row;
         align-items: center;
         gap: 8px;
         height: 100%;
-        background: var(--gds-surface);
-        padding-left: 10px;
         box-sizing: border-box;
     }
 
@@ -117,15 +95,20 @@ const PICKER_CSS: &str = css!(
         white-space: nowrap;
     }
 
-    .gds-files-picker-filter-trigger.zui-select__trigger {
-        height: 26px;
-        min-height: 26px;
+    .gds-files-picker-filter-trigger.gds-files-picker-filter-trigger,
+    .gds-files-picker-filter-trigger.gds-files-picker-filter-trigger[data-size="sm"] {
+        height: 28px;
+        min-height: 28px;
+        max-height: 28px;
+        padding-top: 0;
+        padding-bottom: 0;
         max-width: 200px;
     }
 
     .gds-files-picker-btn.zui-button.gds-button[data-size="sm"] {
-        height: 26px;
-        min-height: 26px;
+        height: 28px;
+        min-height: 28px;
+        max-height: 28px;
     }
     "#
 );
@@ -169,7 +152,6 @@ impl Mnemonic {
 struct PickerUiSlot {
     browser: WeakBrowser,
     save_input_node: NodeRef,
-    direct_controls_mounted: Cell<bool>,
 }
 
 thread_local! {
@@ -198,7 +180,6 @@ fn picker_ui_slot(browser: &Browser) -> Rc<PickerUiSlot> {
         Rc::new(PickerUiSlot {
             browser: browser.downgrade(),
             save_input_node: NodeRef::new(),
-            direct_controls_mounted: Cell::new(false),
         })
     });
     PICKER_SLOTS.with(|map| {
@@ -236,7 +217,7 @@ impl Browser {
         self.pane_untracked() == Pane::Files
             && matches!(self.0.prompt.get_untracked(), Prompt::Closed)
             && !self.0.menus.is_open()
-            && !self.0.connector.is_connecting()
+            && !self.0.connector.is_connecting_untracked()
             && matches!(
                 self.0.address_presentation.get_untracked(),
                 AddressPresentation::Breadcrumbs
@@ -494,7 +475,6 @@ impl Browser {
         })
     }
 
-    #[allow(dead_code)]
     pub(super) fn render_picker_name(&self) -> Option<AnyView> {
         let is_save = self.read_untracked(|state| {
             state
@@ -511,6 +491,9 @@ impl Browser {
         let save_name = self.0.save_name;
         let save_composing = Rc::new(Cell::new(false));
         let save_focus_browser = self.clone();
+        let avail_browser = self.clone();
+        let disabled_input =
+            Signal::derive_local(move || !avail_browser.picker_actions_available());
 
         let save_effect = RenderEffect::new(move |prev: Option<bool>| {
             let mounted = save_input_node.get().is_some();
@@ -539,6 +522,7 @@ impl Browser {
                 Input(
                     class = "gds-files-picker-name-input",
                     value = save_name,
+                    disabled = disabled_input,
                     placeholder = file_name_label.clone(),
                     label = file_name_label,
                     node_ref = save_input_node,
@@ -580,16 +564,7 @@ impl Browser {
         }))
     }
 
-    #[allow(dead_code)]
     pub(super) fn render_picker_controls(&self) -> Option<AnyView> {
-        let slot = picker_ui_slot(self);
-        slot.direct_controls_mounted.set(true);
-        let cleanup_slot = Rc::clone(&slot);
-        on_cleanup_local(move || cleanup_slot.direct_controls_mounted.set(false));
-        self.build_picker_controls_view()
-    }
-
-    fn build_picker_controls_view(&self) -> Option<AnyView> {
         if self.read_untracked(|state| state.picker.is_none()) {
             return None;
         }
@@ -780,6 +755,7 @@ impl Browser {
                     icon = IconName::X,
                     tooltip = cancel_label.clone(),
                     shortcut = cancel_shortcut,
+                    shortcut_enabled = enabled_actions,
                     class = "gds-files-picker-btn",
                     on:click = move |_| browser_cancel_btn.cancel_picker(),
                 ) {
@@ -793,6 +769,7 @@ impl Browser {
                     disabled = disabled_confirm,
                     tooltip = confirm_label.clone(),
                     shortcut = confirm_shortcut,
+                    shortcut_enabled = enabled_actions,
                     class = "gds-files-picker-btn",
                     on:click = move |_| browser_accept_btn.accept_picker(),
                 ) {
@@ -800,42 +777,6 @@ impl Browser {
                 }
             }
         }))
-    }
-
-    /// Mounted in `menu_overlay()` to align picker controls directly onto the 36px `FrameFooter`.
-    pub(super) fn picker_footer_overlay(&self) -> AnyView {
-        if self.read_untracked(|state| state.picker.is_none()) {
-            return AnyView::new(view! { box(style:display = "none") });
-        }
-        install_picker_stylesheet();
-        let slot = picker_ui_slot(self);
-        let sidebar_width = self.sidebar_width();
-        let browser_vis = self.clone();
-        let name_view = self.render_picker_name();
-        let controls_view = self.build_picker_controls_view();
-
-        AnyView::new(view! {
-            row(
-                class = "gds-files-picker-overlay-bar",
-                style:left = move || {
-                    let left = sidebar_width.get().max(tokens::COLLAPSED_SIDEBAR_WIDTH);
-                    Some(format!("{left:.2}px"))
-                },
-                style:display = move || {
-                    let show = !slot.direct_controls_mounted.get()
-                        && browser_vis.pane() == Pane::Files
-                        && browser_vis.read(|state| state.picker.is_some());
-                    if show {
-                        Some("flex".to_owned())
-                    } else {
-                        Some("none".to_owned())
-                    }
-                },
-            ) {
-                {name_view}
-                {controls_view}
-            }
-        })
     }
 
     pub(super) fn activate_picker_path(&self, path: PathBuf) {

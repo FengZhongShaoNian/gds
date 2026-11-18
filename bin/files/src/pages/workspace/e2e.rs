@@ -507,13 +507,9 @@ mod driven {
     fn prepare_artifacts() -> Result<(PathBuf, PathBuf)> {
         let artifacts = match std::env::var_os("GDS_E2E_ARTIFACTS") {
             Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-            _ => {
-                let dir =
-                    std::env::temp_dir().join(format!("gds-files-e2e-{}", std::process::id()));
-                fs::create_dir_all(&dir)?;
-                dir
-            }
+            _ => std::env::temp_dir().join(format!("gds-files-e2e-{}", std::process::id())),
         };
+        fs::create_dir_all(&artifacts)?;
         let work = std::env::var_os("HOME")
             .map(|h| PathBuf::from(h).join("work"))
             .filter(|dir| dir.is_dir())

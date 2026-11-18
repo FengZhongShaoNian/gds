@@ -156,3 +156,122 @@ fn future_values_fall_back_to_the_exact_local_time() {
         }
     );
 }
+
+#[test]
+fn next_tick_delay_targets_next_whole_minute() {
+    use chrono::TimeZone;
+
+    let on_minute: SystemTime = Local
+        .with_ymd_and_hms(2026, 3, 10, 12, 0, 0)
+        .single()
+        .expect("valid local timestamp")
+        .into();
+    assert_eq!(
+        super::clock::next_tick_delay(on_minute),
+        Duration::from_secs(60)
+    );
+
+    let mid_minute = on_minute + Duration::from_secs(45);
+    assert_eq!(
+        super::clock::next_tick_delay(mid_minute),
+        Duration::from_secs(15)
+    );
+
+    let near_rollover = on_minute + Duration::from_millis(59_995);
+    assert_eq!(
+        super::clock::next_tick_delay(near_rollover),
+        Duration::from_millis(50)
+    );
+}
+
+#[test]
+fn timestamp_format_presentation_localizes_every_variant_and_cleans_up_on_unmount() {
+    use zgui::prelude::*;
+    use zgui::reactive::{Mounted, RwSignal, install};
+    use zgui::view;
+
+    use super::{ClockProps, Format, Timestamp, TimestampViewProps};
+    use crate::app::Gds;
+    use crate::i18n::Language;
+    use crate::service::task_manager::Scope;
+
+    install().ok();
+    let scope1 = Mounted::new();
+    scope1.with(|| {
+        let gds = Gds::install(Scope::default());
+        gds.i18n()
+            .install(Language::English)
+            .expect("English locale");
+        super::apply(Format::Absolute);
+        assert_eq!(super::format(), Format::Absolute);
+
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Missing),
+            "\u{2014}"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Epoch),
+            "Unix epoch"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::JustNow),
+            "Just now"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Minutes(1)),
+            "1 minute ago"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Minutes(5)),
+            "5 minutes ago"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Today {
+                time: "14:22".to_owned(),
+            }),
+            "Today 14:22"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Yesterday {
+                time: "09:15".to_owned(),
+            }),
+            "Yesterday 09:15"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Days(3)),
+            "3 days ago"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Weeks(2)),
+            "2 weeks ago"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Months(4)),
+            "4 months ago"
+        );
+        assert_eq!(
+            super::timestamp::format_presentation(Presentation::Years(1)),
+            "1 year ago"
+        );
+
+        let ts_signal = RwSignal::new_local(Some(at(2026, 3, 10, 12, 0)));
+        let _clock = view! { Clock() };
+        let _ts_view = view! { TimestampView(value = ts_signal) };
+        ts_signal.set(None);
+
+        let text = Timestamp::new(Some(at(2026, 3, 10, 12, 0)))
+            .format(Format::Absolute)
+            .render_text();
+        assert_eq!(text, "2026-03-10 12:00");
+    });
+    scope1.unmount();
+
+    // After unmounting the first scope, thread-local clock state resets cleanly
+    // rather than holding disposed signals.
+    let scope2 = Mounted::new();
+    scope2.with(|| {
+        let _gds = Gds::install(Scope::default());
+        assert_eq!(super::format(), Format::Relative);
+    });
+    scope2.unmount();
+}

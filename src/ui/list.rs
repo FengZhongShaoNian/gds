@@ -1,11 +1,13 @@
-//! Uniform list surface, alternating rows, blank-space hit geometry, and virtualization.
+//! Uniform borderless list surface, `:focus-visible` inset contour, blank-space hit geometry, and virtualization.
 
 #[cfg(test)]
 mod tests;
 
-use zgui::geom::{Css, CssPx, Point, Rect};
+use zgui::geom::{Css, CssPx, Point, Rect, Size};
 use zgui::prelude::*;
-use zgui::reactive::LocalStorage;
+use zgui::reactive::{LocalStorage, UnsyncCallback};
+use zgui::view::{AttrName, ListenerOptions, events};
+use zgui::vocab::PointerButton;
 use zgui::{component, css, view};
 
 pub use crate::appearance::tokens::DataListStyle;
@@ -14,7 +16,8 @@ pub use zgui_ui::virtualize::{VirtualList, VirtualListProps, VirtualWindow, Virt
 const LIST_SHEET: &str = "gds-ui-list";
 
 const LIST_CSS: &str = css!(
-    ".gds-list-surface {
+    ".gds-list-surface.gds-list-surface {
+        position: relative;
         display: flex;
         flex-direction: column;
         flex: 1 1 0%;
@@ -22,14 +25,34 @@ const LIST_CSS: &str = css!(
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
+        background: transparent;
+        border: none;
+        outline: none;
+        box-shadow: none;
     }
-    .gds-list-surface__scroll {
+    .gds-list-surface.gds-list-surface:focus:not(:focus-visible),
+    .gds-list-surface__scroll.gds-list-surface__scroll:focus:not(:focus-visible),
+    .gds-list-surface .zui-scroll-area__viewport:focus:not(:focus-visible) {
+        outline: none;
+        box-shadow: none;
+    }
+    .gds-list-surface.gds-list-surface:focus-visible,
+    .gds-list-surface__scroll.gds-list-surface__scroll:focus-visible,
+    .gds-list-surface .zui-scroll-area__viewport:focus-visible {
+        outline: 1px solid var(--gds-primary);
+        outline-offset: -1px;
+        box-shadow: none;
+    }
+    .gds-list-surface__scroll.gds-list-surface__scroll {
         display: block;
         flex: 1 1 0%;
         width: 100%;
         min-width: 0px;
         min-height: 0px;
         overflow-y: auto;
+        overflow-x: hidden;
+    }
+    .gds-list-surface .zui-scroll-area[data-orientation=\"vertical\"] > .zui-scroll-area__viewport {
         overflow-x: hidden;
     }
     .gds-list-surface__items {
@@ -52,6 +75,8 @@ const LIST_CSS: &str = css!(
         overflow: hidden;
         white-space: nowrap;
         text-overflow: ellipsis;
+        outline: none;
+        box-shadow: none;
         transition:
             background-color var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1)),
             color var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
@@ -68,9 +93,14 @@ const LIST_CSS: &str = css!(
         background-color: var(--gds-selection);
         color: var(--gds-selection-foreground);
     }
+    .gds-list-row:focus:not(:focus-visible) {
+        outline: none;
+        box-shadow: none;
+    }
     .gds-list-row:focus-visible {
         outline: 1px solid var(--gds-primary);
         outline-offset: -1px;
+        box-shadow: none;
     }"
 );
 
@@ -83,15 +113,15 @@ fn install_list_stylesheets() {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ListStyle {
     #[default]
-    Striped,
     Plain,
+    Striped,
 }
 
 impl ListStyle {
     const fn attr_value(self) -> &'static str {
         match self {
-            Self::Striped => "striped",
             Self::Plain => "plain",
+            Self::Striped => "striped",
         }
     }
 }
@@ -122,8 +152,9 @@ impl Default for ListGeometry {
 }
 
 impl ListGeometry {
-    /// Returns whether `position` hits empty background below the rendered rows,
-    /// where `scroll_y` is the downward scroll offset in CSS px (matching `ScrollPosition::offset.y`).
+    /// Returns whether `position` hits empty background outside populated rows
+    /// (side `inset_x` margins or space below the last row), where `scroll_y`
+    /// is the downward scroll offset in CSS px (`ScrollPosition::offset.y / scale`).
     #[must_use]
     pub fn is_blank(
         self,
@@ -153,19 +184,96 @@ impl ListGeometry {
     }
 }
 
+struct BlankPressConfig {
+    scroll_ref: Option<NodeRef>,
+    rows: Signal<usize, LocalStorage>,
+    row_height: Signal<f32, LocalStorage>,
+    header_height: Signal<f32, LocalStorage>,
+    inset_x: Signal<f32, LocalStorage>,
+    bottom_inset: Signal<f32, LocalStorage>,
+    on_blank_press: Option<UnsyncCallback<()>>,
+}
+
 fn render_list_surface(
     style: ListStyle,
     node_ref: Option<NodeRef>,
+    blank: BlankPressConfig,
     class: Classes,
     attrs: Attrs,
     content: AnyView,
 ) -> impl IntoView {
     install_list_stylesheets();
+    let surface_ref = node_ref.unwrap_or_default();
+    let mut own = Attrs::new().attribute(AttrName::new("data-style"), style.attr_value());
+
+    if let Some(on_blank) = blank.on_blank_press {
+        let BlankPressConfig {
+            scroll_ref,
+            rows,
+            row_height,
+            header_height,
+            inset_x,
+            bottom_inset,
+            ..
+        } = blank;
+        own = own.listener(
+            events::POINTER_DOWN,
+            ListenerOptions::CAPTURE,
+            move |ev: &mut EventCx<'_, events::PointerDown>| {
+                if !matches!(
+                    ev.button,
+                    Some(PointerButton::Primary | PointerButton::Secondary)
+                ) {
+                    return;
+                }
+                let Some(bounds_dev) = surface_ref.window_bounds() else {
+                    return;
+                };
+                let scale = surface_ref.scale();
+                let scale = if scale.is_finite() && scale > 0.0 {
+                    scale
+                } else {
+                    1.0
+                };
+                let bounds = Rect::new(
+                    Point::new(
+                        CssPx(bounds_dev.origin.x.0 / scale),
+                        CssPx(bounds_dev.origin.y.0 / scale),
+                    ),
+                    Size::new(
+                        CssPx(bounds_dev.size.width.0 / scale),
+                        CssPx(bounds_dev.size.height.0 / scale),
+                    ),
+                );
+                let scroll_y = scroll_ref.map_or(CssPx(0.0), |scroll| {
+                    let scroll_scale = scroll.scale();
+                    let s = if scroll_scale.is_finite() && scroll_scale > 0.0 {
+                        scroll_scale
+                    } else {
+                        scale
+                    };
+                    CssPx(scroll.scroll_position().offset.y.0 / s)
+                });
+                let geometry = ListGeometry {
+                    rows: rows.get_untracked(),
+                    row_height: row_height.get_untracked(),
+                    header_height: header_height.get_untracked(),
+                    inset_x: inset_x.get_untracked(),
+                    bottom_inset: bottom_inset.get_untracked(),
+                    scrollbar_width: DataListStyle::SCROLLBAR_LANE,
+                };
+                if geometry.is_blank(bounds, ev.position, scroll_y) {
+                    on_blank.run(());
+                }
+            },
+        );
+    }
+
     view! {
         column(
             class = "gds-list-surface",
-            node_ref = node_ref.unwrap_or_default(),
-            attr:data-style = style.attr_value(),
+            node_ref = surface_ref,
+            {..own},
             class = class,
             {..attrs}
         ) {
@@ -174,19 +282,48 @@ fn render_list_surface(
     }
 }
 
-/// Uniform list container applying GDS density styling.
+/// Borderless list container with `:focus-visible`-only `1px` inset contour and
+/// built-in capture-phase blank-space press detection.
+#[allow(clippy::too_many_arguments)]
 #[component]
 pub fn ListSurface(
-    #[prop(default = ListStyle::Striped)] style: ListStyle,
+    #[prop(default = ListStyle::Plain)] style: ListStyle,
     #[prop(optional)] node_ref: Option<NodeRef>,
+    #[prop(optional)] scroll_ref: Option<NodeRef>,
+    #[prop(into, default = Signal::stored_local(0_usize))] rows: Signal<usize, LocalStorage>,
+    #[prop(into, default = Signal::stored_local(DataListStyle::ROW_HEIGHT))] row_height: Signal<
+        f32,
+        LocalStorage,
+    >,
+    #[prop(into, default = Signal::stored_local(DataListStyle::HEADER_HEIGHT))]
+    header_height: Signal<f32, LocalStorage>,
+    #[prop(into, default = Signal::stored_local(0.0_f32))] inset_x: Signal<f32, LocalStorage>,
+    #[prop(into, default = Signal::stored_local(DataListStyle::SCROLLBAR_LANE))]
+    bottom_inset: Signal<f32, LocalStorage>,
+    #[prop(optional)] on_blank_press: Option<UnsyncCallback<()>>,
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
-    render_list_surface(style, node_ref, class, attrs, children.into_view_once())
+    render_list_surface(
+        style,
+        node_ref,
+        BlankPressConfig {
+            scroll_ref,
+            rows,
+            row_height,
+            header_height,
+            inset_x,
+            bottom_inset,
+            on_blank_press,
+        },
+        class,
+        attrs,
+        children.into_view_once(),
+    )
 }
 
-/// Standard data-list row carrying alternating stripe and selection attributes.
+/// Standard data-list row carrying selection and optional alternating stripe attributes.
 #[component]
 pub fn ListRow(
     #[prop(optional)] index: Option<usize>,
@@ -198,15 +335,12 @@ pub fn ListRow(
 ) -> impl IntoView {
     install_list_stylesheets();
     let mut own = Attrs::new()
+        .attribute(AttrName::new("data-index"), index.map(|i| i.to_string()))
         .attribute(
-            zgui::view::AttrName::new("data-index"),
-            index.map(|i| i.to_string()),
-        )
-        .attribute(
-            zgui::view::AttrName::new("data-odd"),
+            AttrName::new("data-odd"),
             index.is_some_and(|i| i % 2 == 1).then(|| "true".to_owned()),
         )
-        .attribute(zgui::view::AttrName::new("data-selected"), move || {
+        .attribute(AttrName::new("data-selected"), move || {
             selected.get().then(|| "true".to_owned())
         })
         .a11y_from(A11yBinding::new(Role::ListItem).selected(move || selected.get()));
@@ -237,9 +371,15 @@ pub fn VirtualizedListSurface<V, F>(
         LocalStorage,
     >,
     #[prop(default = 4)] overscan: usize,
-    #[prop(default = ListStyle::Striped)] list_style: ListStyle,
+    #[prop(default = ListStyle::Plain)] list_style: ListStyle,
     #[prop(into, optional)] label: Option<String>,
     #[prop(optional)] node_ref: Option<NodeRef>,
+    #[prop(optional)] surface_ref: Option<NodeRef>,
+    #[prop(into, default = Signal::stored_local(0.0_f32))] header_height: Signal<f32, LocalStorage>,
+    #[prop(into, default = Signal::stored_local(0.0_f32))] inset_x: Signal<f32, LocalStorage>,
+    #[prop(into, default = Signal::stored_local(DataListStyle::SCROLLBAR_LANE))]
+    bottom_inset: Signal<f32, LocalStorage>,
+    #[prop(optional)] on_blank_press: Option<UnsyncCallback<()>>,
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
     row: F,
@@ -277,5 +417,20 @@ where
         }
     });
 
-    render_list_surface(list_style, None, class, attrs, scroll_view)
+    render_list_surface(
+        list_style,
+        surface_ref,
+        BlankPressConfig {
+            scroll_ref: Some(viewport),
+            rows: count,
+            row_height: row_size,
+            header_height,
+            inset_x,
+            bottom_inset,
+            on_blank_press,
+        },
+        class,
+        attrs,
+        scroll_view,
+    )
 }

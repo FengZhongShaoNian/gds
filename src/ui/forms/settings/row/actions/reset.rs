@@ -9,6 +9,7 @@ pub fn SettingReset(
     #[prop(attrs)] attrs: Attrs,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
+    super::super::super::install_settings_stylesheets();
     let size = format!("{RESET_WIDTH}px");
     view! {
         box(class = "gds-setting-reset", var:--gds-setting-reset-size = size, class = class, {..attrs}) {

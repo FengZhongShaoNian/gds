@@ -1,4 +1,4 @@
-//! Suite settings presentation: rows, numeric ranges, and keyboard-accessible sliders.
+//! Suite settings presentation: flat hairline rows, numeric ranges, and keyboard-accessible sliders.
 
 pub mod form;
 mod row;
@@ -8,13 +8,147 @@ pub use row::*;
 use crate::appearance::typography;
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, UnsyncCallback};
-use zgui::{component, view};
+use zgui::{component, css, view};
 use zgui_ui::SliderProps;
 use zgui_ui_primitives::Binding;
 
 pub const CONTROL_WIDTH: f32 = 260.0;
 pub(crate) const RESET_WIDTH: f32 = 32.0;
 pub(crate) const CONTROL_GAP: f32 = 8.0;
+pub const NUMBER_LABEL_WIDTH_REMS: f32 = 4.5;
+
+const SETTINGS_SHEET: &str = "gds-ui-settings";
+
+const SETTINGS_CSS: &str = css!(
+    ".gds-setting-form.gds-setting-form {
+        display: flex;
+        flex-direction: column;
+        gap: 0px;
+        width: 100%;
+    }
+    .gds-setting-form.gds-setting-form[data-disabled=\"true\"] {
+        opacity: 0.6;
+    }
+    .gds-setting-section.gds-setting-section {
+        display: flex;
+        flex-direction: column;
+        gap: 0px;
+        width: 100%;
+    }
+    .gds-setting-group.gds-setting-group {
+        font-size: var(--gds-font-size-small, var(--gds-font-size-sm, 14px));
+        font-weight: 400;
+        color: var(--gds-muted-foreground);
+        padding-top: 16px;
+    }
+    .gds-setting-row.gds-setting-row {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        padding: 16px 0px;
+        background: transparent;
+        border: none;
+        border-bottom: 1px solid var(--gds-border);
+        border-radius: 0px;
+        width: 100%;
+    }
+    .gds-setting-label.gds-setting-label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 1 1 0%;
+        min-width: 0px;
+        font-size: var(--gds-font-size-small, var(--gds-font-size-sm, 14px));
+    }
+    .gds-setting-title.gds-setting-title {
+        font-size: var(--gds-font-size-small, var(--gds-font-size-sm, 14px));
+        font-weight: 400;
+        color: var(--gds-foreground);
+    }
+    .gds-setting-description.gds-setting-description {
+        font-size: var(--gds-font-size-small, var(--gds-font-size-sm, 14px));
+        color: var(--gds-muted-foreground);
+    }
+    .gds-setting-error.gds-setting-error {
+        font-size: var(--gds-font-size-small, var(--gds-font-size-sm, 14px));
+        color: var(--gds-error);
+    }
+    .gds-setting-actions.gds-setting-actions {
+        display: flex;
+        flex-direction: row;
+        flex-shrink: 0;
+        align-items: center;
+        gap: var(--gds-setting-gap, 8px);
+    }
+    .gds-setting-reset.gds-setting-reset {
+        width: var(--gds-setting-reset-size, 32px);
+        height: var(--gds-setting-reset-size, 32px);
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .gds-setting-control.gds-setting-control {
+        width: var(--gds-setting-control-width, 260px);
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: flex-end;
+    }
+    .gds-setting-control.gds-setting-control > .zui-select__trigger,
+    .gds-setting-control.gds-setting-control .zui-select__trigger,
+    .gds-setting-control.gds-setting-control > .zui-combobox,
+    .gds-setting-control.gds-setting-control .zui-input-group,
+    .gds-setting-control.gds-setting-control > .gds-input-field,
+    .gds-setting-control.gds-setting-control > .gds-textarea-field,
+    .gds-setting-control.gds-setting-control > .gds-setting-number-row,
+    .gds-setting-control.gds-setting-control > .gds-setting-number {
+        width: 100%;
+    }
+    .gds-setting-control .zui-select__trigger {
+        background: var(--gds-content);
+        border: 1px solid var(--gds-outline);
+        border-radius: var(--gds-radius-control, 6px);
+        box-shadow: none;
+        outline: none;
+    }
+    .gds-setting-control .zui-select__trigger:focus,
+    .gds-setting-control .zui-select__trigger:focus-visible {
+        border-color: var(--gds-primary);
+        box-shadow: none;
+        outline: none;
+    }
+    .gds-setting-number.gds-setting-number {
+        flex: 1 1 0%;
+        min-width: 0px;
+        width: 100%;
+    }
+    .gds-setting-number-row.gds-setting-number-row {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+    }
+    .gds-setting-number-value.gds-setting-number-value {
+        width: 4.5rem;
+        min-width: 4.5rem;
+        flex-shrink: 0;
+        text-align: right;
+        white-space: nowrap;
+        font-size: var(--gds-font-size-small, var(--gds-font-size-sm, 14px));
+        font-variant-numeric: tabular-nums;
+        color: var(--gds-foreground);
+    }"
+);
+
+pub(crate) fn install_settings_stylesheets() {
+    crate::ui::styles::install_ui_stylesheets();
+    zgui::view::install_stylesheet(SETTINGS_SHEET, SETTINGS_CSS);
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NumberRange {
@@ -65,7 +199,7 @@ pub fn NumberControl(
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    install_settings_stylesheets();
     view! {
         box(class = "gds-setting-number", class = class, {..attrs}) {
             Slider(

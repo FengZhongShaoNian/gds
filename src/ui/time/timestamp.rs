@@ -2,13 +2,33 @@ use std::time::SystemTime;
 
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, on_cleanup_local};
-use zgui::{component, view};
+use zgui::{component, css, view};
 use zgui_ui::{TooltipContentProps, TooltipProps, TooltipTriggerProps};
 
 use super::{Format, Presentation, format, now, precise, tick_signal};
 use crate::app::Gds;
 use crate::i18n::FluentArgs;
 use crate::ui::tooltip::{TOOLTIP_DELAY, TooltipTextProps};
+
+const TIME_SHEET: &str = "gds-ui-time";
+
+const TIME_CSS: &str = css!(
+    ".gds-timestamp.gds-timestamp {
+        min-width: 0px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+    }
+    .gds-clock.gds-clock {
+        font-variant-numeric: tabular-nums;
+    }"
+);
+
+pub(super) fn install_time_stylesheets() {
+    crate::ui::styles::install_ui_stylesheets();
+    zgui::view::install_stylesheet(TIME_SHEET, TIME_CSS);
+}
 
 /// Timestamp builder usable directly inside `view!` expressions or via [`TimestampView`].
 #[derive(Clone, Copy, Debug)]
@@ -59,7 +79,7 @@ pub fn TimestampView(
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    install_time_stylesheets();
     let ticks = tick_signal();
     let has_value = RwSignal::new_local(value.get_untracked().is_some());
     let sync_has_value = RenderEffect::new(move |_| {

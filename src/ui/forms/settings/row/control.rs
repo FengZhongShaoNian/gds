@@ -9,6 +9,7 @@ pub fn SettingControl(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    super::super::install_settings_stylesheets();
     let width = format!("{CONTROL_WIDTH}px");
     view! {
         box(class = "gds-setting-control", var:--gds-setting-control-width = width, class = class, {..attrs}) {

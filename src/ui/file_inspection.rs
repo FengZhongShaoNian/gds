@@ -451,6 +451,15 @@ impl Cache {
                         None
                     } else if let Some(outcome) = outcome {
                         apply_outcome(&mut contents, &key, worker_request, outcome);
+                        if let Some(entry) = contents.entries.get(&key) {
+                            let still_meta = matches!(entry.snapshot.metadata, State::Loading);
+                            let still_thumb = matches!(entry.snapshot.thumbnail, State::Loading);
+                            if let Some(follow_up) =
+                                combine_missing_request(still_meta, still_thumb)
+                            {
+                                enqueue_lifo(&mut contents.pending, key.clone(), follow_up);
+                            }
+                        }
                         contents.trim(Some(&key));
                         contents.revision
                     } else {

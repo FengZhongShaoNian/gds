@@ -24,7 +24,7 @@ pub(super) fn next_tick_delay(now: SystemTime) -> Duration {
 /// Reactive clock component refreshing at minute ticks.
 #[component]
 pub fn Clock(#[prop(into, optional)] class: Classes, #[prop(attrs)] attrs: Attrs) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::timestamp::install_time_stylesheets();
     let ticks = tick_signal();
     view! {
         text(class = "gds-clock", class = class, {..attrs}) {{move || {

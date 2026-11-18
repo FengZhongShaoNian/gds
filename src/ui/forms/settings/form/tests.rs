@@ -375,31 +375,87 @@ fn headless_settings_editor_wires_labelled_by_reset_and_filter() {
         Rc::new(RefCell::new(None));
     let filter_slot: Rc<RefCell<Option<RwSignal<String, LocalStorage>>>> =
         Rc::new(RefCell::new(None));
+    let changes_log: Rc<RefCell<Vec<Changed<SampleSettings>>>> = Rc::new(RefCell::new(Vec::new()));
     let sig_slot_view = Rc::clone(&sig_slot);
     let filter_slot_view = Rc::clone(&filter_slot);
+    let changes_view = Rc::clone(&changes_log);
     let sig_slot_driver = Rc::clone(&sig_slot);
     let filter_slot_driver = Rc::clone(&filter_slot);
+    let changes_driver = Rc::clone(&changes_log);
 
     let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
         let mut harness = Harness::new(handler);
-        harness.pump();
+        harness.deliver_to_first(zgui::platform::SurfaceEvent::Resized(
+            zgui::geom::Size::new(zgui::geom::DevicePx(640.0), zgui::geom::DevicePx(480.0)),
+        ));
         if let Some(surface) = harness.platform().offscreens().first() {
             surface.set_a11y_listener(true);
         }
-        harness.settle(4);
+        harness.settle(8);
 
         let offscreen = harness.platform().offscreens()[0].clone();
         let mut nodes_by_id = HashMap::new();
+        let mut root_id = None;
         for update in offscreen.a11y_log() {
+            if let Some(tree) = update.tree {
+                root_id = Some(tree.root);
+            }
             for (id, node) in update.nodes {
                 nodes_by_id.insert(id, node);
             }
         }
 
-        let switch_node = nodes_by_id
-            .values()
-            .find(|n| format!("{:?}", n.role()) == "Switch")
+        let compute_window_rects = || {
+            let mut rects = HashMap::new();
+            let Some(r_id) = root_id else {
+                return rects;
+            };
+            let Some(r_node) = nodes_by_id.get(&r_id) else {
+                return rects;
+            };
+            let mut stack: Vec<(_, (f64, f64))> = r_node
+                .children()
+                .iter()
+                .map(|&child| (child, (0.0, 0.0)))
+                .collect();
+            while let Some((id, (ox, oy))) = stack.pop() {
+                let Some(node) = nodes_by_id.get(&id) else {
+                    continue;
+                };
+                let (nx, ny) = match node.transform() {
+                    Some(affine) => {
+                        let c = affine.as_coeffs();
+                        (ox + c[4], oy + c[5])
+                    }
+                    None => (ox, oy),
+                };
+                if let Some(b) = node.bounds() {
+                    rects.insert(
+                        id,
+                        (
+                            (nx + b.x0) as f32,
+                            (ny + b.y0) as f32,
+                            (nx + b.x1) as f32,
+                            (ny + b.y1) as f32,
+                        ),
+                    );
+                }
+                for &child in node.children() {
+                    stack.push((child, (nx, ny)));
+                }
+            }
+            rects
+        };
+
+        let initial_rects = compute_window_rects();
+        let (&switch_id, switch_node) = nodes_by_id
+            .iter()
+            .find(|(_, n)| format!("{:?}", n.role()) == "Switch")
             .expect("Switch rendered in Editor");
+        let initial_switch_bounds = initial_rects
+            .get(&switch_id)
+            .copied()
+            .expect("Switch window bounds");
         assert!(
             !switch_node.labelled_by().is_empty(),
             "Switch must have labelled_by pointing to FieldLabel"
@@ -420,18 +476,117 @@ fn headless_settings_editor_wires_labelled_by_reset_and_filter() {
             "Slider must have labelled_by pointing to FieldLabel"
         );
 
-        // Mutating model exposes Reset to default IconButton cleanly.
-        let sig = sig_slot_driver.borrow().expect("model signal");
-        sig.update(|s| s.enabled = true);
-        harness.settle(4);
-        assert!(
-            offscreen
-                .a11y_log()
+        // Click Switch to toggle `enabled` -> verifies `Changed.field == "enabled"`.
+        let switch_cx = (initial_switch_bounds.0 + initial_switch_bounds.2) * 0.5;
+        let switch_cy = (initial_switch_bounds.1 + initial_switch_bounds.3) * 0.5;
+        let click_pt =
+            zgui::geom::Point::new(zgui::geom::CssPx(switch_cx), zgui::geom::CssPx(switch_cy));
+        for action in [
+            zgui::vocab::PointerAction::Pressed,
+            zgui::vocab::PointerAction::Released,
+        ] {
+            harness.deliver_to_first(zgui::platform::SurfaceEvent::Pointer {
+                action,
+                event: zgui::vocab::PointerEvent::mouse(click_pt)
+                    .with_button(zgui::vocab::PointerButton::Primary),
+                modifiers: zgui::vocab::Modifiers::NONE,
+                timestamp: zgui::vocab::Timestamp::ORIGIN,
+            });
+        }
+        harness.settle(8);
+
+        assert_eq!(changes_driver.borrow().len(), 1);
+        assert_eq!(changes_driver.borrow()[0].field, "enabled");
+        assert!(changes_driver.borrow()[0].value.enabled);
+
+        // Collect updated a11y nodes and verify `[SettingReset, SettingControl]` order & stability.
+        for update in offscreen.a11y_log() {
+            if let Some(tree) = update.tree {
+                root_id = Some(tree.root);
+            }
+            for (id, node) in update.nodes {
+                nodes_by_id.insert(id, node);
+            }
+        }
+        let mut updated_rects = HashMap::new();
+        if let Some(r_id) = root_id
+            && let Some(r_node) = nodes_by_id.get(&r_id)
+        {
+            let mut stack: Vec<(_, (f64, f64))> = r_node
+                .children()
                 .iter()
-                .flat_map(|u| u.nodes.iter())
-                .any(|(_, n)| n.label() == Some("Reset to default")),
-            "expected Reset to default IconButton after modifying setting"
+                .map(|&child| (child, (0.0, 0.0)))
+                .collect();
+            while let Some((id, (ox, oy))) = stack.pop() {
+                let Some(node) = nodes_by_id.get(&id) else {
+                    continue;
+                };
+                let (nx, ny) = match node.transform() {
+                    Some(affine) => {
+                        let c = affine.as_coeffs();
+                        (ox + c[4], oy + c[5])
+                    }
+                    None => (ox, oy),
+                };
+                if let Some(b) = node.bounds() {
+                    updated_rects.insert(
+                        id,
+                        (
+                            (nx + b.x0) as f32,
+                            (ny + b.y0) as f32,
+                            (nx + b.x1) as f32,
+                            (ny + b.y1) as f32,
+                        ),
+                    );
+                }
+                for &child in node.children() {
+                    stack.push((child, (nx, ny)));
+                }
+            }
+        }
+        let (&reset_id, _) = nodes_by_id
+            .iter()
+            .find(|(_, n)| n.label() == Some("Reset to default"))
+            .expect("expected Reset to default IconButton after modifying setting");
+        let reset_bounds = updated_rects
+            .get(&reset_id)
+            .copied()
+            .expect("Reset window bounds");
+        let updated_switch_bounds = updated_rects
+            .get(&switch_id)
+            .copied()
+            .expect("updated Switch window bounds");
+        assert!(
+            reset_bounds.2 <= updated_switch_bounds.0 + 1.0,
+            "SettingReset ({reset_bounds:?}) must sit horizontally BEFORE SettingControl ({updated_switch_bounds:?})"
         );
+        assert!(
+            (updated_switch_bounds.0 - initial_switch_bounds.0).abs() < 0.5,
+            "SettingReset 32x32 slot must reserve fixed width so SettingControl never shifts"
+        );
+
+        // Click Reset to default -> restores default and emits `Changed { field: "enabled", .. }`.
+        let reset_pt = zgui::geom::Point::new(
+            zgui::geom::CssPx((reset_bounds.0 + reset_bounds.2) * 0.5),
+            zgui::geom::CssPx((reset_bounds.1 + reset_bounds.3) * 0.5),
+        );
+        for action in [
+            zgui::vocab::PointerAction::Pressed,
+            zgui::vocab::PointerAction::Released,
+        ] {
+            harness.deliver_to_first(zgui::platform::SurfaceEvent::Pointer {
+                action,
+                event: zgui::vocab::PointerEvent::mouse(reset_pt)
+                    .with_button(zgui::vocab::PointerButton::Primary),
+                modifiers: zgui::vocab::Modifiers::NONE,
+                timestamp: zgui::vocab::Timestamp::ORIGIN,
+            });
+        }
+        harness.settle(8);
+        assert_eq!(changes_driver.borrow().len(), 2);
+        assert_eq!(changes_driver.borrow()[1].field, "enabled");
+        assert!(!changes_driver.borrow()[1].value.enabled);
+        let _ = sig_slot_driver.borrow().expect("model signal");
 
         // Search filtering keeps matching row while removing non-matching ones.
         let filter = filter_slot_driver.borrow().expect("filter signal");
@@ -463,11 +618,240 @@ fn headless_settings_editor_wires_labelled_by_reset_and_filter() {
             gds.i18n().install(Language::English).expect("en-US");
             let sig = RwSignal::new_local(SampleSettings::default());
             let filter = RwSignal::new_local(String::new());
+            let log = Rc::clone(&changes_view);
             *sig_slot_view.borrow_mut() = Some(sig);
             *filter_slot_view.borrow_mut() = Some(filter);
-            SampleSettingsEditor::new(sig).filter(filter).view()
+            SampleSettingsEditor::new(sig)
+                .filter(filter)
+                .on_change(move |changed| log.borrow_mut().push(changed))
+                .view()
         })
         .expect("headless settings editor test ran");
+}
+
+#[test]
+fn headless_input_field_supports_leading_icon_compact_height_and_clear_button() {
+    use std::cell::Cell;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use zgui::geom::{CssPx, DevicePx, Point, Size};
+    use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
+    use zgui::reactive::UnsyncCallback;
+    use zgui::runtime::AppError;
+    use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Timestamp};
+    use zgui_platform_headless::Harness;
+
+    use crate::ui::icon::IconName;
+
+    #[derive(Default)]
+    struct Sink {
+        atlas: zgui::atlas::MemorySink,
+        target: Option<zgui::render::RenderTarget>,
+    }
+
+    impl zgui::render::Renderer for Sink {
+        fn capabilities(&self) -> zgui::render::RenderCapabilities {
+            zgui::render::RenderCapabilities::MINIMAL
+        }
+        fn configure(&mut self, target: zgui::render::RenderTarget) {
+            self.target = Some(target);
+        }
+        fn target(&self) -> Option<zgui::render::RenderTarget> {
+            self.target
+        }
+        fn register_external(
+            &mut self,
+            _: zgui::render::ExternalTexture,
+        ) -> zgui::render::TextureHandle {
+            zgui::render::TextureHandle(0)
+        }
+        fn release_external(&mut self, _: zgui::render::TextureHandle) {}
+        fn memory(&self) -> zgui::render::MemoryReport {
+            zgui::render::MemoryReport::default()
+        }
+        fn draw(
+            &mut self,
+            _: &zgui::scene::Scene,
+            _: &zgui::bits::DamageSet,
+        ) -> zgui::render::FrameOutcome {
+            zgui::render::FrameOutcome::Presented(zgui::render::FrameStats::default())
+        }
+        fn texture_sink(&mut self) -> &mut dyn zgui::atlas::TextureSink {
+            &mut self.atlas
+        }
+    }
+
+    let query_slot: Rc<RefCell<Option<RwSignal<String, LocalStorage>>>> =
+        Rc::new(RefCell::new(None));
+    let compact_ref: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
+    let regular_ref: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
+    let cleared = Rc::new(Cell::new(0_usize));
+
+    let query_view = Rc::clone(&query_slot);
+    let compact_view = Rc::clone(&compact_ref);
+    let regular_view = Rc::clone(&regular_ref);
+    let cleared_view = Rc::clone(&cleared);
+
+    let query_driver = Rc::clone(&query_slot);
+    let compact_driver = Rc::clone(&compact_ref);
+    let regular_driver = Rc::clone(&regular_ref);
+    let cleared_driver = Rc::clone(&cleared);
+
+    let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+        let mut harness = Harness::new(handler);
+        harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+            DevicePx(320.0),
+            DevicePx(160.0),
+        )));
+        if let Some(surface) = harness.platform().offscreens().first() {
+            surface.set_a11y_listener(true);
+        }
+        harness.settle(8);
+
+        let compact_node = compact_driver.borrow().expect("compact node");
+        let regular_node = regular_driver.borrow().expect("regular node");
+        let compact_h = compact_node
+            .window_bounds()
+            .expect("compact bounds")
+            .size
+            .height
+            .0
+            / compact_node.scale().max(1.0);
+        let regular_h = regular_node
+            .window_bounds()
+            .expect("regular bounds")
+            .size
+            .height
+            .0
+            / regular_node.scale().max(1.0);
+        assert!(
+            (compact_h - 30.0).abs() <= 2.5 && regular_h > compact_h + 2.0,
+            "compact InputField (32px pill) should be shorter than regular (36px pill): compact={compact_h}, regular={regular_h}"
+        );
+
+        let offscreen = harness.platform().offscreens()[0].clone();
+        let query = query_driver.borrow().expect("query signal");
+
+        // Initially empty: Clear button is hidden, while capture initial a11y tree.
+        let mut nodes = HashMap::new();
+        let mut root_id = None;
+        for update in offscreen.take_a11y_log() {
+            if let Some(tree) = update.tree {
+                root_id = Some(tree.root);
+            }
+            for (id, node) in update.nodes {
+                nodes.insert(id, node);
+            }
+        }
+        assert!(
+            !nodes.values().any(|n| n.label() == Some("Clear")),
+            "Clear button must stay hidden when InputField is empty"
+        );
+
+        // Populate query -> Clear button appears inside the pill.
+        query.set("documents".to_owned());
+        harness.settle(8);
+        for update in offscreen.take_a11y_log() {
+            if let Some(tree) = update.tree {
+                root_id = Some(tree.root);
+            }
+            for (id, node) in update.nodes {
+                nodes.insert(id, node);
+            }
+        }
+        let r_id = root_id.expect("a11y root");
+        let r_node = nodes.get(&r_id).expect("root node");
+        let mut stack: Vec<(_, (f64, f64))> =
+            r_node.children().iter().map(|&c| (c, (0.0, 0.0))).collect();
+        let mut clear_rect = None;
+        while let Some((id, (ox, oy))) = stack.pop() {
+            let Some(node) = nodes.get(&id) else {
+                continue;
+            };
+            let (nx, ny) = match node.transform() {
+                Some(affine) => {
+                    let c = affine.as_coeffs();
+                    (ox + c[4], oy + c[5])
+                }
+                None => (ox, oy),
+            };
+            if node.label() == Some("Clear")
+                && let Some(b) = node.bounds()
+            {
+                clear_rect = Some((
+                    (nx + b.x0) as f32,
+                    (ny + b.y0) as f32,
+                    (nx + b.x1) as f32,
+                    (ny + b.y1) as f32,
+                ));
+            }
+            for &child in node.children() {
+                stack.push((child, (nx, ny)));
+            }
+        }
+        let clear_bounds = clear_rect.expect("Clear button mounted when query is non-empty");
+
+        let pt = Point::new(
+            CssPx((clear_bounds.0 + clear_bounds.2) * 0.5),
+            CssPx((clear_bounds.1 + clear_bounds.3) * 0.5),
+        );
+        for action in [PointerAction::Pressed, PointerAction::Released] {
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action,
+                event: PointerEvent::mouse(pt).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+        }
+        harness.settle(8);
+
+        assert_eq!(query.get_untracked(), "");
+        assert_eq!(cleared_driver.get(), 1);
+
+        harness.shut_down();
+        Ok(())
+    };
+
+    zgui::app()
+        .with_title("input-field-pill-test")
+        .with_size(320.0, 160.0)
+        .with_renderer(Box::new(|_: &Arc<dyn Surface>, target| {
+            let mut sink = Sink::default();
+            zgui::render::Renderer::configure(&mut sink, target);
+            Ok::<_, AppError>(Box::new(sink) as Box<dyn zgui::render::Renderer>)
+        }))
+        .run_on(driver, move || {
+            let gds = Gds::try_current().unwrap_or_else(|| Gds::install(Scope::default()));
+            gds.i18n().install(Language::English).expect("en-US");
+            let query = RwSignal::new_local(String::new());
+            let c_ref = NodeRef::new();
+            let r_ref = NodeRef::new();
+            *query_view.borrow_mut() = Some(query);
+            *compact_view.borrow_mut() = Some(c_ref);
+            *regular_view.borrow_mut() = Some(r_ref);
+            let cleared_cb = Rc::clone(&cleared_view);
+            view! {
+                column(style:width = "260px", style:gap = "8px") {
+                    InputField(
+                        value = query,
+                        placeholder = "Filter this folder…",
+                        leading_icon = IconName::Search,
+                        clearable = true,
+                        compact = true,
+                        node_ref = c_ref,
+                        on_clear = UnsyncCallback::new(move |()| {
+                            cleared_cb.set(cleared_cb.get() + 1);
+                        }),
+                    )
+                    InputField(
+                        placeholder = "Regular field",
+                        node_ref = r_ref,
+                    )
+                }
+            }
+        })
+        .expect("headless InputField test ran");
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::ConfigEditor)]

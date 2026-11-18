@@ -177,3 +177,34 @@ fn oversized_source_reports_too_large_state_and_clear_resets() {
     });
     scope.unmount();
 }
+
+#[test]
+fn concurrent_request_upgrade_completes_both_metadata_and_thumbnail() {
+    install().ok();
+    let dir = TempDir::new().expect("tempdir");
+    let source = write_test_png(dir.path(), "upgrade.png", [64, 128, 255, 255], 32);
+
+    let scope = Mounted::new();
+    scope.with(|| {
+        let cache = Cache::new(Options {
+            workers: 1,
+            ..Options::default()
+        });
+        let first = cache.request(&source, Request::Metadata);
+        assert!(matches!(first.metadata, State::Loading));
+        assert!(matches!(first.thumbnail, State::NotRequested));
+
+        let second = cache.request(&source, Request::Thumbnail);
+        assert!(matches!(second.thumbnail, State::Loading));
+
+        drive_until(|| {
+            matches!(
+                cache.peek(&source),
+                Some(ref snap)
+                    if matches!(snap.metadata, State::Ready(_))
+                        && matches!(snap.thumbnail, State::Ready(_))
+            )
+        });
+    });
+    scope.unmount();
+}

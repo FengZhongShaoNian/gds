@@ -1,23 +1,27 @@
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use zgui::app::Fonts;
 use zgui::atlas::{SinkError, TextureFormat, TextureId, TextureSink};
 use zgui::geom::{CssPx, Device, DevicePx, Point, Rect, Size};
 use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
-use zgui::reactive::RwSignal;
+use zgui::prelude::*;
+use zgui::reactive::{RwSignal, UnsyncCallback};
 use zgui::render::{
     ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities, RenderTarget,
     Renderer, TextureHandle,
 };
 use zgui::runtime::AppError;
-use zgui::view;
-use zgui::vocab::Role;
+use zgui::view::{ScrollBehavior, ScrollTarget};
+use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Role, Timestamp};
 use zgui_platform_headless::Harness;
 
 use super::{
     DataListStyle, ListGeometry, ListRowProps, ListStyle, ListSurfaceProps,
     VirtualizedListSurfaceProps,
 };
+use crate::ui::page::{PageTableAreaProps, TABLE_INSET};
 
 struct NoopSink;
 
@@ -92,12 +96,14 @@ fn noop_renderer(
 }
 
 #[test]
-fn blank_press_tracks_scrolled_rows_and_preserves_header_and_scrollbars() {
+fn list_style_defaults_to_plain_and_tracks_table_insets() {
+    assert_eq!(ListStyle::default(), ListStyle::Plain);
+
     let geometry = ListGeometry {
         rows: 5,
         row_height: DataListStyle::ROW_HEIGHT,
         header_height: DataListStyle::HEADER_HEIGHT,
-        inset_x: 0.0,
+        inset_x: TABLE_INSET,
         bottom_inset: DataListStyle::SCROLLBAR_LANE,
         scrollbar_width: DataListStyle::SCROLLBAR_LANE,
     };
@@ -117,6 +123,18 @@ fn blank_press_tracks_scrolled_rows_and_preserves_header_and_scrollbars() {
         "a row retains its own selection behavior"
     );
     assert!(
+        hit(10.0, 100.0, 0.0),
+        "left TABLE_INSET margin clears selection"
+    );
+    assert!(
+        hit(390.0, 100.0, 0.0),
+        "right TABLE_INSET margin clears selection"
+    );
+    assert!(
+        !hit(374.0, 100.0, 0.0),
+        "vertical scrollbar lane inside inset keeps selection"
+    );
+    assert!(
         hit(100.0, 240.0, 0.0),
         "space below the rows clears selection"
     );
@@ -126,17 +144,120 @@ fn blank_press_tracks_scrolled_rows_and_preserves_header_and_scrollbars() {
     );
     assert!(!hit(100.0, 15.0, 80.0), "column headings keep selection");
     assert!(
-        !hit(390.0, 240.0, 0.0),
-        "the vertical scrollbar keeps selection"
-    );
-    assert!(
         !hit(100.0, 290.0, 0.0),
-        "the horizontal scrollbar keeps selection"
+        "the horizontal scrollbar lane keeps selection"
     );
     assert!(
         !hit(100.0, 310.0, 0.0),
         "a press outside this list does not clear it"
     );
+}
+
+#[test]
+fn headless_list_surface_fires_on_blank_press_for_margins_and_scrolled_tail() {
+    let blank_hits = Rc::new(Cell::new(0_usize));
+    let blank_hits_view = Rc::clone(&blank_hits);
+    let blank_hits_driver = Rc::clone(&blank_hits);
+    let scroll_slot: Rc<std::cell::RefCell<Option<NodeRef>>> =
+        Rc::new(std::cell::RefCell::new(None));
+    let scroll_slot_view = Rc::clone(&scroll_slot);
+    let scroll_slot_driver = Rc::clone(&scroll_slot);
+
+    let click_at = |harness: &mut Harness<Box<dyn AppHandler>>, x: f32, y: f32| {
+        let pt = Point::new(CssPx(x), CssPx(y));
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Pressed,
+            event: PointerEvent::mouse(pt).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(pt).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(8);
+    };
+
+    let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+        let mut harness = Harness::new(handler);
+        harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+            DevicePx(400.0),
+            DevicePx(300.0),
+        )));
+        harness.settle(16);
+
+        // Header (y = 15 < 30) and populated row (y = 60 in 30..150) do not clear selection.
+        click_at(&mut harness, 100.0, 15.0);
+        assert_eq!(blank_hits_driver.get(), 0);
+        click_at(&mut harness, 100.0, 60.0);
+        assert_eq!(blank_hits_driver.get(), 0);
+
+        // Left & right 18px TABLE_INSET side margins clear selection.
+        click_at(&mut harness, 8.0, 60.0);
+        assert_eq!(blank_hits_driver.get(), 1);
+        click_at(&mut harness, 392.0, 60.0);
+        assert_eq!(blank_hits_driver.get(), 2);
+
+        // Space below the 3 rows (y = 180 >= 30 + 3 * 40 = 150) clears selection.
+        click_at(&mut harness, 100.0, 180.0);
+        assert_eq!(blank_hits_driver.get(), 3);
+
+        // Scroll downward by 60px so y = 110 (>= 150 - 60 = 90) becomes blank space.
+        let scroll = scroll_slot_driver.borrow().expect("scroll node_ref");
+        scroll.scroll_to(
+            ScrollTarget::Offset(Point::new(DevicePx(0.0), DevicePx(60.0))),
+            ScrollBehavior::Instant,
+        );
+        harness.settle(16);
+        click_at(&mut harness, 100.0, 110.0);
+        assert_eq!(blank_hits_driver.get(), 4);
+
+        harness.shut_down();
+        Ok(())
+    };
+
+    zgui::app()
+        .with_fonts(Fonts::shipped_only())
+        .with_renderer(Box::new(noop_renderer))
+        .with_size(400.0, 300.0)
+        .run_on(driver, move || {
+            let scroll_ref = NodeRef::new();
+            *scroll_slot_view.borrow_mut() = Some(scroll_ref);
+            let hits = Rc::clone(&blank_hits_view);
+            zgui::view! {
+                column(style:width = "400px", style:height = "300px") {
+                    ListSurface(
+                        scroll_ref = scroll_ref,
+                        rows = 3_usize,
+                        row_height = 40.0_f32,
+                        header_height = 30.0_f32,
+                        inset_x = TABLE_INSET,
+                        on_blank_press = UnsyncCallback::new(move |()| {
+                            hits.set(hits.get() + 1);
+                        }),
+                    ) {
+                        PageTableArea {
+                            box(style:height = "30px", style:flex-shrink = "0") {
+                                text { "Header" }
+                            }
+                            scroll(
+                                node_ref = scroll_ref,
+                                class = "gds-list-surface__scroll",
+                            ) {
+                                column(style:height = "600px") {
+                                    ListRow(index = 0) { text { "Row 0" } }
+                                    ListRow(index = 1) { text { "Row 1" } }
+                                    ListRow(index = 2) { text { "Row 2" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .expect("headless ListSurface blank press test ran");
 }
 
 #[test]
@@ -178,16 +299,15 @@ fn virtualized_list_surface_mounts_only_visible_window_of_rows() {
         .run_on(driver, move || {
             let count = RwSignal::new_local(10_000_usize);
             let built = Arc::clone(&built_ref);
-            view! {
+            zgui::view! {
                 column(style:width = "400px", style:height = "200px") {
                     VirtualizedListSurface(
                         count = count,
-                        list_style = ListStyle::Striped,
                         label = "Files list",
                         row = move |index: usize| {
                             built.lock().expect("lock").push(index);
                             let selected = index == 1;
-                            view! {
+                            zgui::view! {
                                 ListRow(
                                     index = index,
                                     selected = selected,
@@ -214,8 +334,4 @@ fn virtualized_list_surface_mounts_only_visible_window_of_rows() {
         *selected_item_seen.lock().expect("lock"),
         Some((Role::ListItem, Some(true)))
     );
-
-    // Also verify ListSurface mounts cleanly on its own.
-    let _ = ListStyle::Plain;
-    let _plain = view! { ListSurface { text { "Plain item" } } };
 }

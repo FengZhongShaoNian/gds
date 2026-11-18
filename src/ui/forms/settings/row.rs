@@ -18,7 +18,7 @@ pub fn SettingRow(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    super::install_settings_stylesheets();
     view! {
         row(class = "gds-setting-row", class = class, {..attrs}) {
             {children.into_view_once()}

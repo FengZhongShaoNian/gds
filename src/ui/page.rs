@@ -18,6 +18,7 @@ use zgui::{component, css, view};
 
 pub const HEADER_PADDING_X: f32 = 24.0;
 pub const HEADER_PADDING_Y: f32 = 16.0;
+pub const HEADER_GAP: f32 = 16.0;
 pub const TITLE_SIZE: f32 = 22.0;
 pub const ACTION_GAP: f32 = 8.0;
 pub const TABLE_INSET: f32 = 18.0;

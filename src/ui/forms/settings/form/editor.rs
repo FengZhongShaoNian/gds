@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -9,7 +9,7 @@ use zgui::view::ShowProps;
 use zgui::{component, view};
 use zgui_ui::{
     SelectContentProps, SelectItemProps, SelectProps, SelectTriggerProps, SelectValueProps,
-    SwitchProps,
+    SwitchProps, SwitchSize,
 };
 use zgui_ui_primitives::{Binding, Controllable};
 
@@ -22,13 +22,21 @@ use crate::ui::forms::field::{
 use crate::ui::icon::IconName;
 use crate::ui::settings::{
     NumberControlProps, SettingActionsProps, SettingControlProps, SettingDescriptionProps,
-    SettingLabelProps, SettingResetProps, SettingRowProps,
+    SettingLabelProps, SettingResetProps, SettingRowProps, install_settings_stylesheets,
 };
 
 /// Emitted whenever a validated settings form edit produces a new model value.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Changed<T> {
     pub value: T,
+    pub field: &'static str,
+}
+
+impl<T> Changed<T> {
+    #[must_use]
+    pub const fn new(value: T, field: &'static str) -> Self {
+        Self { value, field }
+    }
 }
 
 /// Declarative settings form view derived for any [`Model`].
@@ -83,13 +91,21 @@ impl<T: Model> Editor<T> {
     where
         T: Serialize + DeserializeOwned,
     {
-        let on_change = self.on_change;
-        let forward =
-            on_change.map(|cb| UnsyncCallback::new(move |value: T| cb.run(Changed { value })));
+        let active_field: Rc<Cell<&'static str>> = Rc::new(Cell::new(""));
+        let active_for_cb = Rc::clone(&active_field);
+        let forward = self.on_change.map(|cb| {
+            UnsyncCallback::new(move |value: T| {
+                cb.run(Changed {
+                    value,
+                    field: active_for_cb.get(),
+                });
+            })
+        });
         let state = Controllable::new(self.value, T::default(), forward);
         AnyView::new(view! {
             EditorBody(
                 state = state,
+                active_field = active_field,
                 disabled = self.disabled,
                 filter = self.filter,
                 reset_focus = self.reset_focus,
@@ -138,11 +154,12 @@ pub(super) fn field_matches_query<T: Model>(field: &Field<T>, query: &str) -> bo
 #[component]
 fn EditorBody<T: Model + Serialize + DeserializeOwned>(
     state: Controllable<T>,
+    active_field: Rc<Cell<&'static str>>,
     disabled: Signal<bool, LocalStorage>,
     filter: Signal<String, LocalStorage>,
     reset_focus: Option<NodeRef>,
 ) -> impl IntoView {
-    crate::ui::styles::install_ui_stylesheets();
+    install_settings_stylesheets();
     let defaults = Rc::new(T::default());
 
     let mut groups: Vec<(&'static str, Vec<Rc<Field<T>>>)> = Vec::new();
@@ -176,10 +193,12 @@ fn EditorBody<T: Model + Serialize + DeserializeOwned>(
                     let row_visible = move || field_matches_query(&field_filter, &filter.get());
                     let field_row = Rc::clone(field);
                     let defaults_row = Rc::clone(&defaults);
+                    let active_row = Rc::clone(&active_field);
                     AnyView::new(view! {
                         Show(when = row_visible, fallback = || ()) {
                             EditorFieldRow(
                                 state = state,
+                                active_field = Rc::clone(&active_row),
                                 field = Rc::clone(&field_row),
                                 defaults = Rc::clone(&defaults_row),
                                 disabled = disabled,
@@ -216,6 +235,7 @@ fn EditorBody<T: Model + Serialize + DeserializeOwned>(
 #[component]
 fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
     state: Controllable<T>,
+    active_field: Rc<Cell<&'static str>>,
     field: Rc<Field<T>>,
     defaults: Rc<T>,
     disabled: Signal<bool, LocalStorage>,
@@ -233,7 +253,8 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
     let last_json = RefCell::new((field_sync.get)(&state.get_untracked()));
     let sync_error = RenderEffect::new(move |_| {
         let current = (field_sync.get)(&state.get());
-        if *last_json.borrow() != current {
+        let changed = *last_json.borrow() != current;
+        if changed {
             *last_json.borrow_mut() = current;
             error.set(None);
         }
@@ -242,6 +263,7 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
 
     let apply_json = {
         let field = Rc::clone(&field);
+        let active_field = Rc::clone(&active_field);
         move |json: Value| {
             if disabled.get_untracked() {
                 return;
@@ -256,6 +278,7 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
                 return;
             }
             error.set(None);
+            active_field.set(field_id);
             state.set(next);
         }
     };
@@ -269,6 +292,7 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
     let reset = {
         let field = Rc::clone(&field);
         let defaults = Rc::clone(&defaults);
+        let active_field = Rc::clone(&active_field);
         move |_: &mut zgui::view::EventCx<'_, zgui::view::events::Click>| {
             if disabled.get_untracked() {
                 return;
@@ -277,6 +301,7 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
             let mut next = state.get_untracked();
             if (field.set)(&mut next, default_json).is_ok() && next.validate().is_ok() {
                 error.set(None);
+                active_field.set(field_id);
                 state.set(next);
             }
             if let Some(target) = reset_focus {
@@ -299,9 +324,6 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
                 }.into_view())}
             }
             SettingActions {
-                SettingControl {
-                    {control_view}
-                }
                 SettingReset {
                     if move || modified.get() {
                         IconButton(
@@ -311,6 +333,9 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
                             on:click = reset.clone(),
                         )
                     } else {}
+                }
+                SettingControl {
+                    {control_view}
                 }
             }
         }
@@ -346,7 +371,12 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
                 move |next: bool| apply_json(Value::Bool(next)),
             );
             AnyView::new(view! {
-                Switch(checked = binding, disabled = disabled, labelled_by = Some(title_ref))
+                Switch(
+                    checked = binding,
+                    size = SwitchSize::Sm,
+                    disabled = disabled,
+                    labelled_by = Some(title_ref),
+                )
             })
         }
         Kind::Number(number) => {
@@ -388,7 +418,7 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
                         .map_or_else(String::new, str::to_owned)
                 }),
                 move |text: String| {
-                    let val = if nullable && text.trim().is_empty() {
+                    let val = if nullable && text.is_empty() {
                         Value::Null
                     } else {
                         Value::String(text)
@@ -400,6 +430,7 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
             AnyView::new(view! {
                 InputField(
                     value = binding,
+                    compact = true,
                     disabled = disabled,
                     invalid = invalid,
                     labelled_by = Some(title_ref),

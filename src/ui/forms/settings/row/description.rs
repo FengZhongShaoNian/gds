@@ -8,6 +8,7 @@ pub fn SettingDescription(
     #[prop(attrs)] attrs: Attrs,
     children: Children,
 ) -> impl IntoView {
+    super::super::install_settings_stylesheets();
     view! {
         text(class = "gds-setting-description", class = class, {..attrs}) {
             {children.into_view_once()}

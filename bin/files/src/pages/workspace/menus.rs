@@ -23,7 +23,6 @@ use zgui::prelude::*;
 use zgui::reactive::{
     RenderEffect, RwSignal, UnsyncCallback, enter_non_reactive_zone, on_cleanup_local,
 };
-use zgui::task::spawn_local;
 use zgui::view::{current_host, events, install_stylesheet};
 use zgui::vocab::{Key, KeyEvent, Modifiers, NamedKey, PointerButton};
 use zgui::{css, view};
@@ -654,7 +653,6 @@ impl Browser {
         let browser = self.clone();
         let entries_browser = self.clone();
         let close_browser = self.clone();
-        let activate_browser = self.clone();
         let open = Signal::derive_local({
             let browser = self.clone();
             move || matches!(browser.0.menus.surface.get(), Surface::Application)
@@ -674,7 +672,6 @@ impl Browser {
                     application = gds::ui::about::Application::try_cargo("gds-files"),
                     shortcut = Some(Command::Menu.shortcut()),
                     active = open,
-                    on_activate = UnsyncCallback::new(move |()| activate_browser.show_app_menu()),
                     on:click = move |_| browser.show_app_menu()
                 ) {}
                 {menu_content}
@@ -697,7 +694,6 @@ impl Browser {
         let browser = self.clone();
         let entries_browser = self.clone();
         let close_browser = self.clone();
-        let activate_browser = self.clone();
         let open = Signal::derive_local({
             let browser = self.clone();
             move || matches!(browser.0.menus.surface.get(), Surface::Page)
@@ -716,7 +712,6 @@ impl Browser {
                     icon = IconName::Ellipsis,
                     label = Signal::derive_local(|| i18n::text("page-tools")),
                     active = open,
-                    on_activate = UnsyncCallback::new(move |()| activate_browser.toggle_page_menu()),
                     on:click = move |_| browser.toggle_page_menu()
                 ) {}
                 {menu_content}
@@ -1097,8 +1092,7 @@ impl Browser {
         match row {
             Row::Trash(_) => self.trash_entries(true),
             Row::Volume(volume) => {
-                let busy = self.0.volumes.is_busy_untracked(&volume.id)
-                    || self.read_untracked(|state| state.operation.busy());
+                let busy = self.device_is_busy_untracked(&volume.id);
                 let rename = volume.clone();
                 let mut items = Vec::new();
                 if !volume.mount_points.is_empty() {
@@ -1187,7 +1181,7 @@ impl Browser {
                             label: i18n::text_untracked("device-power-off"),
                             icon: Some(IconName::CircleX),
                             shortcut: None,
-                            disabled: false,
+                            disabled: busy,
                             destructive: false,
                             on_select: self.menu_action("device-power-off", move |browser| {
                                 browser.change_volume(volumes::DeviceAction::PowerOff(id.clone()));
@@ -1808,27 +1802,7 @@ impl Browser {
     }
 
     pub(super) fn change_volume(&self, action: volumes::DeviceAction) {
-        if self.read_untracked(|state| state.operation.busy()) {
-            self.report_notice(i18n::text_untracked("remote-task-running"));
-            return;
-        }
-        let weak = self.downgrade();
-        match self.0.volumes.operate(action) {
-            Ok(task) => {
-                self.0.owner.with(|| {
-                    drop(spawn_local(async move {
-                        let result = task.await;
-                        if let Some(browser) = weak.upgrade() {
-                            if let Err(error) = result {
-                                browser.report_notice(error.to_string());
-                            }
-                            browser.refresh();
-                        }
-                    }));
-                });
-            }
-            Err(error) => self.report_notice(error.to_string()),
-        }
+        self.request_device_action(action);
     }
 
     pub(super) fn show_help(&self) {
@@ -1851,9 +1825,7 @@ impl Browser {
     fn column_controls(&self) -> AnyView {
         let anchor = NodeRef::new();
         let columns_browser = self.clone();
-        let columns_act = self.clone();
         let sort_click = self.clone();
-        let sort_act = self.clone();
         let entries_browser = self.clone();
         let close_browser = self.clone();
         let configurable = self.configurable_columns();
@@ -1881,7 +1853,6 @@ impl Browser {
                             label = Signal::derive_local(|| i18n::text("sort")),
                             shortcut = Some(Command::Sort.shortcut()),
                             active = open,
-                            on_activate = UnsyncCallback::new(move |()| sort_act.show_sort_menu()),
                             on:click = move |_| sort_click.show_sort_menu()
                         ) {}
                         {sort_menu}
@@ -1893,7 +1864,6 @@ impl Browser {
                         label = Signal::derive_local(|| i18n::text("columns-configure")),
                         disabled = Signal::stored_local(grid),
                         shortcut = Some(Command::Columns.shortcut()),
-                        on_activate = UnsyncCallback::new(move |()| columns_act.configure_columns()),
                         on:click = move |_| columns_browser.configure_columns()
                     )
                 }))}}
@@ -2058,11 +2028,9 @@ impl Browser {
         let popup_browser = self.clone();
         let permissions_view = self.permissions_dialog();
         let tags_view = self.tags_dialog();
-        let picker_bar = self.picker_footer_overlay();
 
         AnyView::new(view! {
             box(class = "gds-files-menu-overlay") {
-                {picker_bar}
                 {move || popup_browser.context_popup()}
                 Dialog(
                     open = Binding::controlled(

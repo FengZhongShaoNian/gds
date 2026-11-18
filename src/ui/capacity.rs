@@ -36,11 +36,14 @@ const CAPACITY_CSS: &str = css!(
         height: 4px;
         border-radius: 2px;
         border: none;
-        background: var(--gds-surface);
+        background: color-mix(in srgb, var(--gds-foreground) 12%, transparent);
         overflow: hidden;
     }
+    .gds-capacity.gds-capacity[data-selected=\"true\"] .gds-capacity__track {
+        background: color-mix(in srgb, var(--gds-selection-foreground) 18%, transparent);
+    }
     .gds-capacity.gds-capacity[data-unavailable=\"true\"] .gds-capacity__track {
-        background: var(--gds-muted, var(--gds-surface));
+        background: color-mix(in srgb, var(--gds-foreground) 10%, transparent);
     }
     .gds-capacity.gds-capacity .gds-capacity__fill {
         height: 100%;

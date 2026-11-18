@@ -66,7 +66,7 @@ const TERMINALS_CSS: &str = css!(
         flex-shrink: 0;
         min-height: 0;
         min-width: 0;
-        background: var(--gds-content-bg, var(--gds-surface));
+        background: transparent;
         overflow: hidden;
     }
 
@@ -536,7 +536,9 @@ impl Browser {
         if !self.terminal_visible_untracked() {
             return false;
         }
-        let Some(focused) = zgui::view::focused_node().get_untracked() else {
+        let Some(focused) = zgui::view::current_host()
+            .and_then(|host| host.focused().try_get_untracked().flatten())
+        else {
             return false;
         };
         let dock_node = self.0.terminals.inner.dock_node;
@@ -654,8 +656,8 @@ impl Browser {
         if self.0.terminals.inner.sealed.get() {
             return;
         }
-        let rail_was_focused = zgui::view::focused_node()
-            .get_untracked()
+        let rail_was_focused = zgui::view::current_host()
+            .and_then(|host| host.focused().try_get_untracked().flatten())
             .is_some_and(|node| {
                 let rail = self.0.terminals.inner.rail_node;
                 rail.get_untracked() == Some(node) || rail.contains(node)
@@ -1588,10 +1590,12 @@ impl Browser {
                             label = i18n::text("files-terminal-new"),
                             shortcut = Some(Shortcut::new(Key::character("n"), Modifiers::CONTROL)),
                             shortcut_enabled = Signal::derive_local(move || {
-                                zgui::view::focused_node().get().is_some_and(|node| {
-                                    dock_node.get_untracked() == Some(node)
-                                        || dock_node.contains(node)
-                                })
+                                zgui::view::current_host()
+                                    .and_then(|host| host.focused().try_get().flatten())
+                                    .is_some_and(|node| {
+                                        dock_node.get_untracked() == Some(node)
+                                            || dock_node.contains(node)
+                                    })
                             }),
                             on:click = move |_| b_new.new_terminal(),
                         )
@@ -1663,8 +1667,8 @@ impl Browser {
                                     });
 
                                     let shortcut_target = Signal::derive_local(move || {
-                                        let focused = zgui::view::focused_node()
-                                            .get()
+                                        let focused = zgui::view::current_host()
+                                            .and_then(|host| host.focused().try_get().flatten())
                                             .is_some_and(|node| {
                                                 let dock_root =
                                                     b_reveal.0.terminals.inner.dock_node;

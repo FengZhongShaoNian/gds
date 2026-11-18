@@ -183,7 +183,7 @@ const SURFACES_CSS: &str = css!(
         width: 12px;
         height: 18px;
         flex-shrink: 0;
-        opacity: 0;
+        opacity: 0.65;
         color: var(--gds-muted-foreground);
     }
 

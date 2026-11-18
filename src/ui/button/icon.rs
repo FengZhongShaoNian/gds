@@ -38,9 +38,7 @@ pub fn IconButton(
         bool,
         LocalStorage,
     >,
-    #[prop(default = None)] keytip: Option<&'static str>,
     #[prop(default = true)] tooltip: bool,
-    #[prop(optional)] on_activate: Option<UnsyncCallback<()>>,
     #[prop(optional)] node_ref: Option<NodeRef>,
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
@@ -54,8 +52,6 @@ pub fn IconButton(
 
     if let Some(ref key) = effective_shortcut {
         anchor_when(resolved_ref, key.clone(), can_advertise);
-    } else if let Some(chord) = keytip {
-        super::register_button_keytip(chord, resolved_ref, effective_disabled, on_activate);
     }
 
     let advertised_a11y = effective_shortcut

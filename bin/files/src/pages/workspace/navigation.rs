@@ -475,7 +475,7 @@ impl Browser {
         if self
             .0
             .connector
-            .pending()
+            .pending_untracked()
             .is_some_and(|(_, intent)| intent == Intent::Open)
         {
             self.0.connector.cancel();

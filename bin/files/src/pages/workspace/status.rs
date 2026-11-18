@@ -166,17 +166,36 @@ const STATUS_CSS: &str = css!(
     .gds-files-status-list.gds-files-status-list {
         width: 100%;
         height: 100%;
+        overflow-x: hidden;
     }
 
     .gds-files-status-row.gds-files-status-row {
         display: flex;
         align-items: center;
         gap: 8px;
+        width: 100%;
         min-width: 0px;
         height: 32px;
         padding: 0px 8px;
         border-radius: 6px;
         box-sizing: border-box;
+        overflow: hidden;
+    }
+
+    .gds-files-status-row-body {
+        display: flex;
+        align-items: center;
+        flex: 1 1 0%;
+        min-width: 0px;
+        overflow: hidden;
+    }
+
+    .gds-files-status-row-body > * {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        min-width: 0px;
+        overflow: hidden;
     }
 
     .gds-files-status-row.gds-files-status-row:hover {
@@ -893,13 +912,15 @@ impl Browser {
     fn status_row(&self, icon: FileIcon, label: String, title: String, action: AnyView) -> AnyView {
         let tooltip = wrap_tokens(&title);
         AnyView::new(view! {
-            HintTooltip(text = tooltip) {
-                row(class = "gds-files-status-row") {
-                    {status_artwork(icon, ICON_SIZE)}
-                    text(class = "gds-files-status-row-label") {{label}}
-                    box(class = "gds-files-status-row__action") {
-                        {action}
+            row(class = "gds-files-status-row") {
+                {status_artwork(icon, ICON_SIZE)}
+                box(class = "gds-files-status-row-body") {
+                    HintTooltip(text = tooltip) {
+                        text(class = "gds-files-status-row-label") {{label}}
                     }
+                }
+                box(class = "gds-files-status-row__action") {
+                    {action}
                 }
             }
         })

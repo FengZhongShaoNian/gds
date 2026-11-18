@@ -1,12 +1,11 @@
 use zgui::prelude::*;
-use zgui::reactive::{Mounted, RwSignal, UnsyncCallback, install};
+use zgui::reactive::{Mounted, RwSignal, install};
 use zgui::view;
 use zgui::vocab::{Role, SemanticFlags, Toggled};
 
 use super::{
     ApplicationMenuButton, ApplicationMenuButtonProps, Button, ButtonProps, ButtonSize,
     ButtonVariant, IconButton, IconButtonProps, apply_toggled, button_attrs,
-    register_button_keytip,
 };
 use crate::ui::Shortcut;
 use crate::ui::about::Application;
@@ -101,45 +100,39 @@ fn button_command_and_shortcut_enabled_wire_cleanly() {
     install().ok();
     let scope = Mounted::new();
     scope.with(|| {
-        let disabled = RwSignal::new_local(false);
-        let target = NodeRef::new();
-
-        register_button_keytip(
-            "FS",
-            target,
-            disabled.into(),
-            Some(UnsyncCallback::new(move |()| {})),
-        );
-        if let Some(reg) = KeytipRegistry::current() {
-            assert!(!reg.active().get_untracked());
-        }
-
         let _views = view! {
             KeytipHost {
-                column {
-                    Button(
-                        icon = IconName::Check,
-                        loading = false,
-                        active = true,
-                        tooltip = "Save",
-                        shortcut = Shortcut::parse("Ctrl+S").expect("valid shortcut"),
-                    ) { "Save" }
-                    Button(
-                        command = Command::FocusNotifications,
-                    ) { "Notifications" }
-                    IconButton(
-                        icon = IconName::Close,
-                        label = "Close tab",
-                        shortcut = Shortcut::parse("Ctrl+W").expect("Ctrl+W"),
-                        shortcut_enabled = false,
-                        size = ButtonSize::IconSm,
-                    )
-                    ApplicationMenuButton(
-                        label = "Main menu",
-                        application = Some(Application::cargo("gds-files")),
-                        shortcut = Shortcut::parse("Alt+M").expect("valid Alt+M shortcut"),
-                    )
-                }
+                {{
+                    if let Some(reg) = KeytipRegistry::current() {
+                        assert!(!reg.active().get_untracked());
+                    }
+                    view! {
+                        column {
+                            Button(
+                                icon = IconName::Check,
+                                loading = false,
+                                active = true,
+                                tooltip = "Save",
+                                shortcut = Shortcut::parse("Ctrl+S").expect("valid shortcut"),
+                            ) { "Save" }
+                            Button(
+                                command = Command::FocusNotifications,
+                            ) { "Notifications" }
+                            IconButton(
+                                icon = IconName::Close,
+                                label = "Close tab",
+                                shortcut = Shortcut::parse("Ctrl+W").expect("Ctrl+W"),
+                                shortcut_enabled = false,
+                                size = ButtonSize::IconSm,
+                            )
+                            ApplicationMenuButton(
+                                label = "Main menu",
+                                application = Some(Application::cargo("gds-files")),
+                                shortcut = Shortcut::parse("Alt+M").expect("valid Alt+M shortcut"),
+                            )
+                        }
+                    }
+                }}
             }
         };
     });

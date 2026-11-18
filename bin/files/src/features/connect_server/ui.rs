@@ -196,8 +196,24 @@ impl Connector {
         matches!(self.0.dialog.get(), DialogState::Connecting { .. })
     }
 
+    pub fn is_connecting_untracked(&self) -> bool {
+        matches!(
+            self.0.dialog.get_untracked(),
+            DialogState::Connecting { .. }
+        )
+    }
+
     pub fn pending(&self) -> Option<(Address, Intent)> {
         match self.0.dialog.get() {
+            DialogState::Connecting {
+                address, attempt, ..
+            } => Some((address, attempt.intent)),
+            _ => None,
+        }
+    }
+
+    pub fn pending_untracked(&self) -> Option<(Address, Intent)> {
+        match self.0.dialog.get_untracked() {
             DialogState::Connecting {
                 address, attempt, ..
             } => Some((address, attempt.intent)),

@@ -146,39 +146,66 @@ impl Browser {
                 }
             }
             Command::MountVolume => {
-                let volume = self.read_untracked(|state| {
-                    state
-                        .tab()
-                        .selected()
-                        .into_iter()
-                        .find_map(|row| match row {
-                            Row::Volume(volume) => Some(volume),
+                let volume = self
+                    .read_untracked(|state| {
+                        state
+                            .tab()
+                            .selected()
+                            .into_iter()
+                            .find_map(|row| match row {
+                                Row::Volume(volume) => Some(volume),
+                                _ => None,
+                            })
+                    })
+                    .or_else(|| {
+                        self.read_untracked(|state| match state.tab().navigation.location() {
+                            Location::Volume { identity, .. } => {
+                                self.volume_at_location_untracked(identity)
+                            }
                             _ => None,
                         })
-                });
-                if let Some(volume) = volume {
+                    });
+                if let Some(volume) = volume
+                    && volume.mount_points.is_empty()
+                    && volume.mountable
+                    && !volume.locked
+                {
                     self.change_volume(DeviceAction::Mount(volume.id));
                 }
             }
             Command::UnmountVolume => {
-                let volume = self.read_untracked(|state| {
-                    state
-                        .tab()
-                        .selected()
-                        .into_iter()
-                        .find_map(|row| match row {
-                            Row::Volume(volume) => Some(volume),
+                let volume = self
+                    .read_untracked(|state| {
+                        state
+                            .tab()
+                            .selected()
+                            .into_iter()
+                            .find_map(|row| match row {
+                                Row::Volume(volume) => Some(volume),
+                                _ => None,
+                            })
+                    })
+                    .or_else(|| {
+                        self.read_untracked(|state| match state.tab().navigation.location() {
+                            Location::Volume { identity, .. } => {
+                                self.volume_at_location_untracked(identity)
+                            }
                             _ => None,
                         })
-                });
-                if let Some(volume) = volume {
+                    });
+                if let Some(volume) = volume
+                    && volume.can_unmount()
+                {
                     self.change_volume(DeviceAction::Unmount(volume.id));
                 }
             }
             Command::FocusLocations => self.focus_sidebar_region(SidebarRegion::Locations),
             Command::FocusVolumes => self.focus_sidebar_region(SidebarRegion::Volumes),
             Command::FocusTabs => self.focus_sidebar_region(SidebarRegion::Tabs),
-            Command::FocusContent => self.focus_content(),
+            Command::FocusContent => {
+                self.focus_content();
+                self.0.list_focus_visible.set(true);
+            }
             Command::FocusNotifications => notifications::focus(),
             Command::CloseNotification => notifications::close_current(),
             Command::CloseAllNotifications => notifications::close_all(),
@@ -217,7 +244,7 @@ impl Browser {
         }
 
         // 3. Connecting remote server
-        if self.0.connector.is_connecting() {
+        if self.0.connector.is_connecting_untracked() {
             self.0.connector.cancel();
             return;
         }
@@ -243,7 +270,8 @@ impl Browser {
         }
 
         // 7 & 8. Transient local modes vs Cut ghosting vs Picker cancel
-        let focused_node = zgui::view::focused_node().get_untracked();
+        let focused_node = zgui::view::current_host()
+            .and_then(|host| host.focused().try_get_untracked().flatten());
         let filter_focused = focused_node.is_some_and(|node| self.0.filter_node.contains(node));
         let editing_address = !matches!(
             self.0.address_presentation.get_untracked(),
@@ -337,7 +365,7 @@ impl Browser {
             }
         }
 
-        if self.0.connector.is_connecting() {
+        if self.0.connector.is_connecting_untracked() {
             if event.key == Key::Named(NamedKey::Escape) && modifiers.is_empty() {
                 self.0.connector.cancel();
                 event.prevent_default();
@@ -404,7 +432,8 @@ impl Browser {
             return;
         }
 
-        let focused_node = zgui::view::focused_node().get_untracked();
+        let focused_node = zgui::view::current_host()
+            .and_then(|host| host.focused().try_get_untracked().flatten());
         if focused_node.is_some_and(|node| self.0.address_node.contains(node)) {
             return;
         }
@@ -527,7 +556,8 @@ impl Browser {
     }
 
     fn focused_sidebar_region(&self) -> Option<SidebarRegion> {
-        let focused = zgui::view::focused_node().get_untracked();
+        let focused = zgui::view::current_host()
+            .and_then(|host| host.focused().try_get_untracked().flatten());
         if focused.is_some_and(|node| self.0.tabs_node.contains(node)) {
             Some(SidebarRegion::Tabs)
         } else if focused.is_some_and(|node| self.0.locations_node.contains(node)) {

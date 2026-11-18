@@ -139,7 +139,7 @@ impl Browser {
             Location::Volumes => {
                 let snapshot = self.0.volumes.snapshot();
                 let volume = one.and_then(|row| match row {
-                    Row::Volume(volume) if !self.0.volumes.is_busy(&volume.id) => Some(volume),
+                    Row::Volume(volume) if !self.device_is_busy(&volume.id) => Some(volume),
                     _ => None,
                 });
                 let drive = volume
@@ -151,7 +151,7 @@ impl Browser {
                         IconName::TextCursor,
                         Command::Rename,
                         Browser::rename,
-                        volume.is_some_and(volumes::Volume::can_set_label) && !busy,
+                        volume.is_some_and(volumes::Volume::can_set_label),
                     ),
                     Action::new(
                         "device-mount",
@@ -160,14 +160,14 @@ impl Browser {
                         Browser::mount_selected_volume,
                         volume.is_some_and(|vol| {
                             vol.mountable && !vol.locked && vol.mount_points.is_empty()
-                        }) && !busy,
+                        }),
                     ),
                     Action::new(
                         "device-unmount",
                         IconName::Unplug,
                         Command::UnmountVolume,
                         Browser::unmount_selected_volume,
-                        volume.is_some_and(volumes::Volume::can_unmount) && !busy,
+                        volume.is_some_and(volumes::Volume::can_unmount),
                     ),
                 ];
                 if drive.is_some_and(|d| d.can_eject) {
@@ -175,7 +175,7 @@ impl Browser {
                         "device-eject",
                         IconName::Unplug,
                         Browser::eject_selected_volume,
-                        !busy,
+                        volume.is_some(),
                     ));
                 }
                 if drive.is_some_and(|d| d.can_power_off) {
@@ -183,7 +183,7 @@ impl Browser {
                         "device-power-off",
                         IconName::CircleX,
                         Browser::power_off_selected_volume,
-                        !busy,
+                        volume.is_some(),
                     ));
                 }
                 actions.push(refresh(true));
@@ -398,7 +398,6 @@ impl Browser {
         }
         buttons.extend(actions.into_iter().map(|action| {
             let b_click = self.clone();
-            let b_act = self.clone();
             let run = action.run;
             AnyView::new(view! {
                 IconButton(
@@ -407,11 +406,6 @@ impl Browser {
                     active = Signal::stored_local(action.checked),
                     disabled = Signal::stored_local(!action.enabled),
                     shortcut = action.command.map(Command::shortcut),
-                    on_activate = UnsyncCallback::new(move |()| {
-                        if action.enabled {
-                            run(&b_act);
-                        }
-                    }),
                     on:click = move |_| {
                         if action.enabled {
                             run(&b_click);

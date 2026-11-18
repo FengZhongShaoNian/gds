@@ -12,7 +12,7 @@ use std::sync::Arc;
 use image::ImageEncoder;
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use tokio_util::sync::CancellationToken;
-use zgui::reactive::{LocalStorage, RwSignal, Task, is_ui_thread, prelude::*, spawn_local};
+use zgui::reactive::{LocalStorage, Owner, RwSignal, Task, is_ui_thread, prelude::*, spawn_local};
 use zgui_image::ImageBytes;
 
 use crate::app::Gds;
@@ -89,6 +89,7 @@ struct WorkerOutcome {
 struct Contents {
     options: Options,
     scope: Option<Scope>,
+    owner: Option<Owner>,
     revision: Option<RwSignal<u64, LocalStorage>>,
     entries: HashMap<Source, CacheEntry>,
     lru: VecDeque<Source>,
@@ -103,11 +104,13 @@ impl Contents {
     fn new(
         options: Options,
         scope: Option<Scope>,
+        owner: Option<Owner>,
         revision: Option<RwSignal<u64, LocalStorage>>,
     ) -> Self {
         Self {
             options,
             scope,
+            owner,
             revision,
             entries: HashMap::new(),
             lru: VecDeque::new(),
@@ -145,7 +148,13 @@ impl Contents {
 
     fn ensure_revision(&mut self) -> Option<RwSignal<u64, LocalStorage>> {
         if self.revision.is_none() && is_ui_thread() {
-            self.revision = Some(RwSignal::new_local(0));
+            if self.owner.is_none() {
+                self.owner = Owner::current();
+            }
+            self.revision = Some(match &self.owner {
+                Some(owner) => owner.with(|| RwSignal::new_local(0)),
+                None => RwSignal::new_local(0),
+            });
         }
         self.revision
     }
@@ -159,8 +168,14 @@ pub struct Cache {
 
 impl Default for Cache {
     fn default() -> Self {
+        let owner = is_ui_thread().then(Owner::current).flatten();
         Self {
-            inner: Rc::new(RefCell::new(Contents::new(Options::default(), None, None))),
+            inner: Rc::new(RefCell::new(Contents::new(
+                Options::default(),
+                None,
+                owner,
+                None,
+            ))),
         }
     }
 }
@@ -169,18 +184,31 @@ impl Cache {
     /// Creates a cache configured with `options`.
     #[must_use]
     pub fn new(options: Options) -> Self {
-        let revision = is_ui_thread().then(|| RwSignal::new_local(0));
+        let owner = is_ui_thread().then(Owner::current).flatten();
+        let revision = is_ui_thread().then(|| match &owner {
+            Some(o) => o.with(|| RwSignal::new_local(0)),
+            None => RwSignal::new_local(0),
+        });
         Self {
-            inner: Rc::new(RefCell::new(Contents::new(options, None, revision))),
+            inner: Rc::new(RefCell::new(Contents::new(options, None, owner, revision))),
         }
     }
 
     /// Creates a cache reporting active blocking jobs into task-manager `scope`.
     #[must_use]
     pub fn with_scope(scope: Scope, options: Options) -> Self {
-        let revision = is_ui_thread().then(|| RwSignal::new_local(0));
+        let owner = is_ui_thread().then(Owner::current).flatten();
+        let revision = is_ui_thread().then(|| match &owner {
+            Some(o) => o.with(|| RwSignal::new_local(0)),
+            None => RwSignal::new_local(0),
+        });
         Self {
-            inner: Rc::new(RefCell::new(Contents::new(options, Some(scope), revision))),
+            inner: Rc::new(RefCell::new(Contents::new(
+                options,
+                Some(scope),
+                owner,
+                revision,
+            ))),
         }
     }
 
@@ -389,9 +417,40 @@ impl Cache {
     }
 
     fn pump(&self) {
+        struct RunningGuard {
+            inner: Weak<RefCell<Contents>>,
+            key: Option<Source>,
+            cancel: CancellationToken,
+        }
+        impl Drop for RunningGuard {
+            fn drop(&mut self) {
+                let Some(key) = self.key.take() else {
+                    return;
+                };
+                self.cancel.cancel();
+                if let Some(inner) = self.inner.upgrade()
+                    && let Ok(mut contents) = inner.try_borrow_mut()
+                {
+                    contents.running.remove(&key);
+                    let _ = contents.tasks.remove(&key);
+                    if let Some(entry) = contents.entries.get_mut(&key) {
+                        if matches!(entry.snapshot.metadata, State::Loading) {
+                            entry.snapshot.metadata = State::NotRequested;
+                        }
+                        if matches!(entry.snapshot.thumbnail, State::Loading) {
+                            entry.snapshot.thumbnail = State::NotRequested;
+                        }
+                    }
+                }
+            }
+        }
+
         loop {
             let next = {
                 let mut contents = self.inner.borrow_mut();
+                if contents.owner.is_none() && is_ui_thread() {
+                    contents.owner = Owner::current();
+                }
                 if contents.running.len() >= contents.options.workers {
                     None
                 } else if let Some(job) = contents.pending.pop() {
@@ -402,6 +461,7 @@ impl Cache {
                         token,
                         contents.options.inspection,
                         contents.scope.clone(),
+                        contents.owner.clone(),
                         contents.generation,
                     ))
                 } else {
@@ -409,12 +469,18 @@ impl Cache {
                 }
             };
 
-            let Some((job, cancel, inspection_opts, scope_opt, job_gen)) = next else {
+            let Some((job, cancel, inspection_opts, scope_opt, owner_opt, job_gen)) = next else {
                 break;
             };
 
-            let scope = scope_opt
-                .or_else(|| Gds::try_current().map(|gds| gds.tasks().owner_scope("File previews")));
+            let scope = scope_opt.or_else(|| {
+                let make_scope =
+                    || Gds::try_current().map(|gds| gds.tasks().owner_scope("File previews"));
+                match &owner_opt {
+                    Some(owner) => owner.with(make_scope),
+                    None => make_scope(),
+                }
+            });
 
             let key = job.source.clone();
             let running_key = job.source.clone();
@@ -424,53 +490,69 @@ impl Cache {
             let weak_inner: Weak<RefCell<Contents>> = Rc::downgrade(&self.inner);
             let cache_clone = self.clone();
 
-            let task = spawn_local(async move {
-                let outcome = run_blocking_inspection(
-                    scope,
-                    worker_source,
-                    worker_request,
-                    inspection_opts,
-                    worker_cancel,
-                )
-                .await;
+            let spawn_job = move || {
+                spawn_local(async move {
+                    let mut guard = RunningGuard {
+                        inner: Weak::clone(&weak_inner),
+                        key: Some(key.clone()),
+                        cancel: worker_cancel.clone(),
+                    };
 
-                let Some(inner) = weak_inner.upgrade() else {
-                    return;
-                };
+                    let outcome = run_blocking_inspection(
+                        scope,
+                        worker_source,
+                        worker_request,
+                        inspection_opts,
+                        worker_cancel,
+                    )
+                    .await;
 
-                let revision = {
-                    let mut contents = inner.borrow_mut();
-                    contents.running.remove(&key);
-                    let removed_task = contents.tasks.remove(&key);
-                    drop(removed_task);
+                    guard.key = None;
 
-                    if cancel.is_cancelled()
-                        || contents.generation != job_gen
-                        || contents.options.capacity == 0
-                    {
-                        None
-                    } else if let Some(outcome) = outcome {
-                        apply_outcome(&mut contents, &key, worker_request, outcome);
-                        if let Some(entry) = contents.entries.get(&key) {
-                            let still_meta = matches!(entry.snapshot.metadata, State::Loading);
-                            let still_thumb = matches!(entry.snapshot.thumbnail, State::Loading);
-                            if let Some(follow_up) =
-                                combine_missing_request(still_meta, still_thumb)
-                            {
-                                enqueue_lifo(&mut contents.pending, key.clone(), follow_up);
+                    let Some(inner) = weak_inner.upgrade() else {
+                        return;
+                    };
+
+                    let revision = {
+                        let mut contents = inner.borrow_mut();
+                        contents.running.remove(&key);
+                        let removed_task = contents.tasks.remove(&key);
+                        drop(removed_task);
+
+                        if cancel.is_cancelled()
+                            || contents.generation != job_gen
+                            || contents.options.capacity == 0
+                        {
+                            None
+                        } else if let Some(outcome) = outcome {
+                            apply_outcome(&mut contents, &key, worker_request, outcome);
+                            if let Some(entry) = contents.entries.get(&key) {
+                                let still_meta = matches!(entry.snapshot.metadata, State::Loading);
+                                let still_thumb =
+                                    matches!(entry.snapshot.thumbnail, State::Loading);
+                                if let Some(follow_up) =
+                                    combine_missing_request(still_meta, still_thumb)
+                                {
+                                    enqueue_lifo(&mut contents.pending, key.clone(), follow_up);
+                                }
                             }
+                            contents.trim(Some(&key));
+                            contents.revision
+                        } else {
+                            contents.entries.remove(&key);
+                            contents.revision
                         }
-                        contents.trim(Some(&key));
-                        contents.revision
-                    } else {
-                        contents.entries.remove(&key);
-                        contents.revision
-                    }
-                };
+                    };
 
-                Self::notify(revision);
-                cache_clone.pump();
-            });
+                    Self::notify(revision);
+                    cache_clone.pump();
+                })
+            };
+
+            let task = match &owner_opt {
+                Some(owner) => owner.with(spawn_job),
+                None => spawn_job(),
+            };
 
             let previous_task = {
                 let mut contents = self.inner.borrow_mut();

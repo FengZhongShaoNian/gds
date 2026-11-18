@@ -65,7 +65,8 @@ const SHEET: &str = css!(
         min-width: 0px;
         overflow-x: auto;
         overflow-y: hidden;
-        scrollbar-width: none;
+        --zgui-scrollbar-thumb: transparent;
+        --zgui-scrollbar-track: transparent;
     }
 
     .gds-picker-breadcrumbs {
@@ -213,6 +214,10 @@ fn install_directory_picker_stylesheets() {
 
 fn text_or(key: &'static str, fallback: &'static str) -> String {
     Gds::try_current().map_or_else(|| fallback.to_owned(), |gds| gds.i18n().text(key))
+}
+
+fn text_or_untracked(key: &'static str, fallback: &'static str) -> String {
+    Gds::try_current().map_or_else(|| fallback.to_owned(), |gds| gds.i18n().text_untracked(key))
 }
 
 fn picker_body_height() -> f32 {
@@ -381,7 +386,6 @@ pub fn DirectoryPickerView(
     let empty_title = Signal::derive_local(|| text_or("picker-empty", "No visible folders"));
     let no_matches_title =
         Signal::derive_local(|| text_or("picker-no-matches", "No matching folders"));
-    let folders_label = Signal::derive_local(|| text_or("picker-folders", "Folders"));
     let name_header_label = Signal::derive_local(|| text_or("picker-name", "Name"));
 
     let picker_keys = picker.clone();
@@ -486,7 +490,7 @@ pub fn DirectoryPickerView(
                                         address_text,
                                         move |next| p_input.set_address(next),
                                     ),
-                                    label = location_label.get_untracked(),
+                                    label = text_or_untracked(PickerCommand::EditLocation.label_id(), "Edit location"),
                                     on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
                                         if ev.key == Key::Named(NamedKey::Enter) && !ev.repeat {
                                             p_key_enter.apply_address(address_text.get_untracked());
@@ -514,7 +518,7 @@ pub fn DirectoryPickerView(
                                     ) {
                                         Breadcrumb(
                                             class = "gds-picker-breadcrumbs",
-                                            label = location_label.get_untracked(),
+                                            label = text_or_untracked(PickerCommand::EditLocation.label_id(), "Edit location"),
                                         ) {
                                             BreadcrumbList {
                                                 {move || {
@@ -604,8 +608,8 @@ pub fn DirectoryPickerView(
                         }
                         InputGroupInput(
                             node_ref = filter_ref,
-                            placeholder = filter_placeholder.get_untracked(),
-                            a11y:label = filter_placeholder.get_untracked(),
+                            placeholder = text_or_untracked(PickerCommand::Filter.label_id(), "Filter folders…"),
+                            a11y:label = move || filter_placeholder.get(),
                             value = Binding::controlled(
                                 filter_query,
                                 move |next| picker_filter.set_filter(next),
@@ -622,7 +626,7 @@ pub fn DirectoryPickerView(
                                     InputGroupAddon(align = InputGroupAddonAlign::InlineEnd) {
                                         InputGroupButton(
                                             size = InputGroupButtonSize::IconXs,
-                                            a11y:label = clear_filter_label.get_untracked(),
+                                            a11y:label = move || clear_filter_label.get(),
                                             on:click = move |_| {
                                                 p_clear.set_filter(String::new());
                                                 f_ref.focus();
@@ -659,7 +663,7 @@ pub fn DirectoryPickerView(
                         return AnyView::new(view! {
                             box(class = "gds-picker-center", attr:data-testid = "picker-loading") {
                                 Empty {
-                                    Spinner(label = loading_label.get_untracked())
+                                    Spinner(label = text_or_untracked("picker-loading", "Loading folders…"))
                                     EmptyHeader {
                                         EmptyTitle {{loading_label.get()}}
                                         {(!wrapped_target.is_empty()).then(|| {
@@ -749,7 +753,7 @@ pub fn DirectoryPickerView(
                                     count = row_count,
                                     row_size = Signal::stored_local(ROW_HEIGHT),
                                     overscan = 4,
-                                    label = folders_label.get_untracked(),
+                                    label = text_or_untracked("picker-folders", "Folders"),
                                     on:scroll = move |_| {
                                         let pos = l_ref.scroll_position();
                                         if pos.content_size.height.0 > 0.0
@@ -804,7 +808,7 @@ pub fn DirectoryPickerView(
                 {move || {
                     any_pending.get().then(|| {
                         view! {
-                            Spinner(label = loading_label.get_untracked())
+                            Spinner(label = text_or_untracked("picker-loading", "Loading folders…"))
                         }
                         .into_view()
                     })
@@ -837,7 +841,7 @@ pub fn DirectoryPickerDialog(
         title.unwrap_or_else(|| Signal::derive_local(|| text_or("picker-title", "Select folder")));
     let confirm_label = confirm_label
         .unwrap_or_else(|| Signal::derive_local(|| text_or("picker-select", "Select folder")));
-    let cancel_label = Signal::stored_local(text_or("dialog-cancel", "Cancel"));
+    let cancel_label = Signal::derive_local(|| text_or("dialog-cancel", "Cancel"));
 
     let settled = Rc::new(Cell::new(false));
     let reset_settled = {
@@ -934,7 +938,7 @@ pub fn DirectoryPickerDialog(
                 DialogFooter {
                     DialogActions(
                         confirm_label = confirm_label,
-                        cancel_label = cancel_label.get_untracked(),
+                        cancel_label = cancel_label,
                         disabled = disabled,
                         on_decision = on_decision,
                     )

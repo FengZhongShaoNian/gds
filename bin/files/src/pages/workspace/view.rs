@@ -23,7 +23,7 @@ use gds::ui::frame::{
 };
 use gds::ui::interaction::{
     keytips::KeytipHostProps,
-    region::{is_focus_visible, surface_with_shortcut},
+    region::{is_focus_visible, surface_with_shortcut, use_keyboard_modality},
 };
 use gds::ui::list::ListSurfaceProps;
 use gds::ui::page::{
@@ -111,22 +111,6 @@ const WORKSPACE_CSS: &str = css!(
         flex: none;
     }
 
-    .gds-files-toolbar {
-        display: flex;
-        flex: 1 1 0%;
-        align-items: center;
-        gap: 6px;
-        min-width: 0px;
-    }
-
-    .gds-files-toolbar-files {
-        display: flex;
-        flex: 1 1 0%;
-        align-items: center;
-        gap: 6px;
-        min-width: 0px;
-    }
-
     .gds-files-toolbar-title {
         display: flex;
         flex: 1 1 0%;
@@ -144,129 +128,6 @@ const WORKSPACE_CSS: &str = css!(
         white-space: nowrap;
     }
 
-    .gds-files-nav-group {
-        display: flex;
-        flex: none;
-        align-items: center;
-        gap: 2px;
-    }
-
-    .gds-files-address-bar {
-        display: flex;
-        flex: 1 1 0%;
-        align-items: center;
-        min-width: 120px;
-        height: 30px;
-        margin: 0px 6px;
-        border-radius: var(--gds-radius-control, 6px);
-        border: 1px solid var(--gds-border);
-        background-color: transparent;
-        overflow: hidden;
-    }
-
-    .gds-files-address-bar[data-editing="true"] {
-        border-color: var(--gds-primary);
-    }
-
-    .gds-files-address-input {
-        flex: 1 1 0%;
-        min-width: 0px;
-        height: 100%;
-        border-width: 0px;
-        background-color: transparent;
-    }
-
-    .gds-files-address-loading {
-        display: flex;
-        flex: 1 1 0%;
-        align-items: center;
-        min-width: 0px;
-        padding: 0px 8px;
-    }
-
-    .gds-files-address-loading-text {
-        width: 100%;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        color: var(--gds-muted-foreground);
-    }
-
-    .gds-files-address-read {
-        display: flex;
-        flex: 1 1 0%;
-        align-items: center;
-        min-width: 0px;
-        padding-right: 4px;
-    }
-
-    .gds-files-breadcrumbs {
-        flex: 1 1 0%;
-        min-width: 0px;
-        height: 100%;
-        overflow-x: auto;
-        overflow-y: hidden;
-        scrollbar-width: none;
-    }
-
-    .gds-files-breadcrumbs-track {
-        display: flex;
-        align-items: center;
-        height: 100%;
-        gap: 2px;
-        padding: 0px 4px;
-    }
-
-    .gds-files-crumb {
-        display: flex;
-        flex: none;
-        align-items: center;
-        height: 28px;
-        padding: 0px 6px;
-        border-radius: 4px;
-        cursor: pointer;
-        color: var(--gds-muted-foreground);
-    }
-
-    .gds-files-crumb[data-current="true"] {
-        color: var(--gds-foreground);
-        font-weight: 500;
-    }
-
-    .gds-files-crumb:hover {
-        background-color: var(--gds-hover);
-    }
-
-    .gds-files-crumb-text {
-        white-space: nowrap;
-    }
-
-    .gds-files-filter {
-        display: flex;
-        align-items: center;
-        width: 200px;
-        min-width: 96px;
-        height: 30px;
-        gap: 4px;
-        padding: 0px 6px;
-        border-radius: var(--gds-radius-control, 6px);
-        border: 1px solid var(--gds-border);
-        background-color: var(--gds-panel);
-    }
-
-    .gds-files-filter-icon {
-        flex: none;
-        color: var(--gds-muted-foreground);
-    }
-
-    .gds-files-filter-input {
-        flex: 1 1 0%;
-        min-width: 0px;
-        height: 100%;
-        border-width: 0px;
-        background-color: transparent;
-    }
-
     .gds-files-sidebar-content {
         display: flex;
         flex-direction: column;
@@ -275,34 +136,6 @@ const WORKSPACE_CSS: &str = css!(
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
-    }
-
-    .gds-files-sidebar-tabs-section {
-        display: flex;
-        flex-direction: column;
-        flex: 1 1 0%;
-        width: 100%;
-        min-width: 0px;
-        min-height: 0px;
-        overflow: hidden;
-    }
-
-    .gds-files-sidebar-tabs-section[data-fixed-height="true"] {
-        flex: 0 0 auto;
-    }
-
-    .gds-files-sidebar-volumes-section {
-        display: flex;
-        flex-direction: column;
-        flex: 1 1 0%;
-        width: 100%;
-        min-width: 0px;
-        min-height: 0px;
-        overflow: hidden;
-    }
-
-    .gds-files-sidebar-volumes-section[data-section-collapsed="true"] {
-        flex: 0 0 auto;
     }
 
     .gds-files-sidebar-region-host {
@@ -315,89 +148,6 @@ const WORKSPACE_CSS: &str = css!(
         overflow: hidden;
     }
 
-    .gds-files-sidebar-scroll {
-        display: flex;
-        flex-direction: column;
-        flex: 1 1 0%;
-        width: 100%;
-        min-width: 0px;
-        min-height: 0px;
-        overflow-y: auto;
-        overflow-x: hidden;
-        gap: 4px;
-    }
-
-    .gds-files-sidebar-locations {
-        display: flex;
-        flex-direction: column;
-        width: 100%;
-        min-width: 0px;
-        overflow-x: hidden;
-        gap: 4px;
-    }
-
-    .gds-files-sidebar-row-wrap {
-        display: flex;
-        flex-direction: column;
-        width: 100%;
-        max-width: 100%;
-        min-width: 0px;
-        overflow: hidden;
-    }
-
-    .gds-files-sidebar-row-wrap .zui-tooltip__trigger {
-        display: flex;
-        width: 100%;
-        max-width: 100%;
-        min-width: 0px;
-        overflow: hidden;
-    }
-
-    .gds-files-sidebar-heading {
-        display: flex;
-        flex: 1 1 0%;
-        align-items: center;
-        gap: 6px;
-        min-width: 0px;
-        height: 100%;
-        padding: 0px 6px;
-        border-radius: 4px;
-        cursor: pointer;
-    }
-
-    .gds-files-sidebar-heading:hover {
-        background-color: var(--gds-hover);
-    }
-
-    .gds-files-sidebar-chevron {
-        flex: none;
-        transform: rotate(90deg);
-        transition: transform var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
-    }
-
-    .gds-files-sidebar-heading[data-collapsed="true"] .gds-files-sidebar-chevron {
-        transform: rotate(0deg);
-    }
-
-    .gds-files-sidebar-splitter {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        height: 9px;
-        flex: none;
-        cursor: ns-resize;
-    }
-
-    .gds-files-sidebar-splitter-line {
-        width: 100%;
-        height: 1px;
-        background-color: var(--gds-border);
-    }
-
-    .gds-files-sidebar-splitter:hover .gds-files-sidebar-splitter-line {
-        background-color: var(--gds-primary);
-    }
-
     .gds-files-sidebar-empty {
         padding: 6px;
         font-size: 12px;
@@ -407,43 +157,11 @@ const WORKSPACE_CSS: &str = css!(
         white-space: nowrap;
     }
 
-    .gds-files-tab-item {
-        width: 100%;
-        max-width: 100%;
-        min-width: 0px;
-        overflow: hidden;
-        height: 44px;
-        gap: 10px;
-        border-radius: 6px;
-    }
-
     .gds-files-location-item {
         width: 100%;
         max-width: 100%;
         min-width: 0px;
-        overflow: hidden;
-        gap: 10px;
         border-radius: 6px;
-    }
-
-    .gds-files-volume-item {
-        padding: 6px 10px;
-        border-radius: 6px;
-    }
-
-    .gds-files-volume-inner {
-        display: flex;
-        flex-direction: column;
-        flex: 1 1 0%;
-        min-width: 0px;
-        gap: 4px;
-    }
-
-    .gds-files-volume-header {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        min-width: 0px;
     }
 
     .gds-files-volume-unmounted {
@@ -452,15 +170,6 @@ const WORKSPACE_CSS: &str = css!(
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-    }
-
-    .gds-files-volume-capacity {
-        min-width: 0px;
-        overflow: hidden;
-    }
-
-    .gds-capacity__fill {
-        width: var(--gds-capacity-width, 0%);
     }
 
     .gds-files-nav-icon {
@@ -485,16 +194,6 @@ const WORKSPACE_CSS: &str = css!(
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
-    }
-
-    .gds-files-workspace-hairline {
-        position: absolute;
-        top: 0px;
-        bottom: 0px;
-        width: 1px;
-        background-color: var(--gds-border);
-        pointer-events: none;
-        z-index: 6;
     }
 
     .gds-files-workspace-frame {
@@ -552,7 +251,11 @@ const WORKSPACE_CSS: &str = css!(
         gap: 4px;
     }
 
-    .gds-files-content-focus {
+    .gds-files-content-focus,
+    .gds-files-content-focus.gds-region-surface,
+    .gds-files-content-focus.gds-region-surface[data-focus-visible="true"],
+    .gds-files-content-focus.gds-region-surface[data-focus-visible="true"]:focus,
+    .gds-files-content-focus.gds-region-surface[data-focus-visible="true"]:focus-visible {
         position: relative;
         display: flex;
         flex-direction: column;
@@ -561,6 +264,7 @@ const WORKSPACE_CSS: &str = css!(
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
+        outline: none;
     }
 
     .gds-files-details-host {
@@ -614,6 +318,13 @@ const WORKSPACE_CSS: &str = css!(
         min-width: 0px;
         min-height: 0px;
         border-width: 0px;
+    }
+
+    .gds-files-state-center[data-focus-visible="true"],
+    .gds-files-table-x[data-focus-visible="true"],
+    .gds-files-grid-scroll[data-focus-visible="true"] {
+        outline: 1px solid var(--gds-primary);
+        outline-offset: -1px;
     }
 
     .gds-files-table-x {
@@ -704,15 +415,15 @@ const WORKSPACE_CSS: &str = css!(
     }
 
     .gds-files-header-sort {
-        position: relative;
         display: inline-flex;
+        flex-direction: column;
         flex: none;
         align-items: center;
         justify-content: center;
         width: 12px;
-        height: 12px;
+        height: 18px;
         color: var(--gds-muted-foreground);
-        opacity: 0;
+        opacity: 0.65;
         transition: opacity var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
     }
 
@@ -724,18 +435,6 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-header-sort[data-active="true"] {
         opacity: 1;
         color: var(--gds-foreground);
-    }
-
-    .gds-files-header-sort-up {
-        position: absolute;
-        top: -2px;
-        left: 1px;
-    }
-
-    .gds-files-header-sort-down {
-        position: absolute;
-        bottom: -2px;
-        left: 1px;
     }
 
     .gds-files-header-resize {
@@ -803,6 +502,11 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-row-content[data-selected="true"]:hover {
         background-color: var(--gds-selection);
         color: var(--gds-selection-foreground);
+    }
+
+    .gds-files-row-content[data-cursor="true"] {
+        outline: 1px solid var(--gds-primary);
+        outline-offset: -1px;
     }
 
     .gds-files-row-content[data-hidden-entry="true"] {
@@ -939,6 +643,10 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-tile[data-selected="true"]:hover {
         background-color: var(--gds-selection);
         color: var(--gds-selection-foreground);
+        border-color: var(--gds-primary);
+    }
+
+    .gds-files-tile[data-cursor="true"] {
         border-color: var(--gds-primary);
     }
 
@@ -1091,125 +799,6 @@ const WORKSPACE_CSS: &str = css!(
         flex: none;
         align-items: center;
         gap: 4px;
-    }
-
-    .gds-files-status-controls {
-        display: flex;
-        align-items: center;
-        gap: 2px;
-        min-width: 0px;
-    }
-
-    .gds-files-status-slot {
-        display: flex;
-        min-width: 0px;
-    }
-
-    .gds-files-status-button {
-        display: flex;
-        align-items: center;
-        min-width: 0px;
-        height: 28px;
-        padding: 0px 6px;
-        border-radius: 6px;
-        cursor: pointer;
-    }
-
-    .gds-files-status-button:hover {
-        background-color: var(--gds-hover);
-    }
-
-    .gds-files-status-button-inner {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        min-width: 0px;
-    }
-
-    .gds-files-status-icon-wrap {
-        position: relative;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 24px;
-        height: 24px;
-        flex: none;
-    }
-
-    .gds-files-status-badge {
-        position: absolute;
-        top: 0px;
-        right: 0px;
-        min-width: 12px;
-        height: 12px;
-        border-radius: 999px;
-        padding: 0px 2px;
-        background-color: var(--gds-primary);
-        color: var(--gds-selection-foreground);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .gds-files-status-badge-text {
-        font-size: 9px;
-    }
-
-    .gds-files-status-label {
-        max-width: 240px;
-        min-width: 0px;
-        font-size: 12px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .gds-files-status-popover {
-        width: 320px;
-        max-height: 320px;
-        padding: 4px;
-    }
-
-    .gds-files-status-empty {
-        padding: 12px;
-        font-size: 12px;
-        color: var(--gds-muted-foreground);
-    }
-
-    .gds-files-status-list-wrap {
-        width: 100%;
-        min-width: 0px;
-    }
-
-    .gds-files-status-list {
-        width: 100%;
-        height: 100%;
-    }
-
-    .gds-files-status-row {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        min-width: 0px;
-        height: 32px;
-        padding: 0px 8px;
-        border-radius: 4px;
-    }
-
-    .gds-files-status-row:hover {
-        background-color: var(--gds-hover);
-    }
-
-    .gds-files-status-row-icon {
-        flex: none;
-    }
-
-    .gds-files-status-row-label {
-        flex: 1 1 0%;
-        min-width: 0px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
     }
 
     .gds-files-columns-dialog {
@@ -1481,13 +1070,6 @@ enum FileBody {
 }
 
 impl Browser {
-    /// Keytip badges derive automatically from `Shortcut` / `Command`; kept as `None` for
-    /// cross-shard source compatibility.
-    #[allow(dead_code)]
-    pub(super) const fn action_keytip(_command: Option<Command>) -> Option<&'static str> {
-        None
-    }
-
     pub fn view(&self) -> impl IntoView + use<> {
         let browser = self.clone();
         Scoped::new(move || browser.view_scoped())
@@ -1569,29 +1151,9 @@ impl Browser {
                         });
                         on_cleanup_local(move || drop(notice_fx));
 
-                        let _prompt_modal_scope = DialogScope::use_open(prompt_open);
-
-                        view! {
-                            column(
-                                node_ref = root_focus,
-                                class = "gds-files-root",
-                                tabindex = Focus::Sequential,
-                                on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
-                                    keyboard.key_down(ev);
-                                },
-                                on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
-                                    mouse.mouse_navigation(ev);
-                                }
-                            ) {
-                                {{move || {
-                                    if help.get() {
-                                        main_browser.help_view()
-                                    } else {
-                                        main_browser.workspace_view()
-                                    }
-                                }}}
-                                {connector_view}
-                                {menu_overlay}
+                        let prompt_dialog = Scoped::new(move || {
+                            let _prompt_modal_scope = DialogScope::use_open(prompt_open);
+                            view! {
                                 Dialog(
                                     open = Binding::controlled(
                                         prompt_open,
@@ -1654,6 +1216,31 @@ impl Browser {
                                     }
                                 }
                             }
+                        });
+
+                        view! {
+                            column(
+                                node_ref = root_focus,
+                                class = "gds-files-root",
+                                tabindex = Focus::Sequential,
+                                on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
+                                    keyboard.key_down(ev);
+                                },
+                                on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
+                                    mouse.mouse_navigation(ev);
+                                }
+                            ) {
+                                {{move || {
+                                    if help.get() {
+                                        main_browser.help_view()
+                                    } else {
+                                        main_browser.workspace_view()
+                                    }
+                                }}}
+                                {connector_view}
+                                {menu_overlay}
+                                {prompt_dialog}
+                            }
                         }
                     }}
                 }
@@ -1664,14 +1251,12 @@ impl Browser {
     fn help_view(&self) -> AnyView {
         let root_ref = self.0.settings_node;
         let back_click = self.clone();
-        let back_act = self.clone();
         let back_button = AnyView::new(view! {
             row(class = "gds-files-menu-controls") {
                 IconButton(
                     icon = IconName::ArrowLeft,
                     label = Signal::derive_local(|| i18n::text("page-return")),
                     shortcut = Some(Command::Cancel.shortcut()),
-                    on_activate = UnsyncCallback::new(move |()| back_act.back_page()),
                     on:click = move |_| back_click.back_page()
                 )
             }
@@ -1698,13 +1283,13 @@ impl Browser {
                     menu = back_button,
                     controls = title_controls,
                     window_controls = AnyView::new(view! { WindowControls() })
-                )
+                ) {}
                 WorkspaceFrame(
                     content = help_body,
                     paint_content_surface = true,
                     class = "gds-files-workspace-frame"
-                )
-                Footer(status = empty_status)
+                ) {}
+                Footer(status = empty_status) {}
             }
         })
     }
@@ -1748,20 +1333,24 @@ impl Browser {
         let status_browser = self.clone();
         let footer_ctrl_browser = self.clone();
 
-        let menu_controls = self.menu_controls();
-        let toolbar = self.toolbar();
+        let toolbar_left = self.toolbar_leading();
+        let toolbar_controls = self.toolbar_controls();
         let sidebar_scope = AnyView::new(view! { box(class = "gds-files-footer-scope") });
         let footer_status = AnyView::new(view! {
             {{move || {
                 if pane_memo.get() == Pane::Files {
                     let sb = status_browser.clone();
-                    let status_controls = sb.status_controls();
-                    AnyView::new(view! {
-                        row(class = "gds-files-footer-status") {
-                            text(class = "gds-files-footer-status-text") {{move || sb.status()}}
-                            {status_controls}
-                        }
-                    })
+                    if let Some(picker_name) = sb.render_picker_name() {
+                        picker_name
+                    } else {
+                        let status_controls = sb.status_controls();
+                        AnyView::new(view! {
+                            row(class = "gds-files-footer-status") {
+                                text(class = "gds-files-footer-status-text") {{move || sb.status()}}
+                                {status_controls}
+                            }
+                        })
+                    }
                 } else {
                     status_browser.0.settings.footer_text()
                 }
@@ -1769,17 +1358,21 @@ impl Browser {
         });
         let footer_controls = AnyView::new(view! {
             Show(when = move || pane_memo.get() == Pane::Files) {
-                {{footer_ctrl_browser.footer_controls()}}
+                {{
+                    footer_ctrl_browser
+                        .render_picker_controls()
+                        .unwrap_or_else(|| footer_ctrl_browser.footer_controls())
+                }}
             }
         });
 
         AnyView::new(view! {
             Frame(sidebar_width = sidebar_width, class = "gds-files-frame") {
                 Toolbar(
-                    menu = menu_controls,
-                    controls = toolbar,
+                    left = toolbar_left,
+                    controls = toolbar_controls,
                     window_controls = AnyView::new(view! { WindowControls() })
-                )
+                ) {}
                 {{move || match pane_memo.get() {
                     Pane::Settings => {
                         let sb = sidebar_browser.clone();
@@ -1801,7 +1394,7 @@ impl Browser {
                                 content = settings_content,
                                 paint_content_surface = true,
                                 class = "gds-files-workspace-frame"
-                            )
+                            ) {}
                         })
                     }
                     Pane::Files => {
@@ -1820,17 +1413,10 @@ impl Browser {
                                         content = files_content,
                                         paint_content_surface = true,
                                         class = "gds-files-workspace-frame"
-                                    )
+                                    ) {}
                                     Show(when = move || picker_is_none.get()) {
                                         {{term_b.terminal_view(pres_initial)}}
                                     }
-                                    box(
-                                        class = "gds-files-workspace-hairline",
-                                        a11y:hidden = true,
-                                        style:left = move || {
-                                            Some(format!("{:.2}px", (sidebar_width.get() - 1.0).max(0.0)))
-                                        }
-                                    ) {}
                                 }
                             }
                         })
@@ -1841,7 +1427,7 @@ impl Browser {
                     sidebar_status = sidebar_scope,
                     status = footer_status,
                     controls = footer_controls
-                )
+                ) {}
             }
         })
     }
@@ -1849,7 +1435,6 @@ impl Browser {
     fn footer_controls(&self) -> AnyView {
         let terminal_sig = self.0.terminal;
         let click_browser = self.clone();
-        let activate_browser = self.clone();
         let terminal_toggled = Signal::derive_local(move || terminal_sig.get());
         let terminal_label = Signal::derive_local(move || {
             i18n::text(if terminal_sig.get() {
@@ -1870,7 +1455,6 @@ impl Browser {
             row(class = "gds-files-footer-controls") {
                 Show(when = move || visible.get()) {
                     {{
-                        let act_b = activate_browser.clone();
                         let clk_b = click_browser.clone();
                         view! {
                             IconButton(
@@ -1879,7 +1463,6 @@ impl Browser {
                                 toggled = Some(terminal_toggled),
                                 shortcut = Some(Command::Terminal.shortcut()),
                                 a11y:role = Role::Button,
-                                on_activate = UnsyncCallback::new(move |()| act_b.toggle_terminal()),
                                 on:click = move |_| clk_b.toggle_terminal()
                             )
                         }
@@ -1898,7 +1481,6 @@ impl Browser {
         active: Option<Signal<bool, LocalStorage>>,
     ) -> AnyView {
         let click_browser = self.clone();
-        let activate_browser = self.clone();
         let shortcut = command.map(Command::shortcut);
         let active_sig = active.unwrap_or_else(|| Signal::stored_local(false));
 
@@ -1908,7 +1490,6 @@ impl Browser {
                 label = Signal::derive_local(move || i18n::text(label)),
                 active = active_sig,
                 shortcut = shortcut,
-                on_activate = UnsyncCallback::new(move |()| action(&activate_browser)),
                 on:click = move |_| action(&click_browser)
             )
         })
@@ -1977,20 +1558,29 @@ impl Browser {
 
         let region_attrs =
             surface_with_shortcut(content_ref, Some(Command::FocusContent.shortcut()));
+        let keyboard_modality = use_keyboard_modality(content_ref);
         let visible_sig = self.0.list_focus_visible;
         {
             let sync_browser = focus_browser.clone();
             let focus_sync_fx = RenderEffect::new(move |_| {
                 let direct_ring = is_focus_visible(content_ref);
-                if visible_sig.get_untracked() != direct_ring {
-                    visible_sig.set(direct_ring);
-                }
+                let is_kbd = keyboard_modality.get();
                 if let Some(host) = current_host() {
                     let active = host.focused().get();
                     let self_id = content_ref.get();
+                    let direct = self_id.is_some() && active == self_id;
                     let inside =
                         active.is_some_and(|id| self_id == Some(id) || content_ref.contains(id));
                     sync_browser.0.list_focused.set(inside);
+                    if direct_ring {
+                        if !visible_sig.get_untracked() {
+                            visible_sig.set(true);
+                        }
+                    } else if (!direct || !is_kbd) && visible_sig.get_untracked() {
+                        visible_sig.set(false);
+                    }
+                } else if visible_sig.get_untracked() != direct_ring {
+                    visible_sig.set(direct_ring);
                 }
             });
             on_cleanup_local(move || drop(focus_sync_fx));
@@ -2231,9 +1821,15 @@ impl Browser {
     }
 
     fn empty_view(&self, message: &'static str) -> AnyView {
+        let focus_visible = self.0.list_focus_visible;
         AnyView::new(view! {
-            column(class = "gds-files-state-center") {
-                text {{i18n::text(message)}}
+            PageTableArea(class = "gds-files-table-area") {
+                column(
+                    class = "gds-files-state-center",
+                    attr:data-focus-visible = move || focus_visible.get().then(|| "true".to_owned())
+                ) {
+                    text {{i18n::text(message)}}
+                }
             }
         })
     }
@@ -2335,11 +1931,9 @@ impl Browser {
                         })
                     } else {
                         AnyView::new(view! {
-                            box(class = "gds-files-header-sort-up") {
-                                Icon(name = IconName::ChevronUp, size = 10.0)
-                            }
-                            box(class = "gds-files-header-sort-down") {
-                                Icon(name = IconName::ChevronDown, size = 10.0)
+                            column(style:align-items = "center", style:justify-content = "center") {
+                                Icon(name = IconName::ChevronUp, size = 8.0) {}
+                                Icon(name = IconName::ChevronDown, size = 8.0) {}
                             }
                         })
                     }}
@@ -2529,6 +2123,7 @@ impl Browser {
             UnsyncCallback::new(move |()| clear_browser.clear_blank_selection())
         });
 
+        let focus_visible = self.0.list_focus_visible;
         let target = AnyView::new(view! {
             ListSurface(
                 scroll_ref = list_node,
@@ -2543,6 +2138,9 @@ impl Browser {
                     scroll(
                         node_ref = viewport,
                         class = "gds-files-table-x",
+                        attr:data-focus-visible = move || {
+                            focus_visible.get().then(|| "true".to_owned())
+                        },
                         attr:data-scroll-x = move || {
                             (overflow_browser.content_columns_width()
                                 > overflow_browser.table_viewport_width() + 0.5)
@@ -2628,6 +2226,7 @@ impl Browser {
             self.read_untracked(|state| state.picker.is_none() && state.allows_multiple());
         let blank_browser = self.clone();
 
+        let focus_visible = self.0.list_focus_visible;
         let target = AnyView::new(view! {
             ListSurface(
                 scroll_ref = list_node,
@@ -2637,6 +2236,9 @@ impl Browser {
                     scroll(
                         node_ref = list_node,
                         class = "gds-files-grid-scroll",
+                        attr:data-focus-visible = move || {
+                            focus_visible.get().then(|| "true".to_owned())
+                        },
                         on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
                             if !has_marquee
                                 && ev.button == Some(PointerButton::Primary)
@@ -2772,6 +2374,27 @@ impl Browser {
                     .contains(&key)
             }
         });
+        let cursor_sig = Signal::derive_local({
+            let browser = self.clone();
+            let key = key.clone();
+            move || {
+                if !browser.0.list_focus_visible.get() {
+                    return false;
+                }
+                let _ = browser.0.selection.get();
+                let _ = browser.0.revision.get();
+                browser
+                    .0
+                    .state
+                    .borrow()
+                    .tab()
+                    .navigation
+                    .view()
+                    .cursor
+                    .as_ref()
+                    == Some(&key)
+            }
+        });
         let selection_goal =
             Signal::derive_local(move || if selected_sig.get() { 1.0_f32 } else { 0.0_f32 });
         let selection_progress = use_transition(selection_goal, WORKSPACE_DURATION_MS);
@@ -2842,6 +2465,7 @@ impl Browser {
                     style:padding = format!("{GRID_PADDING}px"),
                     style:gap = format!("{GRID_GAP}px"),
                     attr:data-selected = move || selected_sig.get().then(|| "true".to_owned()),
+                    attr:data-cursor = move || cursor_sig.get().then(|| "true".to_owned()),
                     attr:data-ghosted = move || ghosted.get().then(|| "true".to_owned()),
                     attr:data-hidden-entry = hidden.then(|| "true".to_owned()),
                     a11y:role = Role::ListItem,
@@ -2964,6 +2588,7 @@ impl Browser {
             row(
                 class = "gds-files-row-content",
                 attr:data-selected = move || selected_sig.get().then(|| "true".to_owned()),
+                attr:data-cursor = move || cursor_sig.get().then(|| "true".to_owned()),
                 attr:data-ghosted = move || ghosted.get().then(|| "true".to_owned()),
                 attr:data-hidden-entry = hidden.then(|| "true".to_owned()),
                 on:click = move |ev: &mut EventCx<'_, events::Click>| {
@@ -3303,8 +2928,12 @@ mod tests {
             "toolbar spacer must be removed so address bar stretches to WindowControls"
         );
         assert!(
-            WORKSPACE_CSS.contains("scrollbar-width: none"),
-            "breadcrumb track must suppress horizontal scrollbar chrome"
+            super::super::chrome::CHROME_CSS.contains("--zgui-scrollbar-thumb: transparent"),
+            "breadcrumb track must suppress horizontal scrollbar chrome via zgui scrollbar custom properties"
+        );
+        assert!(
+            !super::super::chrome::CHROME_CSS.contains("scrollbar-width"),
+            "chrome stylesheet must not emit unsupported scrollbar-width CSS declarations"
         );
 
         let row_hidden = WORKSPACE_CSS

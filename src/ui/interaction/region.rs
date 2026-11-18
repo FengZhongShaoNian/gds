@@ -1,14 +1,11 @@
 //! Keyboard focus regions and shared `1px` inset focus-contour helpers (`focus.md`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use zgui::prelude::*;
-use zgui::reactive::{
-    LocalStorage, RenderEffect, RwSignal, Signal, on_cleanup_local, provide_local_context,
-    use_local_context,
-};
+use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, Signal, on_cleanup_local};
 use zgui::view::{AttrName, ListenerGuard, current_host, events};
 use zgui::vocab::{FocusCause, Role};
 use zgui::{component, css, view};
@@ -17,8 +14,58 @@ use super::actions::Command;
 use super::keytips;
 use super::shortcut::Shortcut;
 
+struct WindowModality {
+    root_id: NodeId,
+    is_keyboard: Cell<bool>,
+    next_sub_id: Cell<u64>,
+    subscribers: RefCell<Vec<(u64, RwSignal<bool, LocalStorage>)>>,
+    guards: RefCell<Vec<ListenerGuard>>,
+}
+
+impl WindowModality {
+    fn set_keyboard(&self, next: bool) {
+        if self.is_keyboard.replace(next) == next {
+            return;
+        }
+        let signals: Vec<_> = self
+            .subscribers
+            .borrow()
+            .iter()
+            .map(|&(_, sig)| sig)
+            .collect();
+        for sig in signals {
+            let _ = sig.try_set(next);
+        }
+    }
+
+    fn subscribe(&self, signal: RwSignal<bool, LocalStorage>) -> u64 {
+        let id = self.next_sub_id.get().wrapping_add(1);
+        self.next_sub_id.set(id);
+        let _ = signal.try_set(self.is_keyboard.get());
+        self.subscribers.borrow_mut().push((id, signal));
+        id
+    }
+
+    fn unsubscribe(&self, sub_id: u64) {
+        self.subscribers
+            .borrow_mut()
+            .retain(|&(id, _)| id != sub_id);
+    }
+}
+
+impl Drop for WindowModality {
+    fn drop(&mut self) {
+        self.guards.borrow_mut().clear();
+        WINDOW_MODALITIES.with(|map| {
+            map.borrow_mut().remove(&self.root_id);
+        });
+    }
+}
+
 thread_local! {
     static REGION_FOCUS_VISIBLE: RefCell<HashMap<NodeId, RwSignal<bool, LocalStorage>>> =
+        RefCell::new(HashMap::new());
+    static WINDOW_MODALITIES: RefCell<HashMap<NodeId, Weak<WindowModality>>> =
         RefCell::new(HashMap::new());
 }
 
@@ -48,54 +95,71 @@ const SHEET: &str = css!(
     "#
 );
 
-#[derive(Clone, Copy)]
-struct ModalityTracker {
-    keyboard: RwSignal<bool, LocalStorage>,
+fn acquire_window_modality(root: NodeRef, root_id: NodeId) -> Rc<WindowModality> {
+    if let Some(existing) =
+        WINDOW_MODALITIES.with(|map| map.borrow().get(&root_id).and_then(Weak::upgrade))
+    {
+        return existing;
+    }
+
+    let modality = Rc::new(WindowModality {
+        root_id,
+        is_keyboard: Cell::new(false),
+        next_sub_id: Cell::new(0),
+        subscribers: RefCell::new(Vec::new()),
+        guards: RefCell::new(Vec::new()),
+    });
+
+    let mut installed = Vec::new();
+    let weak_key = Rc::downgrade(&modality);
+    if let Some(g) = root.listen(events::KEY_DOWN, ListenerOptions::CAPTURE, move |_| {
+        if let Some(m) = weak_key.upgrade() {
+            m.set_keyboard(true);
+        }
+    }) {
+        installed.push(g);
+    }
+    let weak_ptr = Rc::downgrade(&modality);
+    if let Some(g) = root.listen(events::POINTER_DOWN, ListenerOptions::CAPTURE, move |_| {
+        if let Some(m) = weak_ptr.upgrade() {
+            m.set_keyboard(false);
+        }
+    }) {
+        installed.push(g);
+    }
+    *modality.guards.borrow_mut() = installed;
+
+    WINDOW_MODALITIES.with(|map| {
+        map.borrow_mut().insert(root_id, Rc::downgrade(&modality));
+    });
+
+    modality
 }
 
 fn ensure_modality_tracker(node_ref: NodeRef) -> Signal<bool, LocalStorage> {
-    if let Some(existing) = zgui::reactive::is_ui_thread()
-        .then(use_local_context::<ModalityTracker>)
-        .flatten()
-    {
-        return existing.keyboard.into();
-    }
-
-    let keyboard = RwSignal::new_local(true);
-    if zgui::reactive::is_ui_thread() {
-        provide_local_context(ModalityTracker { keyboard });
-    }
-
-    let guards: Rc<RefCell<Vec<ListenerGuard>>> = Rc::new(RefCell::new(Vec::new()));
-    let guards_watch = Rc::clone(&guards);
+    let keyboard = RwSignal::new_local(false);
+    let subscription: Rc<RefCell<Option<(Rc<WindowModality>, u64)>>> = Rc::new(RefCell::new(None));
+    let sub_watch = Rc::clone(&subscription);
     let effect = RenderEffect::new(move |_| {
-        if node_ref.get().is_none() || !guards_watch.borrow().is_empty() {
+        if node_ref.get().is_none() || sub_watch.borrow().is_some() {
             return;
         }
         let Some(root) = node_ref.window_root() else {
             return;
         };
-        let mut installed = Vec::new();
-        if let Some(g) = root.listen(events::KEY_DOWN, ListenerOptions::CAPTURE, move |_| {
-            if !keyboard.get_untracked() {
-                keyboard.set(true);
-            }
-        }) {
-            installed.push(g);
-        }
-        if let Some(g) = root.listen(events::POINTER_DOWN, ListenerOptions::CAPTURE, move |_| {
-            if keyboard.get_untracked() {
-                keyboard.set(false);
-            }
-        }) {
-            installed.push(g);
-        }
-        *guards_watch.borrow_mut() = installed;
+        let Some(root_id) = root.get_untracked() else {
+            return;
+        };
+        let modality = acquire_window_modality(root, root_id);
+        let sub_id = modality.subscribe(keyboard);
+        *sub_watch.borrow_mut() = Some((modality, sub_id));
     });
 
     on_cleanup_local(move || {
         drop(effect);
-        guards.borrow_mut().clear();
+        if let Some((modality, sub_id)) = subscription.borrow_mut().take() {
+            modality.unsubscribe(sub_id);
+        }
     });
 
     keyboard.into()
@@ -169,6 +233,13 @@ fn attach_region_tracking(node_ref: NodeRef) -> RegionFocusState {
     }
 }
 
+/// Returns a reactive signal tracking whether the window containing `node_ref` is currently in
+/// keyboard modality (`true` after `KEY_DOWN`, `false` after `POINTER_DOWN`).
+#[must_use]
+pub fn use_keyboard_modality(node_ref: NodeRef) -> Signal<bool, LocalStorage> {
+    ensure_modality_tracker(node_ref)
+}
+
 /// Returns `true` when `node_ref` itself (never a descendant!) owns keyboard focus.
 #[must_use]
 pub fn is_focus_visible(node_ref: NodeRef) -> bool {
@@ -179,16 +250,24 @@ pub fn is_focus_visible(node_ref: NodeRef) -> bool {
         .then(|| REGION_FOCUS_VISIBLE.with(|map| map.borrow().get(&self_id).copied()))
         .flatten()
     {
-        return tracked.get();
+        return tracked.try_get().unwrap_or(false);
     }
     let Some(host) = current_host() else {
         return false;
     };
     let active = host.focused().get();
     let modality = zgui::reactive::is_ui_thread()
-        .then(use_local_context::<ModalityTracker>)
+        .then(|| {
+            node_ref
+                .window_root()
+                .and_then(|root| root.get_untracked())
+                .and_then(|root_id| {
+                    WINDOW_MODALITIES.with(|map| map.borrow().get(&root_id).and_then(Weak::upgrade))
+                })
+                .map(|wm| wm.is_keyboard.get())
+        })
         .flatten()
-        .is_none_or(|tracker| tracker.keyboard.get());
+        .unwrap_or(true);
     active == Some(self_id) && modality
 }
 

@@ -122,7 +122,7 @@ pub fn open() {
         view! {
             KeytipHost {
                 NotificationHost {
-                    Frame {
+                    Frame(without_sidebar = true) {
                         TitleBar(title = title_sig)
                         LogViewer()
                     }

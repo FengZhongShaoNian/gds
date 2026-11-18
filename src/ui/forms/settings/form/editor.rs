@@ -4,7 +4,7 @@ use std::rc::Rc;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, UnsyncCallback};
+use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, UnsyncCallback, on_cleanup_local};
 use zgui::view::ShowProps;
 use zgui::{component, view};
 use zgui_ui::{
@@ -231,13 +231,14 @@ fn EditorFieldRow<T: Model + Serialize + DeserializeOwned>(
     // without clearing errors produced by rejecting an invalid local edit.
     let field_sync = Rc::clone(&field);
     let last_json = RefCell::new((field_sync.get)(&state.get_untracked()));
-    let _sync_error = RenderEffect::new(move |_| {
+    let sync_error = RenderEffect::new(move |_| {
         let current = (field_sync.get)(&state.get());
         if *last_json.borrow() != current {
             *last_json.borrow_mut() = current;
             error.set(None);
         }
     });
+    on_cleanup_local(move || drop(sync_error));
 
     let apply_json = {
         let field = Rc::clone(&field);

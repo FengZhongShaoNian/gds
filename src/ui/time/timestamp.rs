@@ -1,7 +1,7 @@
 use std::time::SystemTime;
 
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, RenderEffect, RwSignal};
+use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, on_cleanup_local};
 use zgui::{component, view};
 use zgui_ui::{TooltipContentProps, TooltipProps, TooltipTriggerProps};
 
@@ -55,25 +55,28 @@ impl IntoView for Timestamp {
 pub fn TimestampView(
     #[prop(into)] value: Signal<Option<SystemTime>, LocalStorage>,
     #[prop(optional)] override_format: Option<Format>,
+    #[prop(optional)] node_ref: Option<NodeRef>,
     #[prop(into, optional)] class: Classes,
     #[prop(attrs)] attrs: Attrs,
 ) -> impl IntoView {
     crate::ui::styles::install_ui_stylesheets();
     let ticks = tick_signal();
     let has_value = RwSignal::new_local(value.get_untracked().is_some());
-    let _sync_has_value = RenderEffect::new(move |_| {
+    let sync_has_value = RenderEffect::new(move |_| {
         let next = value.get().is_some();
         if has_value.get_untracked() != next {
             has_value.set(next);
         }
     });
+    on_cleanup_local(move || drop(sync_has_value));
     let tooltip_text = Signal::derive_local(move || value.get().map(precise).unwrap_or_default());
+    let label_ref = node_ref.unwrap_or_default();
 
     move || {
         let label_class = class.clone();
         let label_attrs = attrs.clone();
         let label = view! {
-            text(class = "gds-timestamp", class = label_class, {..label_attrs}) {{move || {
+            text(class = "gds-timestamp", node_ref = label_ref, class = label_class, {..label_attrs}) {{move || {
                 let fmt = override_format.unwrap_or_else(format);
                 if fmt == Format::Relative {
                     let _ = ticks.get();

@@ -275,3 +275,220 @@ fn timestamp_format_presentation_localizes_every_variant_and_cleans_up_on_unmoun
     });
     scope2.unmount();
 }
+
+#[test]
+fn headless_timestamp_view_reacts_to_none_some_transitions_and_tooltip() {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use zgui::geom::Point;
+    use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
+    use zgui::prelude::*;
+    use zgui::reactive::RwSignal;
+    use zgui::runtime::AppError;
+    use zgui::view;
+    use zgui::vocab::{Modifiers, PointerAction, PointerEvent, Timestamp as InputTimestamp};
+    use zgui_platform_headless::Harness;
+
+    use super::{Format, TimestampViewProps, precise};
+    use crate::app::Gds;
+    use crate::i18n::Language;
+    use crate::service::task_manager::Scope;
+    use crate::ui::tooltip::TOOLTIP_DELAY;
+
+    #[derive(Debug, Default)]
+    struct HeadlessSink {
+        atlas: zgui::atlas::MemorySink,
+        target: Option<zgui::render::RenderTarget>,
+    }
+
+    impl zgui::render::Renderer for HeadlessSink {
+        fn capabilities(&self) -> zgui::render::RenderCapabilities {
+            zgui::render::RenderCapabilities::MINIMAL
+        }
+
+        fn configure(&mut self, target: zgui::render::RenderTarget) {
+            self.target = Some(target);
+        }
+
+        fn target(&self) -> Option<zgui::render::RenderTarget> {
+            self.target
+        }
+
+        fn register_external(
+            &mut self,
+            _texture: zgui::render::ExternalTexture,
+        ) -> zgui::render::TextureHandle {
+            zgui::render::TextureHandle(0)
+        }
+
+        fn release_external(&mut self, _handle: zgui::render::TextureHandle) {}
+
+        fn memory(&self) -> zgui::render::MemoryReport {
+            zgui::render::MemoryReport::default()
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &zgui::scene::Scene,
+            _damage: &zgui::bits::DamageSet,
+        ) -> zgui::render::FrameOutcome {
+            zgui::render::FrameOutcome::Presented(zgui::render::FrameStats::default())
+        }
+
+        fn texture_sink(&mut self) -> &mut dyn zgui::atlas::TextureSink {
+            &mut self.atlas
+        }
+    }
+
+    let ts_slot: Rc<RefCell<Option<RwSignal<Option<SystemTime>, LocalStorage>>>> =
+        Rc::new(RefCell::new(None));
+    let ref_slot: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
+    let ts_slot_view = Rc::clone(&ts_slot);
+    let ref_slot_view = Rc::clone(&ref_slot);
+    let ts_slot_driver = Rc::clone(&ts_slot);
+    let ref_slot_driver = Rc::clone(&ref_slot);
+
+    let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+        let mut harness = Harness::new(handler);
+        harness.pump();
+        if let Some(surface) = harness.platform().offscreens().first() {
+            surface.set_a11y_listener(true);
+        }
+        harness.settle(4);
+
+        let offscreen = harness.platform().offscreens()[0].clone();
+        let mut nodes = HashMap::new();
+        let mut root = None;
+        let ts_sig = ts_slot_driver.borrow().expect("ts signal");
+        let sample_ts = at(2026, 3, 10, 12, 0);
+        let expected_precise = precise(sample_ts);
+
+        for phase in 0..3 {
+            match phase {
+                1 => {
+                    ts_sig.set(Some(sample_ts));
+                    harness.settle(4);
+                    let node = ref_slot_driver.borrow().expect("ts wrapper ref");
+                    let bounds = node.window_bounds().expect("ts wrapper bounds");
+                    let scale = node.scale().max(1.0);
+                    let cx = (bounds.origin.x.0 + bounds.size.width.0 * 0.5) / scale;
+                    let cy = (bounds.origin.y.0 + bounds.size.height.0 * 0.5) / scale;
+                    harness.deliver_to_first(SurfaceEvent::Pointer {
+                        action: PointerAction::Moved,
+                        event: PointerEvent::mouse(Point::new(
+                            zgui::geom::CssPx(cx),
+                            zgui::geom::CssPx(cy),
+                        )),
+                        modifiers: Modifiers::NONE,
+                        timestamp: InputTimestamp::ORIGIN,
+                    });
+                    harness.settle(2);
+                    harness.run_for(
+                        TOOLTIP_DELAY + Duration::from_millis(100),
+                        Duration::from_millis(100),
+                    );
+                    harness.settle(4);
+                }
+                2 => {
+                    ts_sig.set(None);
+                    harness.settle(4);
+                }
+                _ => {}
+            }
+
+            for update in offscreen.take_a11y_log() {
+                if let Some(tree) = update.tree {
+                    root = Some(tree.root);
+                }
+                for (id, node) in update.nodes {
+                    nodes.insert(id, node);
+                }
+            }
+
+            let mut labels = Vec::new();
+            let mut stack = vec![root.expect("a11y root")];
+            while let Some(id) = stack.pop() {
+                if let Some(node) = nodes.get(&id) {
+                    let label = node.value().or_else(|| node.label()).map(str::to_owned);
+                    let has_tooltip_trigger = !node.described_by().is_empty();
+                    labels.push((label, has_tooltip_trigger));
+                    stack.extend_from_slice(node.children());
+                }
+            }
+
+            match phase {
+                0 => {
+                    assert!(
+                        labels
+                            .iter()
+                            .any(|(label, described)| label.as_deref() == Some("\u{2014}")
+                                && !*described),
+                        "expected missing timestamp placeholder without tooltip trigger in {labels:?}"
+                    );
+                }
+                1 => {
+                    assert!(
+                        labels
+                            .iter()
+                            .any(|(label, _)| label.as_deref() == Some("2026-03-10 12:00")),
+                        "expected formatted timestamp after None -> Some transition in {labels:?}"
+                    );
+                    assert!(
+                        labels.iter().any(|(_, described)| *described),
+                        "expected TooltipTrigger described_by relation when hovered timestamp is Some in {labels:?}"
+                    );
+                    assert!(
+                        labels
+                            .iter()
+                            .any(|(label, _)| label.as_deref() == Some(expected_precise.as_str())),
+                        "expected precise tooltip `{expected_precise}` in {labels:?}"
+                    );
+                }
+                2 => {
+                    assert!(
+                        labels
+                            .iter()
+                            .any(|(label, _)| label.as_deref() == Some("\u{2014}")),
+                        "expected placeholder after Some -> None transition in {labels:?}"
+                    );
+                    assert!(
+                        labels.iter().all(|(_, described)| !*described),
+                        "expected no TooltipTrigger described_by after returning to None in {labels:?}"
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        harness.shut_down();
+        Ok(())
+    };
+
+    zgui::app()
+        .with_title("timestamp-reactive-test")
+        .with_size(320.0, 200.0)
+        .with_renderer(Box::new(|_surface: &Arc<dyn Surface>, target| {
+            let mut renderer = HeadlessSink::default();
+            zgui::render::Renderer::configure(&mut renderer, target);
+            Ok::<_, AppError>(Box::new(renderer) as Box<dyn zgui::render::Renderer>)
+        }))
+        .run_on(driver, move || {
+            let gds = Gds::try_current().unwrap_or_else(|| Gds::install(Scope::default()));
+            gds.i18n().install(Language::English).expect("en-US");
+            let ts = RwSignal::new_local(None);
+            let ts_ref = NodeRef::new();
+            *ts_slot_view.borrow_mut() = Some(ts);
+            *ref_slot_view.borrow_mut() = Some(ts_ref);
+            view! {
+                TimestampView(
+                    value = ts,
+                    override_format = Some(Format::Absolute),
+                    node_ref = ts_ref,
+                )
+            }
+        })
+        .expect("headless timestamp transition test ran");
+}

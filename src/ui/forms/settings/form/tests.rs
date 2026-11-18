@@ -469,3 +469,181 @@ fn headless_settings_editor_wires_labelled_by_reset_and_filter() {
         })
         .expect("headless settings editor test ran");
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, crate::ConfigEditor)]
+#[serde(default)]
+#[config(validate = "Self::validate")]
+struct ValidatedTextSettings {
+    #[setting(label = "form-search")]
+    text: String,
+}
+
+impl ValidatedTextSettings {
+    fn validate(&self) -> Result<(), String> {
+        if self.text == "bad" {
+            return Err("bad_setting_value".to_owned());
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn headless_settings_editor_clears_validation_error_on_external_model_update() {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
+    use zgui::runtime::AppError;
+    use zgui::vocab::{KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, Timestamp};
+    use zgui_platform_headless::Harness;
+
+    #[derive(Debug, Default)]
+    struct HeadlessSink {
+        atlas: zgui::atlas::MemorySink,
+        target: Option<zgui::render::RenderTarget>,
+    }
+
+    impl zgui::render::Renderer for HeadlessSink {
+        fn capabilities(&self) -> zgui::render::RenderCapabilities {
+            zgui::render::RenderCapabilities::MINIMAL
+        }
+
+        fn configure(&mut self, target: zgui::render::RenderTarget) {
+            self.target = Some(target);
+        }
+
+        fn target(&self) -> Option<zgui::render::RenderTarget> {
+            self.target
+        }
+
+        fn register_external(
+            &mut self,
+            _texture: zgui::render::ExternalTexture,
+        ) -> zgui::render::TextureHandle {
+            zgui::render::TextureHandle(0)
+        }
+
+        fn release_external(&mut self, _handle: zgui::render::TextureHandle) {}
+
+        fn memory(&self) -> zgui::render::MemoryReport {
+            zgui::render::MemoryReport::default()
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &zgui::scene::Scene,
+            _damage: &zgui::bits::DamageSet,
+        ) -> zgui::render::FrameOutcome {
+            zgui::render::FrameOutcome::Presented(zgui::render::FrameStats::default())
+        }
+
+        fn texture_sink(&mut self) -> &mut dyn zgui::atlas::TextureSink {
+            &mut self.atlas
+        }
+    }
+
+    let sig_slot: Rc<RefCell<Option<RwSignal<ValidatedTextSettings, LocalStorage>>>> =
+        Rc::new(RefCell::new(None));
+    let sig_slot_view = Rc::clone(&sig_slot);
+    let sig_slot_driver = Rc::clone(&sig_slot);
+
+    let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+        let mut harness = Harness::new(handler);
+        harness.pump();
+        if let Some(surface) = harness.platform().offscreens().first() {
+            surface.set_a11y_listener(true);
+        }
+        harness.settle(4);
+
+        let offscreen = harness.platform().offscreens()[0].clone();
+        let mut nodes = HashMap::new();
+        let mut root = None;
+
+        // Focus the single TextInput via Tab and type "bad" to trigger validate().
+        for state in [KeyState::Pressed, KeyState::Released] {
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state,
+                event: KeyEvent::named(NamedKey::Tab, PhysicalKey::Code(KeyCode::Tab)),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+        }
+        harness.settle(2);
+        for ch in ['b', 'a', 'd'] {
+            let event = KeyEvent::character(ch.to_string());
+            for state in [KeyState::Pressed, KeyState::Released] {
+                harness.deliver_to_first(SurfaceEvent::Key {
+                    state,
+                    event: event.clone(),
+                    modifiers: Modifiers::NONE,
+                    timestamp: Timestamp::ORIGIN,
+                });
+            }
+        }
+        harness.settle(4);
+
+        let sig = sig_slot_driver.borrow().expect("model signal");
+        for phase in 0..2 {
+            if phase == 1 {
+                // An external signal change must clear the stale validation error via RenderEffect.
+                sig.set(ValidatedTextSettings {
+                    text: "ok".to_owned(),
+                });
+                harness.settle(4);
+            }
+
+            for update in offscreen.take_a11y_log() {
+                if let Some(tree) = update.tree {
+                    root = Some(tree.root);
+                }
+                for (id, node) in update.nodes {
+                    nodes.insert(id, node);
+                }
+            }
+
+            let mut found_error = false;
+            let mut stack = vec![root.expect("a11y root")];
+            while let Some(id) = stack.pop() {
+                if let Some(node) = nodes.get(&id) {
+                    if node.value() == Some("bad_setting_value")
+                        || node.label() == Some("bad_setting_value")
+                    {
+                        found_error = true;
+                        break;
+                    }
+                    stack.extend_from_slice(node.children());
+                }
+            }
+
+            if phase == 0 {
+                assert!(found_error, "invalid edit should surface validation error");
+                assert_eq!(sig.get_untracked().text, "ba");
+            } else {
+                assert!(
+                    !found_error,
+                    "external model update should clear stale validation error"
+                );
+            }
+        }
+
+        harness.shut_down();
+        Ok(())
+    };
+
+    zgui::app()
+        .with_title("settings-error-sync-test")
+        .with_size(640.0, 240.0)
+        .with_renderer(Box::new(|_surface: &Arc<dyn Surface>, target| {
+            let mut renderer = HeadlessSink::default();
+            zgui::render::Renderer::configure(&mut renderer, target);
+            Ok::<_, AppError>(Box::new(renderer) as Box<dyn zgui::render::Renderer>)
+        }))
+        .run_on(driver, move || {
+            let gds = Gds::try_current().unwrap_or_else(|| Gds::install(Scope::default()));
+            gds.i18n().install(Language::English).expect("en-US");
+            let sig = RwSignal::new_local(ValidatedTextSettings::default());
+            *sig_slot_view.borrow_mut() = Some(sig);
+            ValidatedTextSettingsEditor::new(sig).view()
+        })
+        .expect("headless settings error sync test ran");
+}

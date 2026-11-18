@@ -205,7 +205,27 @@ impl Browser {
             Location::Remote(_) => {
                 let remote_busy = busy || self.is_background_task_busy(&remote_task_key(tab_id));
                 let favorite = self.read(|state| state.places.is_favorite(&location));
+                let show_hidden = self.0.preferences.state().with(|p| p.files.show_hidden);
                 vec![
+                    Action::new(
+                        if grid { "view-list" } else { "view-grid" },
+                        if grid {
+                            IconName::List
+                        } else {
+                            IconName::LayoutGrid
+                        },
+                        Command::ViewMode,
+                        Browser::toggle_view,
+                        !remote_busy,
+                    ),
+                    Action::new(
+                        "show-hidden",
+                        IconName::Eye,
+                        Command::Hidden,
+                        Browser::toggle_remote_hidden,
+                        !remote_busy,
+                    )
+                    .checked(show_hidden),
                     Action::custom(
                         "remote-upload",
                         IconName::Upload,
@@ -367,37 +387,46 @@ impl Browser {
     }
 
     pub(in crate::pages::workspace) fn special_page_actions(&self) -> Option<AnyView> {
-        let buttons = self
-            .special_actions()?
-            .into_iter()
-            .map(|action| {
-                let b_click = self.clone();
-                let b_act = self.clone();
-                let run = action.run;
-                AnyView::new(view! {
-                    IconButton(
-                        icon = action.icon,
-                        label = i18n::text(action.label),
-                        active = Signal::stored_local(action.checked),
-                        disabled = Signal::stored_local(!action.enabled),
-                        shortcut = action.command.map(Command::shortcut),
-                        on_activate = UnsyncCallback::new(move |()| {
-                            if action.enabled {
-                                run(&b_act);
-                            }
-                        }),
-                        on:click = move |_| {
-                            if action.enabled {
-                                run(&b_click);
-                            }
+        let actions = self.special_actions()?;
+        let is_remote = self.read(|state| {
+            matches!(state.tab().navigation.location(), Location::Remote(_))
+                && matches!(state.tab().contents, Contents::Remote { .. })
+        });
+        let mut buttons = Vec::with_capacity(actions.len() + usize::from(is_remote));
+        if is_remote {
+            buttons.push(self.column_menu());
+        }
+        buttons.extend(actions.into_iter().map(|action| {
+            let b_click = self.clone();
+            let b_act = self.clone();
+            let run = action.run;
+            AnyView::new(view! {
+                IconButton(
+                    icon = action.icon,
+                    label = i18n::text(action.label),
+                    active = Signal::stored_local(action.checked),
+                    disabled = Signal::stored_local(!action.enabled),
+                    shortcut = action.command.map(Command::shortcut),
+                    on_activate = UnsyncCallback::new(move |()| {
+                        if action.enabled {
+                            run(&b_act);
                         }
-                    )
-                })
+                    }),
+                    on:click = move |_| {
+                        if action.enabled {
+                            run(&b_click);
+                        }
+                    }
+                )
             })
-            .collect::<Vec<_>>();
+        }));
         Some(AnyView::new(view! {
             row(class = "gds-files-page-action-strip") {{buttons}}
         }))
+    }
+
+    fn toggle_remote_hidden(&self) {
+        self.dispatch(Command::Hidden);
     }
 
     fn toggle_collection_favorite(&self) {

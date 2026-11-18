@@ -735,7 +735,15 @@ impl Browser {
     }
 
     fn page_entries(&self) -> Vec<MenuEntry> {
-        if let Some(entries) = self.special_page_entries() {
+        if let Some(mut entries) = self.special_page_entries() {
+            let sort = self.sort_entries();
+            if !sort.is_empty() {
+                entries.push(MenuEntry::Submenu {
+                    label: i18n::text_untracked("sort"),
+                    icon: Some(IconName::ArrowDownWideNarrow),
+                    entries: sort,
+                });
+            }
             return entries;
         }
         let grid = self.read_untracked(|state| state.tab().mode == ViewMode::Grid);
@@ -802,7 +810,7 @@ impl Browser {
         });
         entries.push(self.menu_item_entry(
             Command::Details.label_id(),
-            Some(IconName::PanelRight),
+            Some(IconName::Info),
             Some(Command::Details),
             compact,
             Browser::toggle_details,
@@ -1190,18 +1198,91 @@ impl Browser {
                 items
             }
             Row::Tag(_) => self.place_entries(row),
-            Row::Remote(_) => {
-                let remote_busy = self.read_untracked(|state| {
+            Row::Remote(entry) => {
+                let (selected, remote_busy) = self.read_untracked(|state| {
                     let tab = state.tab();
-                    state.operation.busy()
-                        || tab.navigation.is_loading()
-                        || self.is_background_task_busy_untracked(&remote_task_key(tab.id))
+                    (
+                        tab.selected(),
+                        state.operation.busy()
+                            || tab.navigation.is_loading()
+                            || self.is_background_task_busy_untracked(&remote_task_key(tab.id)),
+                    )
                 });
-                vec![
-                    self.command_item(Command::Open, Browser::open_selected),
-                    self.command_item(Command::OpenInNewTab, Browser::open_selected_tab),
-                    self.command_item(Command::Copy, |browser| browser.copy(false)),
+                let count = selected.len();
+                let many = count > 1;
+                let all_dirs = !selected.is_empty()
+                    && selected.iter().all(|item| {
+                        matches!(
+                            item,
+                            Row::Remote(rem)
+                                if rem.kind == gds::service::remote::EntryKind::Directory
+                        )
+                    });
+                let is_dir = entry.kind == gds::service::remote::EntryKind::Directory && all_dirs;
+                let copy_label = if many {
+                    i18n::count_untracked("copy-selected-files", count)
+                } else {
+                    i18n::text_untracked(Command::Copy.label_id())
+                };
+                let copy_paths_label = if many {
+                    i18n::count_untracked("copy-selected-paths", count)
+                } else {
+                    i18n::text_untracked("copy-path")
+                };
+                let delete_label = if many {
+                    i18n::count_untracked("delete-selected", count)
+                } else {
+                    i18n::text_untracked(Command::DeletePermanent.label_id())
+                };
+
+                let mut items = Vec::new();
+                if !many {
+                    items.push(self.command_item(Command::Open, Browser::open_selected));
+                }
+                if is_dir {
+                    items.push(MenuEntry::Item {
+                        label: if many {
+                            i18n::count_untracked("open-directories-new-tabs", count)
+                        } else {
+                            i18n::text_untracked(Command::OpenInNewTab.label_id())
+                        },
+                        icon: command_icon(Command::OpenInNewTab),
+                        shortcut: Some(Command::OpenInNewTab.shortcut()),
+                        disabled: false,
+                        destructive: false,
+                        on_select: self.menu_action(
+                            Command::OpenInNewTab.label_id(),
+                            Browser::open_selected_tab,
+                        ),
+                    });
+                }
+                if !items.is_empty() {
+                    items.push(MenuEntry::Separator);
+                }
+                items.extend([
+                    MenuEntry::Item {
+                        label: copy_label,
+                        icon: command_icon(Command::Copy),
+                        shortcut: Some(Command::Copy.shortcut()),
+                        disabled: remote_busy,
+                        destructive: false,
+                        on_select: self.menu_action(Command::Copy.label_id(), |browser| {
+                            browser.copy(false);
+                        }),
+                    },
                     self.paste_item(),
+                    MenuEntry::Item {
+                        label: copy_paths_label,
+                        icon: command_icon(Command::CopyPaths),
+                        shortcut: Some(Command::CopyPaths.shortcut()),
+                        disabled: false,
+                        destructive: false,
+                        on_select: self.menu_action(
+                            Command::CopyPaths.label_id(),
+                            Browser::copy_selected_paths,
+                        ),
+                    },
+                    MenuEntry::Separator,
                     self.menu_item_entry(
                         "remote-download",
                         Some(IconName::Download),
@@ -1216,10 +1297,32 @@ impl Browser {
                         remote_busy,
                         Browser::new_folder,
                     ),
-                    self.command_item(Command::Rename, Browser::rename),
-                    self.command_item(Command::DeletePermanent, |browser| browser.delete(true)),
+                    self.menu_item_entry(
+                        Command::Rename.label_id(),
+                        command_icon(Command::Rename),
+                        Some(Command::Rename),
+                        remote_busy || count != 1,
+                        Browser::rename,
+                    ),
+                    MenuEntry::Item {
+                        label: delete_label,
+                        icon: command_icon(Command::DeletePermanent),
+                        shortcut: Some(Command::DeletePermanent.shortcut()),
+                        disabled: remote_busy,
+                        destructive: true,
+                        on_select: self
+                            .menu_action(Command::DeletePermanent.label_id(), |browser| {
+                                browser.delete(true)
+                            }),
+                    },
                     MenuEntry::Separator,
-                    self.command_item(Command::Favorite, Browser::favorite),
+                    self.menu_item_entry(
+                        Command::Favorite.label_id(),
+                        command_icon(Command::Favorite),
+                        Some(Command::Favorite),
+                        remote_busy,
+                        Browser::favorite,
+                    ),
                     self.menu_item_entry(
                         "remote-disconnect",
                         Some(IconName::Unplug),
@@ -1227,7 +1330,8 @@ impl Browser {
                         remote_busy,
                         Browser::disconnect_remote,
                     ),
-                ]
+                ]);
+                items
             }
             Row::Place(_) => self.place_entries(row),
             Row::File(_)

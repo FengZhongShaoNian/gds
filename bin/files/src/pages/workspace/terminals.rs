@@ -22,7 +22,7 @@ use gds::{
             },
             tooltip::DetailsTooltipProps,
         },
-        keytips::KeytipRegistry,
+        keytips::{KeytipRegistry, anchor_when},
         navigation::{
             CornerActionProps, CornerButtonProps, HoverActionProps, NavItemLabelProps, NavItemProps,
         },
@@ -1586,6 +1586,13 @@ impl Browser {
                         IconButton(
                             icon = IconName::Plus,
                             label = i18n::text("files-terminal-new"),
+                            shortcut = Some(Shortcut::new(Key::character("n"), Modifiers::CONTROL)),
+                            shortcut_enabled = Signal::derive_local(move || {
+                                zgui::view::focused_node().get().is_some_and(|node| {
+                                    dock_node.get_untracked() == Some(node)
+                                        || dock_node.contains(node)
+                                })
+                            }),
                             on:click = move |_| b_new.new_terminal(),
                         )
                     }
@@ -1655,10 +1662,7 @@ impl Browser {
                                         entry_for_details.detail_lines()
                                     });
 
-                                    let ctrl_revealed = Signal::derive_local(move || {
-                                        let held_ctrl = KeytipRegistry::current().is_some_and(
-                                            |reg| reg.held().get() == Some(HeldModifier::Ctrl),
-                                        );
+                                    let shortcut_target = Signal::derive_local(move || {
                                         let focused = zgui::view::focused_node()
                                             .get()
                                             .is_some_and(|node| {
@@ -1667,16 +1671,26 @@ impl Browser {
                                                 dock_root.get_untracked() == Some(node)
                                                     || dock_root.contains(node)
                                             });
-                                        held_ctrl && selected.get() && focused
+                                        selected.get() && focused
+                                    });
+
+                                    let ctrl_revealed = Signal::derive_local(move || {
+                                        let held_ctrl = KeytipRegistry::current().is_some_and(
+                                            |reg| reg.held().get() == Some(HeldModifier::Ctrl),
+                                        );
+                                        held_ctrl && shortcut_target.get()
                                     });
 
                                     let close_shortcut =
                                         Shortcut::new(Key::character("w"), Modifiers::CONTROL);
+                                    let corner_close_shortcut = close_shortcut.clone();
                                     let close_action = AnyView::new(view! {
                                         IconButton(
                                             icon = IconName::Close,
                                             label = i18n::text("files-terminal-end"),
                                             size = zgui_ui::ButtonSize::IconXs,
+                                            shortcut = Some(close_shortcut.clone()),
+                                            shortcut_enabled = shortcut_target,
                                             on:click = move |ev: &mut EventCx<'_, events::Click>| {
                                                 ev.stop_propagation();
                                                 b_close_hover.close_terminal_session(id);
@@ -1737,9 +1751,17 @@ impl Browser {
                                             }
                                             {move || {
                                                 let b_corner = b_close_corner.clone();
+                                                let corner_key = corner_close_shortcut.clone();
                                                 presentation.get().is_collapsed().then(move || {
+                                                    let corner_ref = NodeRef::new();
+                                                    anchor_when(
+                                                        corner_ref,
+                                                        corner_key,
+                                                        shortcut_target,
+                                                    );
                                                     let btn = AnyView::new(view! {
                                                         CornerButton(
+                                                            node_ref = Some(corner_ref),
                                                             icon = IconName::Close,
                                                             label = i18n::text("files-terminal-end"),
                                                             on:click = move |_| {

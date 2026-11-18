@@ -429,10 +429,9 @@ impl TagEditor {
 
         match &event.key {
             Key::Named(NamedKey::Enter) => {
-                if self.add().is_ok_and(|added| added) || self.0.error.get_untracked().is_some() {
-                    event.prevent_default();
-                    event.stop_propagation();
-                }
+                let _ = self.add();
+                event.prevent_default();
+                event.stop_propagation();
             }
             Key::Named(NamedKey::Backspace) => {
                 if self.0.draft.get_untracked().is_empty()
@@ -442,6 +441,11 @@ impl TagEditor {
                     event.prevent_default();
                     event.stop_propagation();
                 }
+            }
+            Key::Named(
+                NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::Home | NamedKey::End,
+            ) => {
+                self.0.history.borrow_mut().break_typing();
             }
             _ => {}
         }

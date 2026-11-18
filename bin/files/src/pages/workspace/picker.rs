@@ -76,7 +76,7 @@ const PICKER_CSS: &str = css!(
         min-width: 140px;
         max-width: 480px;
         height: 100%;
-        background: var(--gds-content-bg, var(--gds-surface));
+        background: var(--gds-surface);
         padding-right: 8px;
         box-sizing: border-box;
     }
@@ -98,7 +98,7 @@ const PICKER_CSS: &str = css!(
         align-items: center;
         gap: 8px;
         height: 100%;
-        background: var(--gds-content-bg, var(--gds-surface));
+        background: var(--gds-surface);
         padding-left: 10px;
         box-sizing: border-box;
     }
@@ -810,7 +810,6 @@ impl Browser {
         install_picker_stylesheet();
         let slot = picker_ui_slot(self);
         let sidebar_width = self.sidebar_width();
-        let browser_left = self.clone();
         let browser_vis = self.clone();
         let name_view = self.render_picker_name();
         let controls_view = self.build_picker_controls_view();
@@ -819,11 +818,7 @@ impl Browser {
             row(
                 class = "gds-files-picker-overlay-bar",
                 style:left = move || {
-                    let left = if browser_left.compact() {
-                        0.0
-                    } else {
-                        sidebar_width.get().max(tokens::COLLAPSED_SIDEBAR_WIDTH)
-                    };
+                    let left = sidebar_width.get().max(tokens::COLLAPSED_SIDEBAR_WIDTH);
                     Some(format!("{left:.2}px"))
                 },
                 style:display = move || {

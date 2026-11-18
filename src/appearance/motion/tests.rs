@@ -1,110 +1,57 @@
-use super::*;
-use crate::app::AppExt as _;
-use gpui_kit::{
-    AppContext, ParentElement, TestAppContext, WindowHandle, component::spinner::Spinner, div, px,
-    size,
-};
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use super::{Policy, WORKSPACE};
+use crate::app::Gds;
+use crate::service::task_manager::Scope;
+use zgui::reactive::{Mounted, install};
 
-struct Probe(Rc<RefCell<Vec<bool>>>);
-impl Render for Probe {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.0.borrow_mut().push(cx.reduce_motion());
-        div().child(Spinner::new())
+#[test]
+fn preference_off_on_restores_system_and_late_system_updates_cannot_enable() {
+    let mut policy = Policy::default();
+    for system in [false, true] {
+        policy.system_reduced = system;
+        policy.enabled = false;
+        assert!(policy.reduced());
+        policy.system_reduced = !system;
+        assert!(policy.reduced());
+        policy.enabled = true;
+        assert_eq!(policy.reduced(), !system);
+        policy.enabled = false;
+        policy.system_reduced = system;
+        policy.enabled = true;
+        assert_eq!(policy.reduced(), system);
     }
 }
 
-fn open(cx: &mut TestAppContext, samples: Rc<RefCell<Vec<bool>>>) -> WindowHandle<Root> {
-    cx.open_window(size(px(300.), px(200.)), |window, cx| {
-        let probe = cx.new(|_| Probe(samples));
-        Root::new(probe, window, cx)
-    })
-}
-
-#[gpui::test]
-fn preference_off_on_restores_system_and_late_system_updates_cannot_enable(
-    cx: &mut TestAppContext,
-) {
-    cx.update(|cx| {
-        cx.gds_mut().appearance().init();
-        for system in [false, true] {
-            system_changed(system, cx);
-            cx.gds_mut().appearance().motion().set_enabled(false);
-            assert!(cx.reduce_motion());
-            system_changed(!system, cx);
-            assert!(cx.reduce_motion());
-            cx.gds_mut().appearance().motion().set_enabled(true);
-            assert_eq!(cx.reduce_motion(), !system);
-            cx.gds_mut().appearance().motion().set_enabled(false);
-            system_changed(system, cx);
-            cx.gds_mut().appearance().motion().set_enabled(true);
-            assert_eq!(cx.reduce_motion(), system);
-        }
-    });
-}
-
-#[gpui::test]
-fn all_roots_reassert_policy_before_render_and_static_spinners_stop_frames(
-    cx: &mut TestAppContext,
-) {
-    cx.update(|cx| cx.gds_mut().appearance().init());
-    let first_samples = Rc::new(RefCell::new(Vec::new()));
-    let second_samples = Rc::new(RefCell::new(Vec::new()));
-    let first = open(cx, first_samples.clone());
-    let second = open(cx, second_samples.clone());
-    cx.run_until_parked();
-    // Start a native Kit spinner in both existing windows before disabling.
-    for window in [first, second] {
-        assert!(
-            window
-                .update(cx, |_, window, cx| window.simulate_next_frame(cx))
-                .expect("motion window frame")
-                > 0
-        );
-    }
-    cx.update(|cx| cx.gds_mut().appearance().motion().set_enabled(false));
-    cx.run_until_parked();
-    first_samples.borrow_mut().clear();
-    second_samples.borrow_mut().clear();
-    // Model Base's value-ownership collision: a callback writes false after the
-    // app forced true. Root must repair it before cached children/overlays draw.
-    cx.update(|cx| cx.set_reduce_motion(false));
-    cx.run_until_parked();
-    for samples in [&first_samples, &second_samples] {
-        assert!(!samples.borrow().is_empty());
-        assert!(samples.borrow().iter().all(|reduced| *reduced));
-    }
-    let new_samples = Rc::new(RefCell::new(Vec::new()));
-    let third = open(cx, new_samples.clone());
-    cx.run_until_parked();
-    assert!(new_samples.borrow().iter().all(|reduced| *reduced));
-    cx.executor().advance_clock(Duration::from_secs(1));
-    // Drain at most the already requested frame, then no decorative requests.
-    for window in [first, second, third] {
-        window
-            .update(cx, |_, window, cx| window.simulate_next_frame(cx))
-            .expect("motion window frame");
-    }
-    cx.run_until_parked();
-    for window in [first, second, third] {
+#[test]
+fn reactive_motion_zeroes_durations_in_css_when_reduced() {
+    install().expect("install reactive runtime");
+    let root = Mounted::new();
+    root.with(|| {
+        let gds = Gds::install(Scope::default());
+        let motion = gds.appearance().motion();
+        assert!(motion.enabled());
         assert_eq!(
-            window
-                .update(cx, |_, window, cx| window.simulate_next_frame(cx))
-                .expect("motion window frame"),
-            0
+            WORKSPACE.css_value(false),
+            "160ms cubic-bezier(0, 0, 0.2, 1)"
         );
-    }
-    cx.update(|cx| {
-        system_changed(false, cx);
-        cx.gds_mut().appearance().motion().set_enabled(true);
+        assert_eq!(WORKSPACE.css_value(true), "0ms");
+
+        let css = gds.appearance().gds_stylesheet_css();
+        assert!(css.contains("--gds-motion-normal: 160ms;"));
+        assert_eq!(
+            gds.appearance().tokens_theme().motion.duration_normal,
+            "160ms"
+        );
+
+        motion.set_enabled(false);
+        assert!(!motion.enabled());
+        let css = gds.appearance().gds_stylesheet_css();
+        assert!(css.contains("--gds-motion-reduced: 1;"));
+        assert!(css.contains("--gds-motion-fast: 0ms;"));
+        assert!(css.contains("--gds-motion-normal: 0ms;"));
+        assert_eq!(
+            gds.appearance().tokens_theme().motion.duration_normal,
+            "0ms"
+        );
     });
-    cx.run_until_parked();
-    for window in [first, second, third] {
-        assert!(
-            window
-                .update(cx, |_, window, cx| window.simulate_next_frame(cx))
-                .expect("motion window frame")
-                > 0
-        );
-    }
+    root.unmount();
 }

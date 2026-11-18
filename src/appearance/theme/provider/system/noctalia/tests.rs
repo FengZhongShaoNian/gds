@@ -1,10 +1,10 @@
 use super::{self as noctalia, TEMPLATE};
-use crate::appearance::theme::{Error, Mode, ModePreference};
-use gpui_kit::{Hsla, rgb};
+use crate::appearance::theme::{Error, Mode, ModePreference, provider::color::rgb};
 use std::path::Path;
+use zgui::canvas::zgui_color::Color;
 
-fn color(value: u32) -> Hsla {
-    rgb(value).into()
+fn color(value: u32) -> Color {
+    rgb(value)
 }
 
 fn rendered_template(active_mode: &str) -> String {

@@ -1,10 +1,10 @@
 use super as dms;
-use crate::appearance::theme::{Error, Mode, ModePreference};
-use gpui_kit::{Hsla, rgb};
+use crate::appearance::theme::{Error, Mode, ModePreference, provider::color::rgb};
 use std::path::Path;
+use zgui::canvas::zgui_color::Color;
 
-fn color(value: u32) -> Hsla {
-    rgb(value).into()
+fn color(value: u32) -> Color {
+    rgb(value)
 }
 
 fn dms_export(active_mode: &str) -> String {
@@ -199,15 +199,24 @@ fn dms_preserves_surface_levels_boundaries_and_paired_selection_in_native_compon
     assert_eq!(parsed.palette.panel, color(0x282828));
     assert_eq!(parsed.palette.panel_foreground, color(0xeeeeee));
     assert_eq!(parsed.palette.shadow, color(0x010203));
-    let mut native = gpui_kit::component::ThemeColor::default();
-    parsed.palette.apply_to(&mut native);
-    assert_eq!(native.border, color(0x444444));
-    assert_eq!(native.input, color(0x888888));
-    assert_eq!(native.sidebar_accent, color(0x345678));
-    assert_eq!(native.sidebar_accent_foreground, color(0xfedcba));
-    assert_eq!(native.table_active, native.sidebar_accent);
-    assert_eq!(native.accent_foreground, native.sidebar_accent_foreground);
-    assert_eq!(native.popover, parsed.palette.panel);
+    let tokens = parsed.palette.tokens_theme(
+        Mode::Dark,
+        &crate::appearance::typography::Preferences::default()
+            .resolve()
+            .expect("default typography"),
+        crate::appearance::motion::Policy::default(),
+        true,
+    );
+    assert_eq!(tokens.color.border, "#444444");
+    assert_eq!(tokens.color.input, "#888888");
+    assert_eq!(tokens.color.sidebar_accent, "#345678");
+    assert_eq!(tokens.color.sidebar_accent_foreground, "#fedcba");
+    assert_eq!(tokens.color.accent, tokens.color.sidebar_accent);
+    assert_eq!(
+        tokens.color.accent_foreground,
+        tokens.color.sidebar_accent_foreground
+    );
+    assert_eq!(tokens.color.popover, "#282828");
 }
 
 #[test]

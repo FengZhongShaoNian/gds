@@ -79,6 +79,10 @@ fn tasks_show_cancellation_until_cleanup_and_preserve_log_state() {
         with_task_probe(|probe| {
             assert_eq!(probe.row_count.get_untracked(), 1);
             assert!(
+                probe.tasks_empty.get_untracked(),
+                "logs-tasks-empty must show whenever snapshot.tasks is empty, even with active scopes"
+            );
+            assert!(
                 !probe
                     .snapshot
                     .with_untracked(|s| s.tasks.iter().any(|t| t.id == task_id))
@@ -138,5 +142,54 @@ fn hiding_and_closing_inspector_never_cancels_work() {
         assert_eq!(root.snapshot().tasks.len(), 1);
         drop(completion);
         assert!(root.snapshot().tasks.is_empty());
+    });
+}
+
+#[test]
+fn unnamed_task_uses_source_file_basename_and_reclick_toggles_selection_off() {
+    use crate::ui::task_manager::{task_name, toggle_selected_id};
+
+    assert_eq!(toggle_selected_id(None, 7), Some(7));
+    assert_eq!(toggle_selected_id(Some(7), 7), None);
+
+    let store = Store::new();
+    run_headless_logs(true, Some(store), |harness, gds| {
+        let root = gds.tasks().scope();
+        let unnamed = root.register().expect("register unnamed task");
+        let named = root
+            .register_named("Indexer", Execution::Tokio)
+            .expect("register named task");
+
+        let snap = root.snapshot();
+        let unnamed_rec = snap
+            .tasks
+            .iter()
+            .find(|t| t.name.is_empty())
+            .expect("unnamed task snapshot");
+        let named_rec = snap
+            .tasks
+            .iter()
+            .find(|t| t.name == "Indexer")
+            .expect("named task snapshot");
+        assert_eq!(task_name(unnamed_rec), "tasks.rs");
+        assert_eq!(task_name(named_rec), "Indexer");
+
+        with_viewer_probe(|probe| {
+            probe.active_tab.set("tasks".to_owned());
+        });
+        pump_frames(harness);
+
+        with_task_probe(|probe| {
+            assert!(!probe.tasks_empty.get_untracked());
+        });
+
+        drop(unnamed);
+        drop(named);
+        tick_tasks(harness);
+
+        with_task_probe(|probe| {
+            assert!(probe.row_count.get_untracked() >= 1);
+            assert!(probe.tasks_empty.get_untracked());
+        });
     });
 }

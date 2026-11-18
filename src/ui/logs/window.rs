@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
+use zgui::prelude::Signal;
 use zgui::runtime::{WindowHandle, try_use_window, try_use_windows};
 use zgui::view;
 #[cfg(test)]
@@ -11,11 +12,13 @@ use zgui::vocab::{Key, Modifiers};
 use super::LogViewerProps;
 use crate::i18n;
 use crate::service::logs::Store;
+use crate::ui::feedback::notifications::NotificationHostProps;
 use crate::ui::frame::FrameProps;
+use crate::ui::interaction::keytips::KeytipHostProps;
 use crate::ui::window::{TitleBarProps, workspace_options};
 
-pub(crate) const INITIAL_WIDTH: f32 = 960.0;
-pub(crate) const INITIAL_HEIGHT: f32 = 640.0;
+pub(crate) const INITIAL_WIDTH: f32 = 1_000.0;
+pub(crate) const INITIAL_HEIGHT: f32 = 720.0;
 pub(crate) const MIN_WIDTH: f32 = 520.0;
 pub(crate) const MIN_HEIGHT: f32 = 340.0;
 
@@ -35,11 +38,28 @@ struct State {
 pub struct OpenLogs;
 
 /// Startup configuration enabling the opt-in diagnostic viewer.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Options {
     pub app_id: Option<String>,
     pub app_name: String,
     pub ignored_contexts: &'static [&'static str],
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            app_id: None,
+            app_name: "GDS".to_owned(),
+            ignored_contexts: &[],
+        }
+    }
+}
+
+#[must_use]
+pub(crate) fn format_window_title(app_name: &str, logs_title: &str) -> String {
+    let trimmed = app_name.trim();
+    let host = if trimmed.is_empty() { "GDS" } else { trimmed };
+    format!("{host} · {logs_title}")
 }
 
 /// Initialize global diagnostic log collection with the given host [`Options`].
@@ -88,17 +108,25 @@ pub fn open() {
         return;
     };
 
-    let options = workspace_options(
-        i18n::text_untracked("logs-title"),
-        state.options.app_id.as_deref(),
-    )
-    .with_size(INITIAL_WIDTH, INITIAL_HEIGHT)
-    .with_min_size(MIN_WIDTH, MIN_HEIGHT);
-    let handle = windows.open(options, || {
+    let app_name = state.options.app_name.clone();
+    let initial_title = format_window_title(&app_name, &i18n::text_untracked("logs-title"));
+    let options = workspace_options(initial_title, state.options.app_id.as_deref())
+        .with_size(INITIAL_WIDTH, INITIAL_HEIGHT)
+        .with_min_size(MIN_WIDTH, MIN_HEIGHT);
+
+    let handle = windows.open(options, move || {
+        let title_sig = Signal::derive_local({
+            let app_name = app_name.clone();
+            move || format_window_title(&app_name, &i18n::text("logs-title"))
+        });
         view! {
-            Frame {
-                TitleBar(title = i18n::text("logs-title"))
-                LogViewer()
+            KeytipHost {
+                NotificationHost {
+                    Frame {
+                        TitleBar(title = title_sig)
+                        LogViewer()
+                    }
+                }
             }
         }
     });

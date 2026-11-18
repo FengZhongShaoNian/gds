@@ -8,31 +8,24 @@ pub struct DirectoryRows {
 
 impl DirectoryRows {
     /// Builds filtered display rows from `page`, visibility toggle `show_hidden`, and search
-    /// `query`.
+    /// `query` matched strictly against each entry's display `location.label`.
     #[must_use]
     pub fn from_page(page: Option<&Page>, show_hidden: bool, query: &str) -> Self {
         let Some(page) = page else {
             return Self::default();
         };
-        let normalized_query = query.trim().to_lowercase();
+        let normalized_query = query.to_lowercase();
         let entries = page
             .entries
             .iter()
-            .filter(|entry| show_hidden || !entry.hidden)
             .filter(|entry| {
-                if normalized_query.is_empty() {
-                    return true;
-                }
-                entry
-                    .location
-                    .label
-                    .to_lowercase()
-                    .contains(&normalized_query)
-                    || entry
-                        .location
-                        .path
-                        .to_lowercase()
-                        .contains(&normalized_query)
+                (show_hidden || !entry.hidden)
+                    && (normalized_query.is_empty()
+                        || entry
+                            .location
+                            .label
+                            .to_lowercase()
+                            .contains(&normalized_query))
             })
             .cloned()
             .collect();

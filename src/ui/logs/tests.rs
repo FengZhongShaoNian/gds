@@ -306,6 +306,17 @@ fn search_level_and_target_filters_preserve_retained_multiline_text() {
 
 #[test]
 fn secondary_log_window_opens_focuses_singleton_and_closes_cleanly() {
+    assert_eq!(window::INITIAL_WIDTH, 1_000.0);
+    assert_eq!(window::INITIAL_HEIGHT, 720.0);
+    assert_eq!(
+        window::format_window_title("GDS Files", "Debug"),
+        "GDS Files · Debug"
+    );
+    assert_eq!(window::format_window_title("", "Debug"), "GDS · Debug");
+    assert_eq!(toggle_selected_id(None, 42), Some(42));
+    assert_eq!(toggle_selected_id(Some(42), 42), None);
+    assert_eq!(toggle_selected_id(Some(42), 99), Some(99));
+
     init(Options::default());
     assert!(is_enabled());
     let shared_store = store().expect("global logs store enabled");
@@ -350,4 +361,54 @@ fn secondary_log_window_opens_focuses_singleton_and_closes_cleanly() {
             Ok(())
         })
         .expect("drive secondary logs window test");
+}
+
+#[test]
+fn clicking_selected_log_row_toggles_selection_off() {
+    use zgui::geom::CssPx;
+    use zgui::vocab::{PointerAction, PointerButton, PointerEvent, Timestamp};
+
+    let store = Store::new();
+    run_headless_logs(false, Some(store.clone()), |harness, _| {
+        let id = store.record(Level::Info, "frontend", "clickable log entry");
+        deliver(harness);
+
+        let row_pos = with_viewer_probe(|probe| {
+            let bounds = probe.list_ref.window_bounds().expect("list bounds");
+            let scale = probe.list_ref.scale().max(1.0);
+            zgui::geom::Point::new(
+                CssPx(bounds.origin.x.0 / scale + 40.0),
+                CssPx(bounds.origin.y.0 / scale + ROW_HEIGHT * 0.5),
+            )
+        });
+
+        for ms in [10_u64, 40_u64] {
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(row_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::from_origin(Duration::from_millis(ms)),
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(row_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::from_origin(Duration::from_millis(ms + 5)),
+            });
+            pump_frames(harness);
+            if ms == 10 {
+                with_viewer_probe(|probe| {
+                    assert_eq!(probe.selected.get_untracked(), Some(id));
+                });
+            } else {
+                with_viewer_probe(|probe| {
+                    assert_eq!(
+                        probe.selected.get_untracked(),
+                        None,
+                        "re-clicking an already-selected log row must toggle selection off"
+                    );
+                });
+            }
+        }
+    });
 }

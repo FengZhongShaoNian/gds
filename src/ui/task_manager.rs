@@ -1,10 +1,11 @@
 //! Live, read-only view of the application's registered task scopes and tasks.
 
 use std::collections::HashSet;
+use std::path::Path;
 use std::time::Duration;
 
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, Memo, RwSignal, StoredValue, on_cleanup_local};
+use zgui::reactive::{LocalStorage, Memo, RwSignal, Signal, StoredValue, on_cleanup_local};
 use zgui::view::install_stylesheet;
 use zgui::view::time::{IntervalHandle, set_interval};
 use zgui::{component, view};
@@ -12,8 +13,11 @@ use zgui_ui::prelude::*;
 
 use crate::app::Gds;
 use crate::i18n;
-use crate::service::task_manager::{Execution, Snapshot as TaskSnapshot};
+use crate::service::task_manager::{
+    Execution, Snapshot as TaskSnapshot, TaskSnapshot as TaskRecord,
+};
 use crate::ui::icon::{IconName, IconProps};
+use crate::ui::tooltip::wrap_tokens;
 
 pub(crate) const REFRESH: Duration = Duration::from_millis(250);
 const ROW_HEIGHT: f32 = 30.0;
@@ -23,22 +27,22 @@ const TASK_MANAGER_CSS: &str = "
 .gds-tasks-root {
     display: flex;
     flex-direction: column;
+    flex: 1 1 0;
     width: 100%;
     height: 100%;
     min-width: 0;
     min-height: 0;
+    background: transparent;
 }
 .gds-tasks-header {
     display: flex;
     flex-direction: row;
     align-items: center;
     gap: 8px;
-    padding: 4px 12px;
-    border-bottom: 1px solid var(--gds-border);
-    background-color: var(--gds-surface);
+    padding: 12px 12px 8px 12px;
+    background: transparent;
     color: var(--gds-muted-foreground);
     font-size: var(--gds-font-size-xs, 12px);
-    font-weight: 500;
 }
 .gds-tasks-col-name {
     flex: 1 1 0;
@@ -48,17 +52,23 @@ const TASK_MANAGER_CSS: &str = "
     white-space: nowrap;
 }
 .gds-tasks-col-exec {
-    width: 120px;
+    width: 130px;
     flex-shrink: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    color: var(--gds-muted-foreground);
 }
 .gds-tasks-col-age {
-    width: 72px;
+    width: 75px;
     flex-shrink: 0;
-    text-align: right;
     white-space: nowrap;
+    color: var(--gds-muted-foreground);
+}
+.gds-tasks-row--selected .gds-tasks-col-exec,
+.gds-tasks-row--selected .gds-tasks-col-age,
+.gds-tasks-row--selected .gds-tasks-row-id {
+    color: inherit;
 }
 .gds-tasks-body {
     flex: 1 1 0;
@@ -73,6 +83,7 @@ const TASK_MANAGER_CSS: &str = "
     min-height: 0;
     width: 100%;
     height: 100%;
+    overflow-x: hidden;
 }
 .gds-tasks-row {
     display: flex;
@@ -86,10 +97,14 @@ const TASK_MANAGER_CSS: &str = "
     cursor: pointer;
     box-sizing: border-box;
 }
+.gds-tasks-row--scope {
+    background-color: var(--zui-color-muted, var(--gds-surface));
+}
 .gds-tasks-row:hover {
     background-color: var(--gds-hover);
 }
-.gds-tasks-row--selected {
+.gds-tasks-row--selected,
+.gds-tasks-row--selected:hover {
     background-color: var(--gds-selection);
     color: var(--gds-selection-foreground);
 }
@@ -99,7 +114,7 @@ const TASK_MANAGER_CSS: &str = "
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
 }
 .gds-tasks-row-title {
     min-width: 0;
@@ -110,35 +125,27 @@ const TASK_MANAGER_CSS: &str = "
 .gds-tasks-row-id {
     color: var(--gds-muted-foreground);
     font-family: var(--gds-font-mono);
-    font-size: 11px;
+    font-size: 10px;
     flex-shrink: 0;
 }
 .gds-tasks-empty {
-    padding: 16px;
-    font-size: 13px;
+    padding: 12px;
+    flex-shrink: 0;
+    font-size: var(--gds-font-size-small, 14px);
     color: var(--gds-muted-foreground);
 }
 .gds-tasks-detail {
     max-height: 180px;
     flex-shrink: 0;
     border-top: 1px solid var(--gds-border);
-    background-color: var(--gds-surface);
-    padding: 8px 12px;
-    overflow: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    background: transparent;
+    padding: 12px;
+    overflow-y: auto;
     font-family: var(--gds-font-mono);
     font-size: 12px;
-}
-.gds-tasks-detail-title {
-    font-weight: 600;
-    color: var(--gds-foreground);
-}
-.gds-tasks-detail-source {
-    color: var(--gds-muted-foreground);
     white-space: pre-wrap;
-    word-break: break-all;
+    overflow-wrap: anywhere;
+    user-select: text;
 }
 ";
 
@@ -188,6 +195,24 @@ fn execution_label(execution: Execution) -> String {
     }
 }
 
+#[must_use]
+pub(crate) fn task_name(task: &TaskRecord) -> String {
+    if task.name.is_empty() {
+        Path::new(task.source.file())
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        task.name.clone()
+    }
+}
+
+#[must_use]
+pub(crate) fn toggle_selected_id(current: Option<u64>, clicked: u64) -> Option<u64> {
+    (current != Some(clicked)).then_some(clicked)
+}
+
 #[cfg(test)]
 pub(crate) mod test_probe {
     use super::*;
@@ -199,6 +224,7 @@ pub(crate) mod test_probe {
         pub collapsed: RwSignal<HashSet<u64>, LocalStorage>,
         pub selected: RwSignal<Option<u64>, LocalStorage>,
         pub row_count: Signal<usize, LocalStorage>,
+        pub tasks_empty: Signal<bool, LocalStorage>,
         pub active: Rc<Cell<bool>>,
     }
 
@@ -226,6 +252,8 @@ pub fn TaskManagerView() -> impl IntoView {
     let rows: Memo<Vec<Row>> =
         Memo::new(move |_| snapshot.with(|snap| collapsed.with(|hidden| build_rows(snap, hidden))));
     let row_count: Signal<usize, LocalStorage> = Signal::derive_local(move || rows.with(Vec::len));
+    let tasks_empty: Signal<bool, LocalStorage> =
+        Signal::derive_local(move || snapshot.with(|snap| snap.tasks.is_empty()));
 
     let refresh_handle: Option<IntervalHandle> = inspector.as_ref().map(|insp| {
         let inspector = insp.clone();
@@ -254,6 +282,7 @@ pub fn TaskManagerView() -> impl IntoView {
                 collapsed,
                 selected,
                 row_count,
+                tasks_empty,
                 active: active_flag,
             });
         });
@@ -268,11 +297,7 @@ pub fn TaskManagerView() -> impl IntoView {
 
     let list_view = move || {
         if row_count.get() == 0 {
-            return AnyView::new(view! {
-                box(class = "gds-tasks-empty", attr:data-testid = "logs-tasks-empty") {
-                    text {{move || i18n::text("logs-tasks-empty")}}
-                }
-            });
+            return AnyView::new(());
         }
 
         AnyView::new(view! {
@@ -288,9 +313,9 @@ pub fn TaskManagerView() -> impl IntoView {
                         match row {
                             Row::Scope(scope_idx, depth) => {
                                 let (id, name, cancelling) = snapshot.with(|snap| {
-                                    let scope = &snap.scopes[scope_idx];
-                                    (scope.id, scope.name.clone(), scope.cancelling)
-                                });
+                                    let scope = snap.scopes.get(scope_idx)?;
+                                    Some((scope.id, scope.name.clone(), scope.cancelling))
+                                })?;
                                 let is_collapsed = collapsed.with(|hidden| hidden.contains(&id));
                                 let indent_style = format!("padding-left: {}px;", 12.0 + depth as f32 * 16.0);
                                 let chevron = if is_collapsed {
@@ -310,7 +335,7 @@ pub fn TaskManagerView() -> impl IntoView {
                                 };
                                 Some(AnyView::new(view! {
                                     box(
-                                        class = "gds-tasks-row",
+                                        class = "gds-tasks-row gds-tasks-row--scope",
                                         style = indent_style,
                                         attr:data-task-scope = {id.to_string()},
                                         on:click = move |_| {
@@ -322,7 +347,7 @@ pub fn TaskManagerView() -> impl IntoView {
                                         },
                                     ) {
                                         box(class = "gds-tasks-row-name") {
-                                            Icon(name = chevron, size = 14.0)
+                                            Icon(name = chevron, size = 12.0)
                                             text(class = "gds-tasks-row-title") {{name}}
                                             text(class = "gds-tasks-row-id") {{format!("#{id}")}}
                                             Badge(variant = badge_variant) {{badge_label}}
@@ -332,15 +357,15 @@ pub fn TaskManagerView() -> impl IntoView {
                             }
                             Row::Task(task_idx, depth) => {
                                 let (id, name, cancelling, exec, age_secs) = snapshot.with(|snap| {
-                                    let task = &snap.tasks[task_idx];
-                                    (
+                                    let task = snap.tasks.get(task_idx)?;
+                                    Some((
                                         task.id,
-                                        task.name.clone(),
+                                        task_name(task),
                                         task.cancelling,
                                         task.execution,
-                                        task.age.as_secs_f32(),
-                                    )
-                                });
+                                        task.age.as_secs_f64(),
+                                    ))
+                                })?;
                                 let is_selected = selected.get() == Some(id);
                                 let indent_style = format!("padding-left: {}px;", 12.0 + depth as f32 * 16.0);
                                 let badge_variant = if cancelling {
@@ -353,6 +378,8 @@ pub fn TaskManagerView() -> impl IntoView {
                                 } else {
                                     i18n::text("logs-tasks-active")
                                 };
+                                let exec_text = execution_label(exec);
+                                let aria = format!("{name}, {exec_text}, {status_label}");
                                 Some(AnyView::new(view! {
                                     box(
                                         class = "gds-tasks-row",
@@ -362,9 +389,12 @@ pub fn TaskManagerView() -> impl IntoView {
                                             ""
                                         },
                                         style = indent_style,
+                                        a11y:label = aria,
                                         attr:data-task-entry = {id.to_string()},
                                         on:click = move |_| {
-                                            selected.set(Some(id));
+                                            selected.update(|current| {
+                                                *current = toggle_selected_id(*current, id);
+                                            });
                                         },
                                     ) {
                                         box(class = "gds-tasks-row-name") {
@@ -372,7 +402,7 @@ pub fn TaskManagerView() -> impl IntoView {
                                             text(class = "gds-tasks-row-id") {{format!("#{id}")}}
                                             Badge(variant = badge_variant) {{status_label}}
                                         }
-                                        text(class = "gds-tasks-col-exec") {{execution_label(exec)}}
+                                        text(class = "gds-tasks-col-exec") {{exec_text}}
                                         text(class = "gds-tasks-col-age") {{format!("{age_secs:.1} s")}}
                                     }
                                 }))
@@ -385,18 +415,31 @@ pub fn TaskManagerView() -> impl IntoView {
         })
     };
 
+    let empty_view = move || {
+        tasks_empty.get().then(|| {
+            view! {
+                box(class = "gds-tasks-empty", attr:data-testid = "logs-tasks-empty") {
+                    text {{move || i18n::text("logs-tasks-empty")}}
+                }
+            }
+        })
+    };
+
     let detail_view = move || {
         let sel = selected.get()?;
-        let (name, id, source) = snapshot.with(|snap| {
-            snap.tasks
-                .iter()
-                .find(|task| task.id == sel)
-                .map(|task| (task.name.clone(), task.id, task.source.to_string()))
+        let detail_text = snapshot.with(|snap| {
+            snap.tasks.iter().find(|task| task.id == sel).map(|task| {
+                wrap_tokens(&format!(
+                    "{} · #{}\n{}",
+                    task_name(task),
+                    task.id,
+                    task.source
+                ))
+            })
         })?;
         Some(view! {
             box(class = "gds-tasks-detail", attr:data-testid = "tasks-detail") {
-                text(class = "gds-tasks-detail-title") {{format!("{name} · #{id}")}}
-                text(class = "gds-tasks-detail-source") {{source}}
+                text {{detail_text}}
             }
         })
     };
@@ -410,6 +453,7 @@ pub fn TaskManagerView() -> impl IntoView {
             }
             box(class = "gds-tasks-body") {
                 {list_view}
+                {empty_view}
             }
             {detail_view}
         }

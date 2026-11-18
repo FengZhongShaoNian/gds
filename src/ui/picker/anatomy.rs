@@ -3,48 +3,58 @@ use zgui::{component, css, view};
 
 const SHEET: &str = css!(
     r#"
-    .gds-picker {
+    .gds-picker.gds-picker {
         display: flex;
         flex-direction: column;
-        gap: 10px;
-        min-height: 0;
+        gap: 8px;
+        min-width: 0px;
+        min-height: 0px;
         width: 100%;
+        font-size: var(--gds-font-size-small, 14px);
+        color: var(--gds-foreground);
     }
 
-    .gds-picker__toolbar {
+    .gds-picker__toolbar.gds-picker__toolbar {
         display: flex;
+        flex-direction: row;
         align-items: center;
         gap: 4px;
+        min-width: 0px;
+        flex-shrink: 0;
     }
 
-    .gds-picker__location {
-        flex: 1;
-        min-width: 0;
+    .gds-picker__location.gds-picker__location {
+        flex: 1 1 0%;
+        min-width: 0px;
         display: flex;
+        flex-direction: row;
         align-items: center;
-        gap: 4px;
-        overflow-x: auto;
+        overflow: hidden;
     }
 
-    .gds-picker__content {
-        flex: 1;
-        min-height: 220px;
-        max-height: 360px;
+    .gds-picker__content.gds-picker__content {
+        flex: 1 1 0%;
+        min-width: 0px;
+        min-height: 200px;
+        max-height: 440px;
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        border: 1px solid var(--gds-border);
-        border-radius: 6px;
-        background: var(--gds-panel);
+        border: none;
+        border-radius: 0px;
+        background: transparent;
     }
 
-    .gds-picker__status {
+    .gds-picker__status.gds-picker__status {
         display: flex;
+        flex-direction: row;
         align-items: center;
-        justify-content: space-between;
+        justify-content: flex-start;
         gap: 8px;
-        min-height: 22px;
-        font-size: 12px;
+        min-width: 0px;
+        flex-shrink: 0;
+        height: var(--gds-icon-button-size, 32px);
+        font-size: calc(12px * var(--gds-font-scale, 1));
         color: var(--gds-muted-foreground);
     }
     "#
@@ -102,7 +112,7 @@ pub fn PickerLocation(
     }
 }
 
-/// Scrollable picker result body.
+/// Scrollable picker result body; navigation and decisions remain outside it.
 #[component]
 pub fn PickerContent(
     #[prop(into, optional)] class: Classes,
@@ -117,7 +127,7 @@ pub fn PickerContent(
     }
 }
 
-/// Status line below a picker listing.
+/// Status line below a picker listing for loading progress and current choice.
 #[component]
 pub fn PickerStatus(
     #[prop(into, optional)] class: Classes,

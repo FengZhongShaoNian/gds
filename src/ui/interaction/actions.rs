@@ -1,7 +1,9 @@
-//! Shared command identities and keystroke defaults independent of GPUI.
+//! Shared command identities, keystroke defaults, and guarded keyboard dispatch.
+
+use zgui::view::focus_is_text_entry;
+use zgui::vocab::{Key, KeyEvent, Modifiers, NamedKey};
 
 use super::shortcut::Shortcut;
-use zgui::vocab::{Key, Modifiers, NamedKey};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Cancel;
@@ -25,6 +27,26 @@ pub enum Command {
 }
 
 impl Command {
+    /// Every core [`Command`] in canonical menu/help presentation order.
+    pub const ALL: [Self; 4] = [
+        Self::Cancel,
+        Self::FocusNotifications,
+        Self::CloseNotification,
+        Self::CloseAllNotifications,
+    ];
+
+    /// Fluent localization message ID describing this command.
+    #[must_use]
+    pub const fn label_id(self) -> &'static str {
+        match self {
+            Self::Cancel => "dialog-cancel",
+            Self::FocusNotifications => "focus-notifications",
+            Self::CloseNotification => "notification-close",
+            Self::CloseAllNotifications => "notifications-close-all",
+        }
+    }
+
+    /// Default platform-aware [`Shortcut`] bound to this command.
     #[must_use]
     pub fn default_stroke(self) -> Shortcut {
         match self {
@@ -35,5 +57,156 @@ impl Command {
                 Shortcut::new(Key::character("c"), Modifiers::ALT | Modifiers::SHIFT)
             }
         }
+    }
+
+    /// Returns `true` when `key` and `modifiers` match this command's default binding.
+    #[must_use]
+    pub fn matches(self, key: &Key, modifiers: Modifiers) -> bool {
+        self.default_stroke().matches(key, modifiers)
+    }
+
+    /// Returns `true` when `event` and `modifiers` match this command's default binding.
+    #[must_use]
+    pub fn matches_event(self, event: &KeyEvent, modifiers: Modifiers) -> bool {
+        self.default_stroke().matches_event(event, modifiers)
+    }
+}
+
+/// Ordered keyboard command matcher that honors `!focus_is_text_entry()` for unmodified and
+/// `Shift`-only shortcuts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionDispatcher<C = Command> {
+    bindings: Vec<(Shortcut, C)>,
+    allow_in_text_entry: bool,
+}
+
+impl<C: Clone + 'static> Default for ActionDispatcher<C> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ActionDispatcher<Command> {
+    /// Creates a dispatcher populated with all core [`Command`] bindings.
+    #[must_use]
+    pub fn commands() -> Self {
+        let mut dispatcher = Self::new();
+        for command in Command::ALL {
+            dispatcher.push(command.default_stroke(), command);
+        }
+        dispatcher
+    }
+}
+
+impl<C: Clone + 'static> ActionDispatcher<C> {
+    /// Creates an empty dispatcher.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            bindings: Vec::new(),
+            allow_in_text_entry: false,
+        }
+    }
+
+    /// Appends a `(shortcut, command)` binding in builder style.
+    #[must_use]
+    pub fn with_binding(mut self, shortcut: Shortcut, command: C) -> Self {
+        self.bindings.push((shortcut, command));
+        self
+    }
+
+    /// Appends a `(shortcut, command)` binding.
+    pub fn push(&mut self, shortcut: Shortcut, command: C) {
+        self.bindings.push((shortcut, command));
+    }
+
+    /// Controls whether unmodified / `Shift`-only bindings still match while a text input holds
+    /// focus. Defaults to `false`.
+    #[must_use]
+    pub fn allow_text_entry(mut self, allow: bool) -> Self {
+        self.allow_in_text_entry = allow;
+        self
+    }
+
+    /// Returns the first command matching `event` and `modifiers` while guarding unmodified /
+    /// `Shift`-only bindings with `!focus_is_text_entry()`.
+    #[must_use]
+    pub fn match_event(&self, event: &KeyEvent, modifiers: Modifiers) -> Option<C> {
+        self.match_event_with_guard(event, modifiers, focus_is_text_entry())
+    }
+
+    /// Pure matching variant accepting an explicit `text_entry_focused` state for callers/tests.
+    #[must_use]
+    pub fn match_event_with_guard(
+        &self,
+        event: &KeyEvent,
+        modifiers: Modifiers,
+        text_entry_focused: bool,
+    ) -> Option<C> {
+        for (shortcut, command) in &self.bindings {
+            if shortcut.requires_non_text_focus() && text_entry_focused && !self.allow_in_text_entry
+            {
+                continue;
+            }
+            if shortcut.matches_event(event, modifiers) {
+                return Some(command.clone());
+            }
+        }
+        None
+    }
+
+    /// Returns the first command matching `(key, modifiers)` using the window text-entry guard.
+    #[must_use]
+    pub fn match_key(&self, key: &Key, modifiers: Modifiers) -> Option<C> {
+        let text_entry_focused = focus_is_text_entry();
+        for (shortcut, command) in &self.bindings {
+            if shortcut.requires_non_text_focus() && text_entry_focused && !self.allow_in_text_entry
+            {
+                continue;
+            }
+            if shortcut.matches(key, modifiers) {
+                return Some(command.clone());
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zgui::vocab::{KeyEvent, Modifiers, NamedKey, PhysicalKey};
+
+    use super::{ActionDispatcher, Command};
+    use crate::ui::shortcut::Shortcut;
+
+    #[test]
+    fn dispatcher_guards_unmodified_and_shift_bindings_when_text_entry_is_focused() {
+        let dispatcher = ActionDispatcher::commands().with_binding(
+            Shortcut::parse("Shift+A").expect("Shift+A"),
+            Command::Cancel,
+        );
+
+        let esc = KeyEvent::named(NamedKey::Escape, PhysicalKey::Unidentified(0));
+        assert_eq!(
+            dispatcher.match_event_with_guard(&esc, Modifiers::NONE, false),
+            Some(Command::Cancel)
+        );
+        assert_eq!(
+            dispatcher.match_event_with_guard(&esc, Modifiers::NONE, true),
+            None
+        );
+
+        let shift_a = KeyEvent::character("A");
+        assert_eq!(
+            dispatcher.match_event_with_guard(&shift_a, Modifiers::SHIFT, true),
+            None
+        );
+
+        // Alt/Ctrl/Meta shortcuts continue firing even inside text inputs.
+        let alt_n = KeyEvent::character("n");
+        assert_eq!(
+            dispatcher.match_event_with_guard(&alt_n, Modifiers::ALT, true),
+            Some(Command::FocusNotifications)
+        );
     }
 }

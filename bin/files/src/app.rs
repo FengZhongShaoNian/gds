@@ -126,7 +126,7 @@ impl Bootstrap {
             .without_primary_window()
             .with_exit_policy(ExitPolicy::Explicit)
             .with_context(move || {
-                let app = Gds::install_with_logs(tasks.clone(), logs);
+                let app = Gds::install_process_with_logs(tasks.clone(), logs);
                 Self::bind_signals(&tasks);
                 let mount_tasks = tasks.clone();
                 app.tasks().spawn_ui(

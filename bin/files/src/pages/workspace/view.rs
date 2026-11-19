@@ -177,10 +177,13 @@ const WORKSPACE_CSS: &str = css!(
     }
 
     .gds-files-location-item {
+        flex: 0 0 auto;
+        flex-shrink: 0;
         width: 100%;
         max-width: 100%;
         min-width: 0px;
         border-radius: 6px;
+        box-sizing: border-box;
     }
 
     .gds-files-volume-unmounted {
@@ -2593,7 +2596,7 @@ impl Browser {
 
         if grid {
             let geometry = self.grid_geometry_untracked();
-            let artwork = self.artwork(&row, geometry.icon_size, selection_progress);
+            let artwork = self.tile_artwork(&row, geometry.icon_size, selection_progress);
             let a11y_label = SharedString::from(label.clone());
             let tile_tooltip = wrap_tokens(&label);
             let tile_pres = motion
@@ -3097,7 +3100,7 @@ mod tests {
     use zgui::bits::DamageSet;
     use zgui::geom::{CssPx, DevicePx, Point, Size};
     use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
-    use zgui::prelude::NodeRef;
+    use zgui::prelude::{GetUntracked, NodeRef};
     use zgui::render::{
         ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities, RenderTarget,
         Renderer, TextureHandle,
@@ -3116,6 +3119,7 @@ mod tests {
     thread_local! {
         static ROW_CONTENT_NODES: RefCell<HashMap<usize, NodeRef>> = RefCell::new(HashMap::new());
         static HEADER_RESIZE_NODES: RefCell<HashMap<Column, NodeRef>> = RefCell::new(HashMap::new());
+        static LAST_COLOR_SPRITES: RefCell<Vec<(f32, f32)>> = const { RefCell::new(Vec::new()) };
     }
 
     pub(super) fn record_row_content_node(index: usize, node: NodeRef) {
@@ -3133,6 +3137,11 @@ mod tests {
     fn clear_row_content_nodes() {
         ROW_CONTENT_NODES.with(|slot| slot.borrow_mut().clear());
         HEADER_RESIZE_NODES.with(|slot| slot.borrow_mut().clear());
+        LAST_COLOR_SPRITES.with(|slot| slot.borrow_mut().clear());
+    }
+
+    fn last_color_sprites() -> Vec<(f32, f32)> {
+        LAST_COLOR_SPRITES.with(|slot| slot.borrow().clone())
     }
 
     fn row_content_node(index: usize) -> Option<NodeRef> {
@@ -3172,7 +3181,19 @@ mod tests {
             MemoryReport::default()
         }
 
-        fn draw(&mut self, _: &Scene, _: &DamageSet) -> FrameOutcome {
+        fn draw(&mut self, scene: &Scene, _: &DamageSet) -> FrameOutcome {
+            if !scene.primitives.color_sprites.is_empty() {
+                LAST_COLOR_SPRITES.with(|slot| {
+                    let mut out = slot.borrow_mut();
+                    out.clear();
+                    for sprite in &scene.primitives.color_sprites {
+                        let [_, _, w, h] = sprite.bounds;
+                        if w > 0.0 && h > 0.0 {
+                            out.push((w, h));
+                        }
+                    }
+                });
+            }
             FrameOutcome::Presented(FrameStats::default())
         }
 
@@ -3698,5 +3719,214 @@ mod tests {
         let extra = items.len().saturating_sub(CONFIRM_PREVIEW_LIMIT);
         assert_eq!(shown.len(), 5);
         assert_eq!(extra, 3);
+    }
+
+    #[test]
+    fn grid_tile_thumbnails_fill_full_tile_artwork_slot_and_details_media_spans_full_width_by_168px()
+     {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join("Pictures")).expect("create Pictures");
+        std::fs::write(home.join("notes.txt"), b"hello\n").expect("create notes.txt");
+        let png_path = home.join("screenshot.png");
+        let img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+            image::ImageBuffer::from_fn(320, 180, |x, y| {
+                image::Rgba([(x & 0xff) as u8, (y & 0xff) as u8, 200, 255])
+            });
+        img.save(&png_path).expect("write 16:9 PNG fixture");
+
+        clear_row_content_nodes();
+        super::super::inspection::tests::clear_recorded_artwork_nodes();
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let start = home;
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            let offscreen = harness
+                .platform()
+                .offscreens()
+                .first()
+                .cloned()
+                .expect("primary offscreen");
+            offscreen.set_a11y_listener(true);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(16);
+
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while browser.read_untracked(|state| state.tab().rows.len() < 3) {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for Home directory rows to load"
+                );
+                harness.advance(Duration::from_millis(25));
+                harness.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            // Switch to Grid view and open the Details pane.
+            browser.toggle_view();
+            browser.toggle_details();
+            zgui::reactive::flush();
+            harness.settle(16);
+
+            let (screenshot_idx, notes_idx) = browser.read_untracked(|state| {
+                let tab = state.tab();
+                let mut s_idx = None;
+                let mut n_idx = None;
+                for (idx, row) in tab.rows.iter().enumerate() {
+                    if row.label() == "screenshot.png" {
+                        s_idx = Some(idx);
+                    } else if row.label() == "notes.txt" {
+                        n_idx = Some(idx);
+                    }
+                }
+                (
+                    s_idx.expect("screenshot.png row index"),
+                    n_idx.expect("notes.txt row index"),
+                )
+            });
+
+            // Select screenshot.png and wait for background inspection worker to decode its PNG thumbnail.
+            browser.select_row(screenshot_idx, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(8);
+
+            let cache = browser.0.inspections.get_untracked();
+            let thumb_deadline = Instant::now() + Duration::from_secs(5);
+            while cache.pending_count() > 0
+                || cache.running_count() > 0
+                || last_color_sprites().len() < 2
+            {
+                assert!(
+                    Instant::now() < thumb_deadline,
+                    "timed out waiting for screenshot.png thumbnail decode"
+                );
+                harness.advance(Duration::from_millis(20));
+                harness.pump();
+                zgui::reactive::flush();
+                harness.settle(4);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            zgui::reactive::flush();
+            harness.settle(16);
+
+            // 1. Grid tile thumbnail wrapper fills the full tile content width (> 120px) x 100px height!
+            let tile_thumb = super::super::inspection::tests::tile_thumb_node("screenshot.png")
+                .expect("recorded .gds-files-tile-thumb-wrap for screenshot.png");
+            let scale = tile_thumb.scale().max(1.0);
+            let tile_thumb_bounds = tile_thumb
+                .bounds()
+                .expect("measured bounds for .gds-files-tile-thumb-wrap");
+            let tile_thumb_w = tile_thumb_bounds.size.width.0 / scale;
+            let tile_thumb_h = tile_thumb_bounds.size.height.0 / scale;
+            assert!(
+                tile_thumb_w > 120.0 && (tile_thumb_h - 100.0).abs() < 0.5,
+                "expected Grid thumbnail wrapper > 120px wide x 100px tall (never 48px), got {tile_thumb_w:.1}x{tile_thumb_h:.1}"
+            );
+
+            // Verify actual painted ColorSprites for our 16:9 PNG fill full Grid (> 120px wide)
+            // and Details (> 240px wide) slots via object-fit: contain (never 48x27px or 144x81px)!
+            let sprites: Vec<(f32, f32)> = last_color_sprites()
+                .into_iter()
+                .map(|(w, h)| (w / scale, h / scale))
+                .collect();
+            assert!(
+                sprites.iter().any(|&(w, h)| w > 120.0 && h > 65.0),
+                "expected painted Grid 16:9 thumbnail ColorSprite > 120px wide (never 48x27px), got {sprites:?}"
+            );
+            assert!(
+                sprites.iter().any(|&(w, h)| w > 240.0 && h > 130.0),
+                "expected painted Details 16:9 thumbnail ColorSprite > 240px wide (never 144x81px), got {sprites:?}"
+            );
+
+            // 2. Fallback icons in Grid view remain 48x48px!
+            for fallback_name in ["Pictures", "notes.txt"] {
+                let fb_node = super::super::inspection::tests::tile_fallback_node(fallback_name)
+                    .unwrap_or_else(|| panic!("recorded fallback slot for {fallback_name}"));
+                let fb_bounds = fb_node
+                    .bounds()
+                    .unwrap_or_else(|| panic!("measured bounds for {fallback_name} fallback"));
+                let fb_w = fb_bounds.size.width.0 / scale;
+                let fb_h = fb_bounds.size.height.0 / scale;
+                assert!(
+                    (fb_w - 48.0).abs() < 0.5 && (fb_h - 48.0).abs() < 0.5,
+                    "expected Grid fallback icon for {fallback_name} to remain 48x48px, got {fb_w:.1}x{fb_h:.1}"
+                );
+            }
+
+            // 3. Details pane media box spans full inner width (> 240px inside 280px pane) x 168px height!
+            let details_thumb = super::super::inspection::tests::details_thumb_node()
+                .expect("recorded .gds-files-details__thumb-wrap");
+            let details_bounds = details_thumb
+                .bounds()
+                .expect("measured bounds for .gds-files-details__thumb-wrap");
+            let details_w = details_bounds.size.width.0 / scale;
+            let details_h = details_bounds.size.height.0 / scale;
+            assert!(
+                details_w > 240.0 && (details_h - 168.0).abs() < 0.5,
+                "expected Details media box to span full width (> 240px) x 168px (never 144x144px), got {details_w:.1}x{details_h:.1}"
+            );
+
+            // Selecting a non-thumbnail file (`notes.txt`) renders centered 64x64px fallback without media box.
+            browser.select_row(notes_idx, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(16);
+            assert!(
+                !details_thumb.is_bound(),
+                "non-thumbnail file in Details pane must unmount .gds-files-details__thumb-wrap"
+            );
+            let details_fb = super::super::inspection::tests::details_fallback_node()
+                .expect("recorded Details 64px fallback artwork");
+            let details_fb_bounds = details_fb
+                .bounds()
+                .expect("measured bounds for Details 64px fallback");
+            let dfb_w = details_fb_bounds.size.width.0 / scale;
+            let dfb_h = details_fb_bounds.size.height.0 / scale;
+            assert!(
+                (dfb_w - 64.0).abs() < 0.5 && (dfb_h - 64.0).abs() < 0.5,
+                "expected Details fallback icon to measure 64x64px, got {dfb_w:.1}x{dfb_h:.1}"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(false);
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::English).expect("English catalog"),
+                );
+                let _prefs =
+                    preferences::Service::install(preferences::Preferences::default(), &scope)
+                        .expect("preferences service");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: start.clone(),
+                        home: start.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("grid thumbnail and details media layout harness");
     }
 }

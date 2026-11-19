@@ -1,12 +1,13 @@
 use std::{
     cell::RefCell, collections::HashMap, collections::HashSet, path::Path, rc::Rc, sync::Arc,
+    time::Duration,
 };
 
 use gds::{
     app::Gds,
-    appearance::tokens::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH},
+    appearance::tokens::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_ITEM_HEIGHT, SIDEBAR_WIDTH},
     i18n::Language,
-    service::task_manager::Scope,
+    service::task_manager::{Scope, Supervisor},
     ui::sidebar::SidebarPresentation,
 };
 use zgui::{
@@ -15,23 +16,27 @@ use zgui::{
     geom::{Device, DevicePx, Matrix4, Point, Rect, Size, transformed_bounds},
     platform::{AppHandler, PlatformError, Surface, SurfaceEvent},
     prelude::*,
-    reactive::{Mounted, flush, install},
+    reactive::{LocalStorage, Mounted, Signal, flush, install},
     render::{
         ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities, RenderTarget,
         Renderer, TextureHandle,
     },
     runtime::AppError,
     view,
+    view::{ScrollBehavior, ScrollTarget},
     vocab::Role,
 };
 use zgui_platform_headless::{Harness, OffscreenSurface};
 
 use super::{
-    Breadcrumb, TabCycleTargets, compute_tab_cycle_targets, default_volumes_bottom_height,
+    Breadcrumb, ROW_GAP, TabCycleTargets, compute_tab_cycle_targets, default_volumes_bottom_height,
+    section_overflow_y,
 };
 use crate::{
     entities::{
-        location::{Location, places::Places, scheme::TagAddress, volumes},
+        location::{
+            Collection, Location, LocationTarget, places::Places, scheme::TagAddress, volumes,
+        },
         preferences,
     },
     pages::workspace::ui::{Browser, LaunchOptions},
@@ -65,6 +70,8 @@ impl TextureSink for NoopSink {
 
 thread_local! {
     static TAB_NODES: RefCell<HashMap<u64, (NodeRef, NodeRef)>> = RefCell::new(HashMap::new());
+    static LOCATION_NODES: RefCell<Vec<(LocationTarget, NodeRef)>> = const { RefCell::new(Vec::new()) };
+    static LOCATIONS_PROGRESS: RefCell<Option<Signal<f32, LocalStorage>>> = const { RefCell::new(None) };
     static LAST_VECTOR_INKS: RefCell<Vec<Rect<DevicePx, Device>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -74,13 +81,40 @@ pub(super) fn record_tab_nodes(id: u64, tab: NodeRef, corner: NodeRef) {
     });
 }
 
+pub(super) fn record_location_node(target: LocationTarget, node: NodeRef) {
+    LOCATION_NODES.with(|slot| {
+        let mut items = slot.borrow_mut();
+        if let Some((_, existing)) = items.iter_mut().find(|(t, _)| *t == target) {
+            *existing = node;
+        } else {
+            items.push((target, node));
+        }
+    });
+}
+
+pub(super) fn record_locations_progress(progress: Signal<f32, LocalStorage>) {
+    LOCATIONS_PROGRESS.with(|slot| {
+        *slot.borrow_mut() = Some(progress);
+    });
+}
+
 fn clear_recorded_tab_nodes() {
     TAB_NODES.with(|slot| slot.borrow_mut().clear());
+    LOCATION_NODES.with(|slot| slot.borrow_mut().clear());
+    LOCATIONS_PROGRESS.with(|slot| *slot.borrow_mut() = None);
     LAST_VECTOR_INKS.with(|slot| slot.borrow_mut().clear());
 }
 
 fn recorded_tab_nodes(id: u64) -> Option<(NodeRef, NodeRef)> {
     TAB_NODES.with(|slot| slot.borrow().get(&id).copied())
+}
+
+fn recorded_location_nodes() -> Vec<(LocationTarget, NodeRef)> {
+    LOCATION_NODES.with(|slot| slot.borrow().clone())
+}
+
+fn recorded_locations_progress() -> Option<Signal<f32, LocalStorage>> {
+    LOCATIONS_PROGRESS.with(|slot| *slot.borrow())
 }
 
 fn last_vector_inks() -> Vec<Rect<DevicePx, Device>> {
@@ -571,4 +605,209 @@ fn collapsed_pinned_tab_renders_single_corner_pin_button_without_pinned_icon_bad
             "collapsed pinned tab must not render a top-left PinnedIcon badge; vectors={pinned_vectors:?}"
         );
     });
+}
+
+#[test]
+fn locations_collapse_mid_transition_hides_scrollbar_and_keeps_full_38px_row_heights() {
+    let supervisor = Supervisor::new(false).expect("tokio supervisor");
+    let bg_scope = supervisor.scope();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    std::fs::create_dir_all(&home).expect("create home");
+    clear_recorded_tab_nodes();
+
+    let start = home;
+    let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+    let slot_for_view = Rc::clone(&browser_slot);
+
+    let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+        let mut harness = Harness::new(handler);
+        harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+            DevicePx(1280.0),
+            DevicePx(800.0),
+        )));
+        harness.settle(16);
+
+        let browser = browser_slot.borrow().clone().expect("browser constructed");
+        let loc_progress = recorded_locations_progress().expect("recorded loc_progress signal");
+        let locations_node = browser.0.locations_node;
+        let scale = locations_node.scale().max(1.0);
+
+        let tags_enabled = browser
+            .0
+            .preferences
+            .state()
+            .with_untracked(|p| p.tags.enabled);
+        let expected_count = LocationTarget::ALL
+            .iter()
+            .filter(|t| tags_enabled || !matches!(t, LocationTarget::Collection(Collection::Tags)))
+            .count();
+        let full = (expected_count as f32 * (SIDEBAR_ITEM_HEIGHT + ROW_GAP) - ROW_GAP).max(0.0);
+
+        // Initially settled open (`loc_progress == 1.0`): full height and `overflow-y == auto`.
+        assert!(
+            (loc_progress.get_untracked() - 1.0).abs() < 1e-4,
+            "expected initial loc_progress == 1.0, got {}",
+            loc_progress.get_untracked()
+        );
+        assert_eq!(section_overflow_y(loc_progress.get_untracked()), "auto");
+        let open_bounds = locations_node
+            .bounds()
+            .expect("settled open .gds-files-sidebar-locations bounds");
+        let open_h = open_bounds.size.height.0 / scale;
+        assert!(
+            (open_h - full).abs() < 0.5,
+            "expected settled open .gds-files-sidebar-locations height == {full:.1}px, got {open_h:.1}px"
+        );
+
+        // Toggle `Locations` collapse and sample mid-transition (`0.15 < loc_progress < 0.85`).
+        browser.edit_preferences(|p| {
+            p.files.sidebar.locations_collapsed = true;
+        });
+        flush();
+        harness.run_for(Duration::from_millis(48), Duration::from_millis(16));
+        flush();
+        harness.settle(2);
+
+        let mid_progress = loc_progress.get_untracked();
+        assert!(
+            mid_progress > 0.15 && mid_progress < 0.85,
+            "expected mid-transition loc_progress in (0.15, 0.85), got {mid_progress:.3}"
+        );
+        assert_eq!(
+            section_overflow_y(mid_progress),
+            "hidden",
+            "expected overflow-y == hidden while loc_progress < 0.999"
+        );
+
+        // 1) `.gds-files-sidebar-locations` has `0 < height < full` and `overflow-y == hidden`
+        //    (verified both on `section_overflow_y` and by confirming engine scroll clamping!).
+        let mid_bounds = locations_node
+            .bounds()
+            .expect("mid-transition .gds-files-sidebar-locations bounds");
+        let mid_h = mid_bounds.size.height.0 / scale;
+        assert!(
+            mid_h > 0.0 && mid_h < full - 10.0,
+            "expected 0 < mid height < {full:.1}px during collapse, got {mid_h:.1}px (progress={mid_progress:.3})"
+        );
+        locations_node.scroll_to(
+            ScrollTarget::Offset(Point::new(DevicePx(0.0), DevicePx(40.0))),
+            ScrollBehavior::Instant,
+        );
+        harness.settle(2);
+        assert!(
+            locations_node.scroll_offset().y.0.abs() < 0.1,
+            "expected .gds-files-sidebar-locations with overflow-y: hidden to disallow vertical scrolling mid-transition, got offset {:?}",
+            locations_node.scroll_offset()
+        );
+
+        // 2) Every `.gds-files-location-item` inside it still has its full 38px layout height
+        //    (`>= 37.5px`, ZERO vertical pancake squishing!).
+        let items = recorded_location_nodes();
+        assert_eq!(
+            items.len(),
+            expected_count,
+            "expected {expected_count} recorded .gds-files-location-item nodes"
+        );
+        for (target, item_ref) in items {
+            let item_bounds = item_ref
+                .bounds()
+                .unwrap_or_else(|| panic!("measured bounds for {target:?} mid-collapse"));
+            let item_h = item_bounds.size.height.0 / scale;
+            assert!(
+                item_h >= 37.5 && (item_h - SIDEBAR_ITEM_HEIGHT).abs() < 0.5,
+                "expected {target:?} .gds-files-location-item height == 38.0px (>= 37.5px, zero vertical squishing) mid-collapse at height={mid_h:.1}px, got {item_h:.2}px"
+            );
+        }
+
+        // Complete collapse, then expand back and verify mid-expand + settled-open invariants.
+        harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+        flush();
+        harness.settle(4);
+        assert!(
+            loc_progress.get_untracked() <= 1e-4 && !locations_node.is_bound(),
+            "expected collapsed Locations section to unmount at loc_progress == 0"
+        );
+
+        browser.edit_preferences(|p| {
+            p.files.sidebar.locations_collapsed = false;
+        });
+        flush();
+        harness.run_for(Duration::from_millis(48), Duration::from_millis(16));
+        flush();
+        harness.settle(2);
+        let expand_mid = loc_progress.get_untracked();
+        assert!(
+            expand_mid > 0.15 && expand_mid < 0.85,
+            "expected mid-expand loc_progress in (0.15, 0.85), got {expand_mid:.3}"
+        );
+        assert_eq!(section_overflow_y(expand_mid), "hidden");
+        for (target, item_ref) in recorded_location_nodes() {
+            let item_h = item_ref
+                .bounds()
+                .unwrap_or_else(|| panic!("measured bounds for {target:?} mid-expand"))
+                .size
+                .height
+                .0
+                / scale;
+            assert!(
+                item_h >= 37.5 && (item_h - SIDEBAR_ITEM_HEIGHT).abs() < 0.5,
+                "expected {target:?} height == 38.0px mid-expand, got {item_h:.2}px"
+            );
+        }
+
+        harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+        flush();
+        harness.settle(4);
+        assert_eq!(section_overflow_y(loc_progress.get_untracked()), "auto");
+
+        harness.shut_down();
+        Ok(())
+    };
+
+    zgui::app()
+        .with_fonts(Fonts::shipped_only())
+        .with_renderer(Box::new(noop_renderer))
+        .with_size(1280.0, 800.0)
+        .run_on(driver, move || {
+            let scope = bg_scope.clone();
+            let app = Gds::install(scope.clone());
+            app.appearance().motion().set_enabled(true);
+            let typo = gds::appearance::typography::Preferences {
+                size: 16.0,
+                ..Default::default()
+            };
+            app.appearance()
+                .typography()
+                .apply(&typo)
+                .expect("16px typography");
+            let _ = app.appearance().install_window_sheet();
+            app.i18n()
+                .install_catalog(i18n::prepare(Language::Chinese).expect("Chinese catalog"));
+            let _prefs = preferences::Service::install(preferences::Preferences::default(), &scope)
+                .expect("preferences service");
+            let browser = Browser::new(
+                LaunchOptions {
+                    places: Ok(Places::default()),
+                    start: start.clone(),
+                    home: start.clone(),
+                    picker: None,
+                },
+                volumes::Service::new(scope),
+                Rc::new(|_| {}),
+            );
+            *slot_for_view.borrow_mut() = Some(browser.clone());
+            view! {
+                column(style:width = "100%", style:height = "100%") {
+                    row(style:width = "100%", style:height = "38px") {
+                        {browser.toolbar_controls()}
+                    }
+                    row(style:flex = "1 1 0%", style:width = "100%", style:min-height = "0px") {
+                        {browser.sidebar(SidebarPresentation::default())}
+                        {browser.folder_filter()}
+                    }
+                }
+            }
+        })
+        .expect("headless locations collapse transition harness");
 }

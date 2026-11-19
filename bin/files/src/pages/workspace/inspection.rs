@@ -82,6 +82,40 @@ pub(super) const INSPECTION_CSS: &str = css!(
         border-radius: var(--gds-radius-control, 6px);
     }
 
+    .gds-files-tile-thumb-wrap {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+        color: var(--gds-muted-foreground);
+    }
+
+    .gds-files-tile-thumb-wrap[data-directory="true"] {
+        color: var(--gds-primary);
+    }
+
+    .gds-files-tile-thumb-wrap[data-selected="true"],
+    .gds-files-tile-thumb-wrap[data-selected="true"] .gds-files-artwork-slot,
+    .gds-files-tile-thumb-wrap[data-selected="true"] .gds-thumbnail__fallback {
+        color: var(--gds-selection-foreground);
+    }
+
+    .gds-files-tile-thumb.gds-thumbnail {
+        width: 100%;
+        height: 100%;
+        border-radius: var(--gds-radius-control, 6px);
+        overflow: hidden;
+    }
+
+    .gds-files-tile-thumb-wrap > .gds-files-artwork-badge {
+        right: 4px;
+        bottom: 4px;
+    }
+
     .gds-files-artwork-badge {
         position: absolute;
         right: -4px;
@@ -100,11 +134,13 @@ pub(super) const INSPECTION_CSS: &str = css!(
         display: flex;
         flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
         min-width: 0;
         min-height: 0;
         overflow-y: auto;
         padding: 14px;
         gap: 14px;
+        box-sizing: border-box;
         background: transparent;
         border-left: 1px solid var(--gds-border);
     }
@@ -132,6 +168,8 @@ pub(super) const INSPECTION_CSS: &str = css!(
     }
 
     .gds-files-details__hero {
+        width: 100%;
+        min-width: 0;
         align-items: center;
         gap: 10px;
         padding-bottom: 12px;
@@ -140,17 +178,25 @@ pub(super) const INSPECTION_CSS: &str = css!(
 
     .gds-files-details__thumb-wrap {
         position: relative;
-        width: 144px;
-        height: 144px;
-        overflow: visible;
+        width: 100%;
+        height: 168px;
+        border-radius: 8px;
+        border: 1px solid var(--gds-border);
+        background: var(--gds-surface);
+        box-sizing: border-box;
+        overflow: hidden;
         flex-shrink: 0;
+        color: var(--gds-muted-foreground);
     }
 
-    .gds-files-details__thumb {
-        width: 144px;
-        height: 144px;
-        border-radius: var(--gds-radius-control, 6px);
-        overflow: hidden;
+    .gds-files-details__thumb.gds-thumbnail {
+        width: 100%;
+        height: 100%;
+    }
+
+    .gds-files-details__thumb-wrap > .gds-files-artwork-badge {
+        right: 6px;
+        bottom: 6px;
     }
 
     .gds-files-details__title {
@@ -856,9 +902,12 @@ impl Properties {
                             let _ = props.0.cache.request(&thumb_src, Request::Thumbnail);
                             let badge_overlay = icon
                                 .badge()
-                                .map(|badge_icon| badge_pill_view(badge_icon, 48.0));
+                                .map(|badge_icon| badge_pill_view(badge_icon, 36.0));
+                            let thumb_wrap_ref = NodeRef::new();
+                            #[cfg(test)]
+                            tests::record_details_thumb_node(thumb_wrap_ref);
                             AnyView::new(view! {
-                                box(class = "gds-files-details__thumb-wrap") {
+                                box(node_ref = thumb_wrap_ref, class = "gds-files-details__thumb-wrap") {
                                     Thumbnail(
                                         cache = props.0.cache.clone(),
                                         source = thumb_src,
@@ -870,7 +919,24 @@ impl Properties {
                                 }
                             })
                         } else {
-                            file_artwork_view(icon, 64.0, is_dir)
+                            let fallback_ref = NodeRef::new();
+                            #[cfg(test)]
+                            tests::record_details_fallback_node(fallback_ref);
+                            let badge_overlay = icon
+                                .badge()
+                                .map(|badge_icon| badge_pill_view(badge_icon, 64.0));
+                            AnyView::new(view! {
+                                box(
+                                    node_ref = fallback_ref,
+                                    class = "gds-files-artwork-slot",
+                                    style:width = "64.0px",
+                                    style:height = "64.0px",
+                                    attr:data-directory = is_dir.then(|| "true".to_owned()),
+                                ) {
+                                    Icon(name = icon.base(), size = 64.0) {}
+                                    {badge_overlay}
+                                }
+                            })
                         };
 
                         let mut all_rows = props.base_rows(&entry, metadata_ref);
@@ -881,7 +947,7 @@ impl Properties {
                         let tags_view = props.tags_section(browser.as_ref(), entry.kind);
 
                         AnyView::new(view! {
-                            column(style:gap = "12px") {
+                            column(style:width = "100%", style:min-width = "0px", style:gap = "12px") {
                                 column(class = "gds-files-details__hero") {
                                     {hero_visual}
                                     text(class = "gds-files-details__title") {{entry.display_name.clone()}}
@@ -1566,6 +1632,73 @@ impl Browser {
         self.artwork(row, size, selected)
     }
 
+    pub(super) fn tile_artwork(
+        &self,
+        row: &Row,
+        icon_size: f32,
+        selected: Signal<f32, LocalStorage>,
+    ) -> AnyView {
+        install_inspection_stylesheet();
+        let is_directory = match row {
+            Row::File(entry) => FileIcon::is_directory(entry),
+            Row::Trash(entry) => entry.kind == EntryKind::Directory,
+            Row::Remote(entry) => entry.kind == gds::service::remote::EntryKind::Directory,
+            Row::Place(Location::Directory(_)) => true,
+            _ => false,
+        };
+
+        if let Row::File(entry) = row
+            && let Some(source) = entry.thumbnail_source()
+        {
+            let icon = FileIcon::for_entry(entry);
+            let cache = self.0.inspections.get_untracked();
+            let _ = cache.request(&source, Request::Thumbnail);
+            let badge_overlay = icon
+                .badge()
+                .map(|badge_icon| badge_pill_view(badge_icon, icon_size));
+            let thumb_ref = NodeRef::new();
+            #[cfg(test)]
+            tests::record_tile_thumb_node(&entry.display_name, thumb_ref);
+            return AnyView::new(view! {
+                box(
+                    node_ref = thumb_ref,
+                    class = "gds-files-tile-thumb-wrap",
+                    attr:data-directory = is_directory.then(|| "true".to_owned()),
+                    attr:data-selected = move || (selected.get() > 0.5).then(|| "true".to_owned()),
+                ) {
+                    Thumbnail(
+                        cache = cache,
+                        source = source,
+                        fallback = ViewFn::new(move || file_artwork_view(icon, icon_size, is_directory)),
+                        show_status = false,
+                        class = "gds-files-tile-thumb",
+                    ) {}
+                    {badge_overlay}
+                }
+            });
+        }
+
+        let icon = match row {
+            Row::File(entry) => FileIcon::for_entry(entry),
+            _ => FileIcon::plain(row.icon()),
+        };
+        let slot_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_tile_fallback_node(&row.label(), slot_ref);
+        AnyView::new(view! {
+            box(
+                node_ref = slot_ref,
+                class = "gds-files-artwork-slot",
+                style:width = format!("{icon_size:.1}px"),
+                style:height = format!("{icon_size:.1}px"),
+                attr:data-directory = is_directory.then(|| "true".to_owned()),
+                attr:data-selected = move || (selected.get() > 0.5).then(|| "true".to_owned()),
+            ) {
+                {file_artwork_view(icon, icon_size, is_directory)}
+            }
+        })
+    }
+
     pub(super) fn artwork(
         &self,
         row: &Row,
@@ -1744,8 +1877,67 @@ impl Browser {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    use zgui::prelude::NodeRef;
+
     use super::INSPECTION_CSS;
+
+    thread_local! {
+        static TILE_THUMB_NODES: RefCell<HashMap<String, NodeRef>> = RefCell::new(HashMap::new());
+        static TILE_FALLBACK_NODES: RefCell<HashMap<String, NodeRef>> = RefCell::new(HashMap::new());
+        static DETAILS_THUMB_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
+        static DETAILS_FALLBACK_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
+    }
+
+    pub(super) fn record_tile_thumb_node(name: &str, node: NodeRef) {
+        TILE_THUMB_NODES.with(|slot| {
+            slot.borrow_mut().insert(name.to_owned(), node);
+        });
+    }
+
+    pub(super) fn record_tile_fallback_node(name: &str, node: NodeRef) {
+        TILE_FALLBACK_NODES.with(|slot| {
+            slot.borrow_mut().insert(name.to_owned(), node);
+        });
+    }
+
+    pub(super) fn record_details_thumb_node(node: NodeRef) {
+        DETAILS_THUMB_NODE.with(|slot| {
+            *slot.borrow_mut() = Some(node);
+        });
+    }
+
+    pub(super) fn record_details_fallback_node(node: NodeRef) {
+        DETAILS_FALLBACK_NODE.with(|slot| {
+            *slot.borrow_mut() = Some(node);
+        });
+    }
+
+    pub(in crate::pages::workspace) fn clear_recorded_artwork_nodes() {
+        TILE_THUMB_NODES.with(|slot| slot.borrow_mut().clear());
+        TILE_FALLBACK_NODES.with(|slot| slot.borrow_mut().clear());
+        DETAILS_THUMB_NODE.with(|slot| *slot.borrow_mut() = None);
+        DETAILS_FALLBACK_NODE.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    pub(in crate::pages::workspace) fn tile_thumb_node(name: &str) -> Option<NodeRef> {
+        TILE_THUMB_NODES.with(|slot| slot.borrow().get(name).copied())
+    }
+
+    pub(in crate::pages::workspace) fn tile_fallback_node(name: &str) -> Option<NodeRef> {
+        TILE_FALLBACK_NODES.with(|slot| slot.borrow().get(name).copied())
+    }
+
+    pub(in crate::pages::workspace) fn details_thumb_node() -> Option<NodeRef> {
+        DETAILS_THUMB_NODE.with(|slot| *slot.borrow())
+    }
+
+    pub(in crate::pages::workspace) fn details_fallback_node() -> Option<NodeRef> {
+        DETAILS_FALLBACK_NODE.with(|slot| *slot.borrow())
+    }
 
     fn css_rule_body<'a>(sheet: &'a str, selector: &str) -> Option<&'a str> {
         let start = sheet.find(selector)?;
@@ -1785,6 +1977,14 @@ mod tests {
         assert!(
             empty.contains("border-left: 1px solid var(--gds-border);"),
             ".gds-files-details__empty must retain left divider border: {empty}"
+        );
+
+        let thumb_wrap = css_rule_body(INSPECTION_CSS, ".gds-files-details__thumb-wrap ")
+            .or_else(|| css_rule_body(INSPECTION_CSS, ".gds-files-details__thumb-wrap\n"))
+            .expect(".gds-files-details__thumb-wrap rule");
+        assert!(
+            thumb_wrap.contains("width: 100%;") && thumb_wrap.contains("height: 168px;"),
+            ".gds-files-details__thumb-wrap must span full width x 168px matching GPUI main: {thumb_wrap}"
         );
     }
 }

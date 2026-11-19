@@ -329,6 +329,15 @@ pub(super) const CHROME_CSS: &str = css!(
         min-height: 0px;
         overflow-y: auto;
         overflow-x: hidden;
+    }
+
+    .gds-files-sidebar-curtain.gds-files-sidebar-curtain {
+        display: flex;
+        flex-direction: column;
+        flex: 0 0 auto;
+        flex-shrink: 0;
+        width: 100%;
+        min-width: 0px;
         gap: 4px;
     }
 
@@ -368,15 +377,28 @@ pub(super) const CHROME_CSS: &str = css!(
     .gds-files-sidebar-row-wrap.gds-files-sidebar-row-wrap {
         display: flex;
         flex-direction: column;
+        flex: 0 0 auto;
+        flex-shrink: 0;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0px;
+        overflow: hidden;
+        box-sizing: border-box;
+    }
+
+    .gds-files-sidebar-row-wrap .zui-tooltip__trigger,
+    .gds-files-sidebar-row-wrap .zui-context-menu__trigger,
+    .gds-files-sidebar-row-wrap .gds-menu-host {
+        display: flex;
+        flex-direction: column;
+        flex: 0 0 auto;
+        flex-shrink: 0;
         width: 100%;
         max-width: 100%;
         min-width: 0px;
         overflow: hidden;
     }
 
-    .gds-files-sidebar-row-wrap .zui-tooltip__trigger,
-    .gds-files-sidebar-row-wrap .zui-context-menu__trigger,
-    .gds-files-sidebar-row-wrap .gds-menu-host,
     .gds-files-sidebar-heading-header .zui-tooltip__trigger {
         display: flex;
         flex: 1 1 0%;
@@ -387,15 +409,28 @@ pub(super) const CHROME_CSS: &str = css!(
     }
 
     .gds-files-tab-action .zui-tooltip__trigger {
+        flex-direction: row;
         flex: none;
         width: auto;
         max-width: none;
         overflow: visible;
     }
 
+    .gds-files-location-item.gds-files-location-item {
+        flex: 0 0 auto;
+        flex-shrink: 0;
+        height: 38px;
+        min-height: 38px;
+        max-height: 38px;
+        box-sizing: border-box;
+    }
+
     .gds-files-tab-item.gds-files-tab-item {
+        flex: 0 0 auto;
+        flex-shrink: 0;
         height: 44px;
         min-height: 44px;
+        box-sizing: border-box;
     }
 
     .gds-files-tab-action {
@@ -422,8 +457,11 @@ pub(super) const CHROME_CSS: &str = css!(
     }
 
     .gds-files-volume-item.gds-files-volume-item {
+        flex: 0 0 auto;
+        flex-shrink: 0;
         padding: 6px 0px;
         min-height: 38px;
+        box-sizing: border-box;
     }
 
     .gds-files-volume-col {
@@ -1222,6 +1260,8 @@ impl Browser {
             Signal::derive_local(move || if loc_expanded.get() { 1.0 } else { 0.0 }),
             WORKSPACE_DURATION_MS,
         );
+        #[cfg(test)]
+        tests::record_locations_progress(loc_progress);
 
         let tabs_region_ref = NodeRef::new();
         let volumes_region_ref = NodeRef::new();
@@ -1493,6 +1533,9 @@ impl Browser {
                                             node_ref = volumes_node,
                                             class = "gds-files-sidebar-scroll",
                                             a11y:label = move || SharedString::from(i18n::text("volumes")),
+                                            style:overflow-y = move || {
+                                                Some(section_overflow_y(vol_progress.get()).to_owned())
+                                            },
                                             {..region::surface(volumes_node)},
                                             on:focus_in = move |_| {
                                                 focus_b.sidebar_focus_changed(SidebarRegion::Volumes, true);
@@ -1503,36 +1546,46 @@ impl Browser {
                                                 }
                                             }
                                         ) {
-                                            {{move || {
-                                                let snapshot = rows_b.0.volumes.snapshot();
-                                                let visible_volumes = snapshot
-                                                    .volumes
-                                                    .iter()
-                                                    .filter(|volume| volume.visible)
-                                                    .collect::<Vec<_>>();
-                                                if visible_volumes.is_empty() {
-                                                    vec![AnyView::new(view! {
-                                                        text(
-                                                            class = "gds-files-sidebar-empty",
-                                                            style:opacity = move || {
-                                                                Some(format!("{:.3}", presentation.get().label_opacity()))
-                                                            }
-                                                        ) {{move || i18n::text("device-none")}}
-                                                    })]
-                                                } else {
-                                                    visible_volumes
-                                                        .into_iter()
-                                                        .map(|volume| {
-                                                            rows_b.sidebar_volume(
-                                                                volume,
-                                                                &snapshot,
-                                                                active_volume,
-                                                                presentation,
-                                                            )
-                                                        })
-                                                        .collect::<Vec<_>>()
+                                            column(
+                                                class = "gds-files-sidebar-curtain",
+                                                style:opacity = move || {
+                                                    Some(format!("{:.3}", vol_progress.get().clamp(0.0, 1.0)))
+                                                },
+                                                style:transform = move || {
+                                                    section_curtain_transform(vol_progress.get())
                                                 }
-                                            }}}
+                                            ) {
+                                                {{move || {
+                                                    let snapshot = rows_b.0.volumes.snapshot();
+                                                    let visible_volumes = snapshot
+                                                        .volumes
+                                                        .iter()
+                                                        .filter(|volume| volume.visible)
+                                                        .collect::<Vec<_>>();
+                                                    if visible_volumes.is_empty() {
+                                                        vec![AnyView::new(view! {
+                                                            text(
+                                                                class = "gds-files-sidebar-empty",
+                                                                style:opacity = move || {
+                                                                    Some(format!("{:.3}", presentation.get().label_opacity()))
+                                                                }
+                                                            ) {{move || i18n::text("device-none")}}
+                                                        })]
+                                                    } else {
+                                                        visible_volumes
+                                                            .into_iter()
+                                                            .map(|volume| {
+                                                                rows_b.sidebar_volume(
+                                                                    volume,
+                                                                    &snapshot,
+                                                                    active_volume,
+                                                                    presentation,
+                                                                )
+                                                            })
+                                                            .collect::<Vec<_>>()
+                                                    }
+                                                }}}
+                                            }
                                         }
                                     }
                                 }
@@ -1653,6 +1706,9 @@ impl Browser {
                                                 .max(0.0);
                                             Some(format!("{:.2}px", full * loc_progress.get()))
                                         },
+                                        style:overflow-y = move || {
+                                            Some(section_overflow_y(loc_progress.get()).to_owned())
+                                        },
                                         {..region::surface(locations_node)},
                                         on:focus_in = move |_| {
                                             focus_b.sidebar_focus_changed(SidebarRegion::Locations, true);
@@ -1663,35 +1719,45 @@ impl Browser {
                                             }
                                         }
                                     ) {
-                                        {{move || {
-                                            let tags_enabled = sections.get().1;
-                                            let home = rows_b.read(|state| state.home.clone());
-                                            LocationTarget::ALL
-                                                .iter()
-                                                .copied()
-                                                .filter(|target| {
-                                                    tags_enabled
-                                                        || !matches!(
+                                        column(
+                                            class = "gds-files-sidebar-curtain",
+                                            style:opacity = move || {
+                                                Some(format!("{:.3}", loc_progress.get().clamp(0.0, 1.0)))
+                                            },
+                                            style:transform = move || {
+                                                section_curtain_transform(loc_progress.get())
+                                            }
+                                        ) {
+                                            {{move || {
+                                                let tags_enabled = sections.get().1;
+                                                let home = rows_b.read(|state| state.home.clone());
+                                                LocationTarget::ALL
+                                                    .iter()
+                                                    .copied()
+                                                    .filter(|target| {
+                                                        tags_enabled
+                                                            || !matches!(
+                                                                target,
+                                                                LocationTarget::Collection(Collection::Tags)
+                                                            )
+                                                    })
+                                                    .map(|target| {
+                                                        let loc = target.location(&home);
+                                                        let item = rows_b.sidebar_location(
                                                             target,
-                                                            LocationTarget::Collection(Collection::Tags)
-                                                        )
-                                                })
-                                                .map(|target| {
-                                                    let loc = target.location(&home);
-                                                    let item = rows_b.sidebar_location(
-                                                        target,
-                                                        loc.clone(),
-                                                        presentation,
-                                                    );
-                                                    match loc.local_path() {
-                                                        Some(path) => {
-                                                            rows_b.file_drag_target(item, path.to_owned())
+                                                            loc.clone(),
+                                                            presentation,
+                                                        );
+                                                        match loc.local_path() {
+                                                            Some(path) => {
+                                                                rows_b.file_drag_target(item, path.to_owned())
+                                                            }
+                                                            None => item,
                                                         }
-                                                        None => item,
-                                                    }
-                                                })
-                                                .collect::<Vec<_>>()
-                                        }}}
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            }}}
+                                        }
                                     }
                                 }
                             }}
@@ -1977,9 +2043,14 @@ impl Browser {
                 && cursor.with(|row| row.as_ref() == Some(&SidebarRow::Location(target)))
         });
 
+        let loc_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_location_node(target, loc_ref);
+
         AnyView::new(view! {
             box(class = "gds-files-sidebar-row-wrap") {
                 NavItem(
+                    node_ref = loc_ref,
                     selected = selected,
                     presentation = presentation,
                     tooltip = label,
@@ -2255,6 +2326,15 @@ impl GdsLang {
             let _ = gds.i18n().language();
         }
     }
+}
+
+pub(super) fn section_overflow_y(progress: f32) -> &'static str {
+    if progress < 0.999 { "hidden" } else { "auto" }
+}
+
+fn section_curtain_transform(progress: f32) -> Option<String> {
+    let p = progress.clamp(0.0, 1.0);
+    ((1.0 - p) > 1e-3).then(|| format!("translateY({:.2}px)", -(1.0 - p) * 8.0))
 }
 
 fn node_contains_focus(node: NodeRef) -> bool {

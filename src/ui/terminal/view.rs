@@ -39,7 +39,7 @@ const SHEET: &str = "gds-terminal";
 const BLINK_INTERVAL: Duration = Duration::from_millis(600);
 const DOUBLE_CLICK_TIMEOUT: Duration = Duration::from_millis(450);
 
-const TERMINAL_CSS: &str = "
+pub(super) const TERMINAL_CSS: &str = "
 .gds-terminal-root {
     display: flex;
     flex-direction: column;
@@ -80,16 +80,32 @@ const TERMINAL_CSS: &str = "
 .gds-terminal-status-line {
     padding: 2px 12px;
     font-size: var(--gds-font-size-xs, 12px);
-    background-color: var(--gds-content-bg, var(--gds-content));
+    background-color: transparent;
     color: var(--gds-muted-foreground);
+}
+.gds-terminal-root[data-paint-surface=\"true\"] .gds-terminal-status-line {
+    background-color: var(--gds-content-bg, var(--gds-content));
 }
 .gds-terminal-error-line {
     padding: 2px 12px;
     font-size: var(--gds-font-size-xs, 12px);
-    background-color: var(--gds-content-bg, var(--gds-content));
+    background-color: transparent;
     color: var(--gds-error);
 }
+.gds-terminal-root[data-paint-surface=\"true\"] .gds-terminal-error-line {
+    background-color: var(--gds-content-bg, var(--gds-content));
+}
 ";
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CANVAS_HOST_REF: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn last_test_canvas_host_ref() -> Option<NodeRef> {
+    TEST_CANVAS_HOST_REF.with(|slot| *slot.borrow())
+}
 
 #[derive(Clone, Copy)]
 struct ClickTracker {
@@ -217,10 +233,47 @@ fn pointer_local_dev(
     )
 }
 
+fn ime_caret_css(
+    geometry: GridGeometry,
+    session: Option<&crate::service::terminal::Session>,
+    preedit: &PreeditState,
+) -> (f32, f32, f32) {
+    let scale = geometry.scale.max(1.0);
+    let (cursor_line, cursor_col, display_offset) = session
+        .map(|s| {
+            s.with_term(|term| {
+                let grid = term.grid();
+                (
+                    grid.cursor.point.line.0,
+                    grid.cursor.point.column.0,
+                    grid.display_offset(),
+                )
+            })
+        })
+        .unwrap_or((0, 0, geometry.display_offset));
+
+    let max_row = geometry.rows.saturating_sub(1) as i32;
+    let row = (cursor_line + display_offset as i32).clamp(0, max_row.max(0)) as usize;
+    let max_col = geometry.columns.saturating_sub(1);
+    let col = if preedit.is_empty() {
+        cursor_col.min(max_col)
+    } else {
+        let comp_col = geometry.composition_column(cursor_col, &preedit.text);
+        let caret_cols = unicode_width::UnicodeWidthStr::width(&preedit.text[..preedit.cursor.end]);
+        comp_col.saturating_add(caret_cols).min(max_col)
+    };
+
+    let x_css = ((geometry.origin_x + col as f32 * geometry.cell_width) / scale).max(0.0);
+    let y_css = ((geometry.origin_y + row as f32 * geometry.cell_height) / scale).max(0.0);
+    let h_css = (geometry.cell_height / scale).max(1.0);
+    (x_css, y_css, h_css)
+}
+
 /// Interactive terminal pane bound to a [`Terminal`] handle.
 #[component]
 pub fn TerminalView(
     terminal: Terminal,
+    #[prop(default = true)] paint_surface: bool,
     #[prop(optional)] on_key: Option<UnsyncCallback<(Key, Modifiers), bool>>,
     #[prop(into, optional)] drag_active: Option<Signal<bool, LocalStorage>>,
     #[prop(optional)] node_ref: Option<NodeRef>,
@@ -231,6 +284,8 @@ pub fn TerminalView(
 
     let root_ref = node_ref.unwrap_or_default();
     let canvas_ref = NodeRef::new();
+    #[cfg(test)]
+    TEST_CANVAS_HOST_REF.with(|slot| *slot.borrow_mut() = Some(canvas_ref));
     terminal.register_focus_target(Some(root_ref));
 
     let gds = Gds::try_current();
@@ -254,6 +309,7 @@ pub fn TerminalView(
     let (grid_element, grid_handle) = custom(TerminalGrid::new(
         terminal.session(),
         Palette::fallback(),
+        paint_surface,
         fonts.shaper(),
         initial_prefs,
         focused_sig.get_untracked(),
@@ -263,9 +319,30 @@ pub fn TerminalView(
     let grid_element = grid_element.class("gds-terminal-canvas");
     let handle_store = StoredValue::new_local(grid_handle);
 
+    let canvas_size = canvas_ref.observe_border_size();
+    let ime_caret = Signal::derive_local({
+        let terminal = terminal.clone();
+        let geom_ref = Rc::clone(&shared_geometry);
+        move || {
+            let _ = canvas_size.get();
+            let _ = terminal.redraw_revision().get();
+            let _ = terminal.status().get();
+            let _ = terminal.preferences().get();
+            let preedit = preedit_sig.get();
+            let session = terminal.session();
+            ime_caret_css(geom_ref.get(), session.as_ref(), &preedit)
+        }
+    });
+
     let term_for_cleanup = terminal.clone();
     let blink_for_cleanup = Rc::clone(&blink_handle);
     on_cleanup_local(move || {
+        #[cfg(test)]
+        TEST_CANVAS_HOST_REF.with(|slot| {
+            if *slot.borrow() == Some(canvas_ref) {
+                *slot.borrow_mut() = None;
+            }
+        });
         term_for_cleanup.register_focus_target(None);
         *blink_for_cleanup.borrow_mut() = None;
     });
@@ -332,6 +409,7 @@ pub fn TerminalView(
                 }
                 grid.session = session;
                 grid.palette = palette;
+                grid.paint_surface = paint_surface;
                 grid.focused = is_focused;
                 grid.cursor_on = blink_visible;
                 grid.reduce_motion = reduced;
@@ -817,11 +895,16 @@ pub fn TerminalView(
     };
 
     view! {
-        editor(
+        box(
             node_ref = root_ref,
             tabindex = {Focus::Sequential},
             class = "gds-terminal-root",
             class = class,
+            attr:data-paint-surface = paint_surface.then(|| "true".to_owned()),
+            attr:data-zgui-ime = "true",
+            attr:data-zgui-ime-x = move || Some(format!("{:.2}", ime_caret.get().0)),
+            attr:data-zgui-ime-y = move || Some(format!("{:.2}", ime_caret.get().1)),
+            attr:data-zgui-ime-h = move || Some(format!("{:.2}", ime_caret.get().2)),
             on:focus_in = on_focus_in,
             on:focus_out = on_focus_out,
             on:key_down = on_key_down,

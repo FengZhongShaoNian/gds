@@ -5,28 +5,39 @@ use std::time::{Duration, Instant};
 
 use zgui::app::app;
 use zgui::geom::{CssPx, Point};
-use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
+use zgui::platform::{Surface, SurfaceEvent, TextInputPurpose};
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, Signal, UnsyncCallback};
+use zgui::runtime::Runtime;
 use zgui::view;
 use zgui::view::focused_node;
 use zgui::vocab::{
-    Key, KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, PointerAction,
+    ImeEvent, Key, KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, PointerAction,
     PointerButton, PointerEvent, Timestamp,
 };
 use zgui_platform_headless::Harness;
 
-use super::{BLINK_INTERVAL, TerminalViewProps};
+use super::{BLINK_INTERVAL, TERMINAL_CSS, TerminalViewProps, last_test_canvas_host_ref};
 use crate::app::Gds;
 use crate::service::task_manager::Supervisor;
 use crate::service::terminal::{Session, SpawnOptions};
 use crate::ui::drag::DragOverlayState;
 use crate::ui::terminal::{Preferences, Terminal};
 
-#[derive(Default)]
 struct NullRenderer {
     target: Option<zgui::render::RenderTarget>,
     atlas: zgui::atlas::MemorySink,
+    quads: Rc<RefCell<Vec<[f32; 4]>>>,
+}
+
+impl NullRenderer {
+    fn new(quads: Rc<RefCell<Vec<[f32; 4]>>>) -> Self {
+        Self {
+            target: None,
+            atlas: zgui::atlas::MemorySink::default(),
+            quads,
+        }
+    }
 }
 
 impl zgui::render::Renderer for NullRenderer {
@@ -44,9 +55,12 @@ impl zgui::render::Renderer for NullRenderer {
 
     fn draw(
         &mut self,
-        _scene: &zgui::scene::Scene,
+        scene: &zgui::scene::Scene,
         _damage: &zgui::bits::DamageSet,
     ) -> zgui::render::FrameOutcome {
+        self.quads
+            .borrow_mut()
+            .extend(scene.primitives.quads.iter().map(|quad| quad.bounds));
         zgui::render::FrameOutcome::Presented(zgui::render::FrameStats {
             vector_passes: 0,
             draw_calls: 0,
@@ -85,13 +99,23 @@ struct TestHostState {
     settings: Rc<Cell<usize>>,
     toggles: Rc<Cell<usize>>,
     exits: Rc<Cell<usize>>,
+    last_quads: Rc<RefCell<Vec<[f32; 4]>>>,
     gds: Gds,
 }
 
 fn run_headless_terminal(
     options: SpawnOptions,
     preferences: Preferences,
-    run_assertions: impl FnOnce(&mut Harness<Box<dyn AppHandler>>, &TestHostState),
+    run_assertions: impl FnOnce(&mut Harness<Runtime>, &TestHostState),
+) {
+    run_headless_terminal_with(options, preferences, true, run_assertions);
+}
+
+fn run_headless_terminal_with(
+    options: SpawnOptions,
+    preferences: Preferences,
+    paint_surface: bool,
+    run_assertions: impl FnOnce(&mut Harness<Runtime>, &TestHostState),
 ) {
     let supervisor = Supervisor::new(false).expect("test Tokio supervisor");
     let scope = supervisor.scope();
@@ -99,6 +123,9 @@ fn run_headless_terminal(
     let state_slot: Rc<RefCell<Option<TestHostState>>> = Rc::new(RefCell::new(None));
     let slot_for_view = Rc::clone(&state_slot);
     let options_cell = RefCell::new(Some((options, preferences)));
+    let last_quads: Rc<RefCell<Vec<[f32; 4]>>> = Rc::new(RefCell::new(Vec::new()));
+    let quads_for_renderer = Rc::clone(&last_quads);
+    let quads_for_state = Rc::clone(&last_quads);
 
     let handler = app()
         .with_title("terminal-test")
@@ -107,7 +134,7 @@ fn run_headless_terminal(
         .with_stylesheet(":root { display: flex; width: 100%; height: 100%; }")
         .with_renderer(Box::new(
             move |_surface: &std::sync::Arc<dyn Surface>, target: zgui::render::RenderTarget| {
-                let mut renderer = NullRenderer::default();
+                let mut renderer = NullRenderer::new(Rc::clone(&quads_for_renderer));
                 zgui::render::Renderer::configure(&mut renderer, target);
                 Ok::<_, zgui::Error>(Box::new(renderer) as Box<dyn zgui::render::Renderer>)
             },
@@ -152,6 +179,7 @@ fn run_headless_terminal(
                 settings: Rc::clone(&settings),
                 toggles: Rc::clone(&toggles),
                 exits: Rc::clone(&exits),
+                last_quads: Rc::clone(&quads_for_state),
                 gds,
             });
 
@@ -237,6 +265,7 @@ fn run_headless_terminal(
                     ) {
                         TerminalView(
                             terminal = terminal,
+                            paint_surface = paint_surface,
                             on_key = on_terminal_key,
                             drag_active = drag.is_active(),
                             node_ref = terminal_ref,
@@ -247,21 +276,22 @@ fn run_headless_terminal(
         })
         .expect("build headless terminal test app");
 
-    handler
-        .drive(|app| -> Result<(), PlatformError> {
-            let mut harness = Harness::new(app);
-            pump_frames(&mut harness);
-            harness.deliver_to_first(SurfaceEvent::Focused(true));
-            pump_frames(&mut harness);
-            let borrowed = state_slot.borrow();
-            let host = borrowed.as_ref().expect("host test state initialized");
-            run_assertions(&mut harness, host);
-            runtime.block_on(host.terminal.shutdown());
-            drop(borrowed);
-            harness.shut_down();
-            Ok(())
-        })
-        .expect("run headless terminal test app");
+    let runtime_app = handler.into_runtime();
+    let failure = runtime_app.failure();
+    let mut harness = Harness::new(runtime_app);
+    pump_frames(&mut harness);
+    harness.deliver_to_first(SurfaceEvent::Focused(true));
+    pump_frames(&mut harness);
+    let borrowed = state_slot.borrow();
+    let host = borrowed.as_ref().expect("host test state initialized");
+    run_assertions(&mut harness, host);
+    runtime.block_on(host.terminal.shutdown());
+    drop(borrowed);
+    harness.shut_down();
+    zgui::reactive::shutdown();
+    if let Some(err) = failure.take() {
+        panic!("headless terminal runtime error: {err}");
+    }
 }
 
 fn is_node_focused(host: &TestHostState, node: NodeRef) -> bool {
@@ -269,18 +299,13 @@ fn is_node_focused(host: &TestHostState, node: NodeRef) -> bool {
         .is_some_and(|id| host.focused.get_untracked() == Some(id))
 }
 
-fn pump_frames(harness: &mut Harness<Box<dyn AppHandler>>) {
+fn pump_frames(harness: &mut Harness<Runtime>) {
     for _ in 0..4 {
         harness.pump();
     }
 }
 
-fn press_key(
-    harness: &mut Harness<Box<dyn AppHandler>>,
-    event: KeyEvent,
-    modifiers: Modifiers,
-    stamp_ms: u64,
-) {
+fn press_key(harness: &mut Harness<Runtime>, event: KeyEvent, modifiers: Modifiers, stamp_ms: u64) {
     let timestamp = Timestamp::from_origin(Duration::from_millis(stamp_ms));
     harness.deliver_to_first(SurfaceEvent::Key {
         state: KeyState::Pressed,
@@ -297,7 +322,7 @@ fn press_key(
     pump_frames(harness);
 }
 
-fn type_text(harness: &mut Harness<Box<dyn AppHandler>>, text: &str, start_ms: u64) {
+fn type_text(harness: &mut Harness<Runtime>, text: &str, start_ms: u64) {
     for (idx, ch) in text.chars().enumerate() {
         let mut buf = [0_u8; 4];
         let s: &str = ch.encode_utf8(&mut buf);
@@ -310,7 +335,7 @@ fn type_text(harness: &mut Harness<Box<dyn AppHandler>>, text: &str, start_ms: u
     }
 }
 
-fn wait_for_pty(harness: &mut Harness<Box<dyn AppHandler>>, mut ready: impl FnMut() -> bool) {
+fn wait_for_pty(harness: &mut Harness<Runtime>, mut ready: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(8);
     while !ready() {
         assert!(Instant::now() < deadline, "PTY response timed out");
@@ -323,12 +348,19 @@ fn screen(session: &Session) -> String {
     use alacritty_terminal::{
         grid::Dimensions,
         index::{Column, Line},
+        term::cell::Flags,
     };
     session.with_term(|term| {
         let grid = term.grid();
         (0..term.screen_lines())
             .flat_map(|row| {
-                (0..term.columns()).map(move |column| grid[Line(row as i32)][Column(column)].c)
+                (0..term.columns()).filter_map(move |column| {
+                    let cell = &grid[Line(row as i32)][Column(column)];
+                    (!cell
+                        .flags
+                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER))
+                    .then_some(cell.c)
+                })
             })
             .collect()
     })
@@ -640,6 +672,412 @@ fn internal_file_drag_pointer_up_bubbles_past_terminal_to_paste_escaped_paths() 
             text.contains("DROPPED:'/tmp/alpha file.txt'") && text.contains("beta")
         });
     });
+}
+
+#[derive(Debug)]
+struct TerminalDomInspection {
+    root_tag: String,
+    ime_attr: Option<String>,
+    ime_x: Option<f32>,
+    ime_y: Option<f32>,
+    ime_h: Option<f32>,
+    paint_surface: Option<String>,
+    text_descendants: usize,
+    editor_elements: usize,
+}
+
+fn inspect_terminal_dom(harness: &Harness<Runtime>, root_id: NodeId) -> TerminalDomInspection {
+    let window = &harness.app().windows()[0];
+    let root_idx = window.dom().index_of(root_id);
+    let document = window.document().borrow();
+    let store = document.store();
+    let root_node = document.node(root_idx);
+
+    let parse_attr_f32 = |name: &str| -> Option<f32> {
+        root_node
+            .attr(name)
+            .and_then(|val| val.as_str().parse::<f32>().ok())
+    };
+
+    let mut text_descendants = 0;
+    let mut subtree = vec![root_idx];
+    while let Some(idx) = subtree.pop() {
+        let core = store.core(idx);
+        if format!("{:?}", core.kind()) == "Text" {
+            text_descendants += 1;
+        }
+        let mut child = core.first_child();
+        while let Some(child_idx) = child {
+            subtree.push(child_idx);
+            child = store.core(child_idx).next_sibling();
+        }
+    }
+
+    let mut editor_elements = 0;
+    let mut all_nodes = vec![document.document_index()];
+    while let Some(idx) = all_nodes.pop() {
+        let core = store.core(idx);
+        if format!("{:?}", core.kind()) == "Element" && core.local_name().as_str() == "editor" {
+            editor_elements += 1;
+        }
+        let mut child = core.first_child();
+        while let Some(child_idx) = child {
+            all_nodes.push(child_idx);
+            child = store.core(child_idx).next_sibling();
+        }
+    }
+
+    TerminalDomInspection {
+        root_tag: root_node.tag_name().as_str().to_owned(),
+        ime_attr: root_node
+            .attr("data-zgui-ime")
+            .map(|s| s.as_str().to_owned()),
+        ime_x: parse_attr_f32("data-zgui-ime-x"),
+        ime_y: parse_attr_f32("data-zgui-ime-y"),
+        ime_h: parse_attr_f32("data-zgui-ime-h"),
+        paint_surface: root_node
+            .attr("data-paint-surface")
+            .map(|s| s.as_str().to_owned()),
+        text_descendants,
+        editor_elements,
+    }
+}
+
+fn css_rule_body<'a>(sheet: &'a str, selector: &str) -> Option<&'a str> {
+    let start = sheet.find(selector)?;
+    let after_selector = &sheet[start + selector.len()..];
+    let brace_open = after_selector.find('{')?;
+    let rest = &after_selector[brace_open + 1..];
+    let brace_close = rest.find('}')?;
+    Some(&rest[..brace_close])
+}
+
+#[test]
+fn terminal_view_uses_custom_ime_box_without_projected_text_children_or_height_loss() {
+    let options = SpawnOptions {
+        cwd: std::env::temp_dir(),
+        args: vec![
+            "-c".into(),
+            "stty -echo; printf '\\033]0;ready\\007'; while IFS= read -r line; do printf 'ECHO:%s\\r\\n' \"$line\"; done".into(),
+        ],
+        ..SpawnOptions::default()
+    };
+    run_headless_terminal(options, Preferences::default(), |harness, host| {
+        wait_for_pty(harness, || {
+            host.terminal.title().get_untracked().as_deref() == Some("ready")
+        });
+        pump_frames(harness);
+
+        let root_id = host
+            .terminal_ref
+            .get_untracked()
+            .expect("terminal root bound");
+        let canvas_host = last_test_canvas_host_ref().expect("canvas host bound");
+
+        let initial_dom = inspect_terminal_dom(harness, root_id);
+        assert_eq!(initial_dom.root_tag, "box");
+        assert_eq!(
+            initial_dom.editor_elements, 0,
+            "TerminalView must not mount <editor>"
+        );
+        assert_eq!(initial_dom.ime_attr.as_deref(), Some("true"));
+        assert!(initial_dom.ime_x.expect("data-zgui-ime-x") >= 0.0);
+        assert!(initial_dom.ime_h.expect("data-zgui-ime-h") >= 1.0);
+        assert_eq!(initial_dom.paint_surface.as_deref(), Some("true"));
+        assert_eq!(initial_dom.text_descendants, 0);
+
+        let root_bounds_before = host.terminal_ref.bounds().expect("terminal root bounds");
+        let canvas_bounds_before = canvas_host.bounds().expect("canvas host bounds");
+        assert!(root_bounds_before.size.height.0 > 400.0);
+        assert_eq!(
+            canvas_bounds_before.size, root_bounds_before.size,
+            ".gds-terminal-canvas-host must occupy 100% of .gds-terminal-root when running"
+        );
+
+        // 1. Click inside TerminalView (`PointerDown` + `PointerUp`) — must focus, enable IME,
+        // and append zero projected `<text>` children.
+        let click_pos = Point::new(CssPx(120.0), CssPx(120.0));
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Pressed,
+            event: PointerEvent::mouse(click_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::from_origin(Duration::from_millis(10)),
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(click_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::from_origin(Duration::from_millis(15)),
+        });
+        pump_frames(harness);
+        assert!(is_node_focused(host, host.terminal_ref));
+
+        let initial_ime = harness
+            .platform()
+            .offscreens()
+            .first()
+            .expect("offscreen surface")
+            .last_text_input()
+            .expect("surface notified of text input")
+            .expect("custom IME enabled on terminal focus");
+        assert_eq!(initial_ime.purpose, TextInputPurpose::Normal);
+        let geom = host.terminal.test_geometry();
+        let expected_cell_h = geom.cell_height / geom.scale.max(1.0);
+        assert!(
+            (initial_ime.caret_size.height.0 - expected_cell_h).abs() <= 0.5,
+            "IME caret height ({}) must match terminal cell height ({expected_cell_h})",
+            initial_ime.caret_size.height.0
+        );
+
+        // 2. Printable `KeyDown` + `Enter`.
+        type_text(harness, "alpha", 30);
+        press_key(
+            harness,
+            KeyEvent::named(NamedKey::Enter, PhysicalKey::Code(KeyCode::Enter)),
+            Modifiers::NONE,
+            100,
+        );
+        let session = host.terminal.session().expect("session running");
+        wait_for_pty(harness, || screen(&session).contains("ECHO:alpha"));
+        pump_frames(harness);
+
+        // 3. Full IME composition (`ImeStart` -> `ImePreedit` -> `ImeCommit` -> `ImeEnd` + `Enter`).
+        harness.deliver_to_first(SurfaceEvent::Ime(ImeEvent::Enabled));
+        harness.deliver_to_first(SurfaceEvent::Ime(ImeEvent::Preedit {
+            text: "にほん".into(),
+            cursor: Some(9..9),
+        }));
+        pump_frames(harness);
+        harness.deliver_to_first(SurfaceEvent::Ime(ImeEvent::Commit("日本".into())));
+        harness.deliver_to_first(SurfaceEvent::Ime(ImeEvent::Disabled));
+        pump_frames(harness);
+        press_key(
+            harness,
+            KeyEvent::named(NamedKey::Enter, PhysicalKey::Code(KeyCode::Enter)),
+            Modifiers::NONE,
+            200,
+        );
+        wait_for_pty(harness, || screen(&session).contains("ECHO:日本"));
+        host.terminal.request_redraw();
+        pump_frames(harness);
+
+        let after_dom = inspect_terminal_dom(harness, root_id);
+        assert_eq!(
+            after_dom.text_descendants, 0,
+            "Editors must never append DOM <text> nodes inside .gds-terminal-root"
+        );
+        assert!(host.terminal_ref.text_content().is_empty());
+        assert!(
+            after_dom.ime_y.expect("data-zgui-ime-y") > initial_dom.ime_y.expect("initial ime-y"),
+            "cursor cell y attribute must advance downward as terminal output advances rows"
+        );
+
+        let after_ime = harness
+            .platform()
+            .offscreens()
+            .first()
+            .expect("offscreen surface")
+            .last_text_input()
+            .expect("surface notified")
+            .expect("IME remains enabled");
+        assert!(
+            after_ime.caret_origin.y.0 > initial_ime.caret_origin.y.0,
+            "surface TextInput caret_origin.y must track terminal cursor row"
+        );
+
+        let root_bounds_after = host.terminal_ref.bounds().expect("terminal root bounds");
+        let canvas_bounds_after = canvas_host.bounds().expect("canvas host bounds");
+        assert_eq!(
+            canvas_bounds_after.size, root_bounds_after.size,
+            ".gds-terminal-canvas-host must retain 100% of .gds-terminal-root height after pointer, keyboard, and IME input"
+        );
+    });
+}
+
+#[test]
+fn paint_surface_false_skips_canvas_fill_until_osc11_while_preserving_cell_cursor_and_selection_fills()
+ {
+    let options = SpawnOptions {
+        cwd: std::env::temp_dir(),
+        args: vec![
+            "-c".into(),
+            "stty -echo; printf '\\033[41mRED\\033[0m PLAIN\\r\\n\\033]0;ready\\007'; while IFS= read -r cmd; do case \"$cmd\" in osc) printf '\\033]11;#112233\\007\\033]0;osc11\\007' ;; rst) printf '\\033]111\\007\\033]0;reset\\007' ;; esac; done".into(),
+        ],
+        ..SpawnOptions::default()
+    };
+
+    run_headless_terminal_with(options, Preferences::default(), false, |harness, host| {
+        wait_for_pty(harness, || {
+            host.terminal.title().get_untracked().as_deref() == Some("ready")
+        });
+        host.last_quads.borrow_mut().clear();
+        host.terminal.focus();
+        host.terminal.request_redraw();
+        pump_frames(harness);
+
+        let root_id = host
+            .terminal_ref
+            .get_untracked()
+            .expect("terminal root bound");
+        let dom_info = inspect_terminal_dom(harness, root_id);
+        assert_eq!(
+            dom_info.paint_surface, None,
+            "paint_surface = false must omit data-paint-surface=\"true\""
+        );
+
+        let root_bounds = host.terminal_ref.bounds().expect("terminal root bounds");
+        let geom = host.terminal.test_geometry();
+        let has_full_canvas_quad = |quads: &[[f32; 4]]| {
+            quads.iter().any(|&[_x, _y, w, h]| {
+                (w - root_bounds.size.width.0).abs() <= 1.0
+                    && (h - root_bounds.size.height.0).abs() <= 1.0
+            })
+        };
+
+        let quads_no_osc = host.last_quads.borrow().clone();
+        assert!(
+            !has_full_canvas_quad(&quads_no_osc),
+            "paint_surface = false must skip redundant full-canvas background fill when no OSC 11 override is set: {quads_no_osc:?}"
+        );
+
+        let ansi_3cell_w = geom.cell_width * 3.0;
+        let single_cell_w = geom.cell_width;
+        assert!(
+            quads_no_osc.iter().any(|&[_x, _y, w, h]| {
+                (w - ansi_3cell_w).abs() <= 1.5 && (h - geom.cell_height).abs() <= 1.5
+            }),
+            "explicit ANSI cell background (3-col RED run) must still paint with paint_surface = false: {quads_no_osc:?}"
+        );
+        assert!(
+            quads_no_osc.iter().any(|&[_x, _y, w, h]| {
+                (w - single_cell_w).abs() <= 1.5 && (h - geom.cell_height).abs() <= 1.5
+            }),
+            "focused block cursor fill must still paint with paint_surface = false: {quads_no_osc:?}"
+        );
+
+        // Drag-select across "PLAIN" on row 0 and verify selection background fill paints.
+        host.last_quads.borrow_mut().clear();
+        let win_bounds = host
+            .terminal_ref
+            .window_bounds()
+            .expect("terminal window bounds");
+        let scale = geom.scale.max(1.0);
+        let row0_y = (win_bounds.origin.y.0 + geom.origin_y + geom.cell_height * 0.5) / scale;
+        let col4_x = (win_bounds.origin.x.0 + geom.origin_x + geom.cell_width * 4.2) / scale;
+        let col9_x = (win_bounds.origin.x.0 + geom.origin_x + geom.cell_width * 8.8) / scale;
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Pressed,
+            event: PointerEvent::mouse(Point::new(CssPx(col4_x), CssPx(row0_y)))
+                .with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::from_origin(Duration::from_millis(20)),
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Moved,
+            event: PointerEvent::mouse(Point::new(CssPx(col9_x), CssPx(row0_y))),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::from_origin(Duration::from_millis(30)),
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(Point::new(CssPx(col9_x), CssPx(row0_y)))
+                .with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::from_origin(Duration::from_millis(40)),
+        });
+        pump_frames(harness);
+
+        let quads_selected = host.last_quads.borrow().clone();
+        assert!(
+            !has_full_canvas_quad(&quads_selected),
+            "mouse selection must not trigger full-canvas fill when paint_surface = false"
+        );
+        assert!(
+            quads_selected.iter().any(|&[_x, _y, w, h]| {
+                w >= geom.cell_width * 4.5 && (h - geom.cell_height).abs() <= 1.5
+            }),
+            "selection highlight run must paint cell background quads when paint_surface = false: {quads_selected:?}"
+        );
+
+        // When an app inside the PTY sets an explicit OSC 11 background override, fill it!
+        host.last_quads.borrow_mut().clear();
+        host.terminal.write(b"osc\n");
+        wait_for_pty(harness, || {
+            host.terminal.title().get_untracked().as_deref() == Some("osc11")
+        });
+        pump_frames(harness);
+        let quads_osc = host.last_quads.borrow().clone();
+        assert!(
+            has_full_canvas_quad(&quads_osc),
+            "explicit OSC 11 background override must paint full-canvas fill even when paint_surface = false"
+        );
+
+        // Resetting OSC 11 via OSC 111 returns to single-layer host translucency.
+        host.last_quads.borrow_mut().clear();
+        host.terminal.write(b"rst\n");
+        wait_for_pty(harness, || {
+            host.terminal.title().get_untracked().as_deref() == Some("reset")
+        });
+        pump_frames(harness);
+        let quads_reset = host.last_quads.borrow().clone();
+        assert!(
+            !has_full_canvas_quad(&quads_reset),
+            "resetting OSC 11 override must restore skipped canvas fill when paint_surface = false"
+        );
+    });
+
+    // Standalone default (`paint_surface = true`) still paints its own surface background.
+    let standalone_opts = SpawnOptions {
+        cwd: std::env::temp_dir(),
+        args: vec![
+            "-c".into(),
+            "printf '\\033]0;standalone\\007'; sleep 60".into(),
+        ],
+        ..SpawnOptions::default()
+    };
+    run_headless_terminal(standalone_opts, Preferences::default(), |harness, host| {
+        wait_for_pty(harness, || {
+            host.terminal.session().and_then(|s| s.title()).as_deref() == Some("standalone")
+        });
+        pump_frames(harness);
+        let root_bounds = host.terminal_ref.bounds().expect("terminal root bounds");
+        let quads = host.last_quads.borrow().clone();
+        assert!(
+            quads.iter().any(|&[_x, _y, w, h]| {
+                (w - root_bounds.size.width.0).abs() <= 1.0
+                    && (h - root_bounds.size.height.0).abs() <= 1.0
+            }),
+            "standalone TerminalView (paint_surface = true) must paint its surface background"
+        );
+    });
+}
+
+#[test]
+fn terminal_stylesheet_keeps_status_and_error_lines_transparent_when_host_paints_surface() {
+    let status = css_rule_body(TERMINAL_CSS, ".gds-terminal-status-line ")
+        .expect(".gds-terminal-status-line rule");
+    assert!(
+        status.contains("background-color: transparent;"),
+        ".gds-terminal-status-line must default to transparent when paint_surface = false: {status}"
+    );
+    let error = css_rule_body(TERMINAL_CSS, ".gds-terminal-error-line ")
+        .expect(".gds-terminal-error-line rule");
+    assert!(
+        error.contains("background-color: transparent;"),
+        ".gds-terminal-error-line must default to transparent when paint_surface = false: {error}"
+    );
+    let standalone_status = css_rule_body(
+        TERMINAL_CSS,
+        ".gds-terminal-root[data-paint-surface=\"true\"] .gds-terminal-status-line ",
+    )
+    .expect("standalone status rule");
+    assert!(standalone_status.contains("var(--gds-content-bg, var(--gds-content))"));
+    let standalone_error = css_rule_body(
+        TERMINAL_CSS,
+        ".gds-terminal-root[data-paint-surface=\"true\"] .gds-terminal-error-line ",
+    )
+    .expect("standalone error rule");
+    assert!(standalone_error.contains("var(--gds-content-bg, var(--gds-content))"));
 }
 
 #[test]

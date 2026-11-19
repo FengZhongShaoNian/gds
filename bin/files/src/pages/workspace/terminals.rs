@@ -57,7 +57,7 @@ const COLLAPSED_ACTION_INSET: f32 =
 
 const TERMINALS_SHEET: &str = "gds-files-workspace-terminals";
 
-const TERMINALS_CSS: &str = css!(
+pub(super) const TERMINALS_CSS: &str = css!(
     r#"
     .gds-files-terminal-dock {
         display: flex;
@@ -109,7 +109,7 @@ const TERMINALS_CSS: &str = css!(
     .gds-files-terminal-handle__bg-right {
         flex: 1 1 0%;
         height: 100%;
-        background: var(--gds-content-bg, var(--gds-surface));
+        background: var(--gds-content-bg, var(--gds-content));
     }
 
     .gds-files-terminal-handle__line {
@@ -141,7 +141,6 @@ const TERMINALS_CSS: &str = css!(
         width: 100%;
         height: var(--gds-terminal-header-height, 40px);
         flex-shrink: 0;
-        border-bottom: 1px solid var(--gds-border);
         box-sizing: border-box;
     }
 
@@ -174,7 +173,7 @@ const TERMINALS_CSS: &str = css!(
         min-width: 0;
         padding: 0 var(--gds-terminal-content-inset, 12px);
         gap: 4px;
-        background: var(--gds-content-bg, var(--gds-surface));
+        background: var(--gds-content-bg, var(--gds-content));
         box-sizing: border-box;
     }
 
@@ -257,7 +256,7 @@ const TERMINALS_CSS: &str = css!(
         height: 100%;
         min-width: 0;
         min-height: 0;
-        background: var(--gds-content-bg, var(--gds-surface));
+        background: var(--gds-content-bg, var(--gds-content));
     }
 
     .gds-files-terminal-pane__surface {
@@ -273,7 +272,7 @@ const TERMINALS_CSS: &str = css!(
         width: 100%;
         height: 100%;
         padding: var(--gds-terminal-content-inset, 12px);
-        background: var(--gds-content-bg, var(--gds-surface));
+        background: transparent;
         color: var(--gds-muted-foreground);
         font-size: var(--gds-font-size-small, 14px);
         box-sizing: border-box;
@@ -1831,6 +1830,7 @@ impl Browser {
                             AnyView::new(view! {
                                 TerminalView(
                                     terminal = term,
+                                    paint_surface = false,
                                     on_key = on_key,
                                     node_ref = entry.view_ref,
                                     class = "gds-files-terminal-pane__surface",
@@ -1842,5 +1842,57 @@ impl Browser {
                 {rename_dialog_view}
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TERMINALS_CSS;
+
+    fn css_rule_body<'a>(sheet: &'a str, selector: &str) -> Option<&'a str> {
+        let start = sheet.find(selector)?;
+        let after_selector = &sheet[start + selector.len()..];
+        let brace_open = after_selector.find('{')?;
+        let rest = &after_selector[brace_open + 1..];
+        let brace_close = rest.find('}')?;
+        Some(&rest[..brace_close])
+    }
+
+    #[test]
+    fn terminal_dock_css_keeps_single_layer_right_translucency_and_seamless_header() {
+        assert!(
+            !TERMINALS_CSS.contains("var(--gds-surface)"),
+            "terminal dock right column must fall back to --gds-content rather than --gds-surface"
+        );
+
+        let header = css_rule_body(TERMINALS_CSS, ".gds-files-terminal-header ")
+            .or_else(|| css_rule_body(TERMINALS_CSS, ".gds-files-terminal-header\n"))
+            .expect(".gds-files-terminal-header rule");
+        assert!(
+            !header.contains("border-bottom"),
+            ".gds-files-terminal-header must not render a horizontal divider above the terminal body: {header}"
+        );
+
+        for selector in [
+            ".gds-files-terminal-handle__bg-right",
+            ".gds-files-terminal-header__right",
+            ".gds-files-terminal-pane",
+        ] {
+            let rule = css_rule_body(TERMINALS_CSS, &format!("{selector} "))
+                .or_else(|| css_rule_body(TERMINALS_CSS, &format!("{selector}\n")))
+                .unwrap_or_else(|| panic!("missing {selector} rule"));
+            assert!(
+                rule.contains("background: var(--gds-content-bg, var(--gds-content));"),
+                "{selector} must paint single-layer --gds-content-bg with --gds-content fallback: {rule}"
+            );
+        }
+
+        let empty = css_rule_body(TERMINALS_CSS, ".gds-files-terminal-empty ")
+            .or_else(|| css_rule_body(TERMINALS_CSS, ".gds-files-terminal-empty\n"))
+            .expect(".gds-files-terminal-empty rule");
+        assert!(
+            empty.contains("background: transparent;"),
+            ".gds-files-terminal-empty must stay transparent inside .gds-files-terminal-pane: {empty}"
+        );
     }
 }

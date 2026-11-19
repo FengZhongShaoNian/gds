@@ -243,6 +243,7 @@ fn shape_and_paint_span(
 pub(super) struct TerminalGrid {
     pub session: Option<Session>,
     pub palette: Palette,
+    pub paint_surface: bool,
     shaper: Shaper,
     fonts: TerminalFonts,
     pub preferences: Preferences,
@@ -257,9 +258,14 @@ pub(super) struct TerminalGrid {
 }
 
 impl TerminalGrid {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "TerminalGrid captures explicit initial state from TerminalView"
+    )]
     pub fn new(
         session: Option<Session>,
         palette: Palette,
+        paint_surface: bool,
         shaper: Shaper,
         preferences: Preferences,
         focused: bool,
@@ -282,6 +288,7 @@ impl TerminalGrid {
         Self {
             session,
             palette,
+            paint_surface,
             shaper,
             fonts,
             preferences,
@@ -294,6 +301,10 @@ impl TerminalGrid {
             geometry_out,
             last_pty_size: None,
         }
+    }
+
+    pub(in crate::ui::terminal) fn should_paint_surface(&self) -> bool {
+        self.paint_surface || self.snapshot.colors[NamedColor::Background].is_some()
     }
 
     pub fn sync_pty_size(&mut self) {
@@ -443,12 +454,14 @@ impl CustomElement for TerminalGrid {
             self.geometry_out.set(self.geometry);
         }
 
-        let surface_bg = palette.background(&self.snapshot.colors);
-        painter.fill(
-            Rect::new(Point::new(DevicePx(0.0), DevicePx(0.0)), size),
-            0.0,
-            surface_bg,
-        );
+        if self.should_paint_surface() {
+            let surface_bg = palette.background(&self.snapshot.colors);
+            painter.fill(
+                Rect::new(Point::new(DevicePx(0.0), DevicePx(0.0)), size),
+                0.0,
+                surface_bg,
+            );
+        }
 
         let visible_cursor = self
             .snapshot

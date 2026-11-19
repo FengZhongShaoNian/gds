@@ -12,7 +12,7 @@ use gds::{
 use zgui::{
     app::Fonts,
     atlas::{SinkError, TextureFormat, TextureId, TextureSink},
-    geom::{Device, DevicePx, Rect, Size},
+    geom::{Device, DevicePx, Matrix4, Point, Rect, Size, transformed_bounds},
     platform::{AppHandler, PlatformError, Surface, SurfaceEvent},
     prelude::*,
     reactive::{Mounted, flush, install},
@@ -63,6 +63,30 @@ impl TextureSink for NoopSink {
     fn destroy_texture(&mut self, _: TextureId) {}
 }
 
+thread_local! {
+    static TAB_NODES: RefCell<HashMap<u64, (NodeRef, NodeRef)>> = RefCell::new(HashMap::new());
+    static LAST_VECTOR_INKS: RefCell<Vec<Rect<DevicePx, Device>>> = const { RefCell::new(Vec::new()) };
+}
+
+pub(super) fn record_tab_nodes(id: u64, tab: NodeRef, corner: NodeRef) {
+    TAB_NODES.with(|slot| {
+        slot.borrow_mut().insert(id, (tab, corner));
+    });
+}
+
+fn clear_recorded_tab_nodes() {
+    TAB_NODES.with(|slot| slot.borrow_mut().clear());
+    LAST_VECTOR_INKS.with(|slot| slot.borrow_mut().clear());
+}
+
+fn recorded_tab_nodes(id: u64) -> Option<(NodeRef, NodeRef)> {
+    TAB_NODES.with(|slot| slot.borrow().get(&id).copied())
+}
+
+fn last_vector_inks() -> Vec<Rect<DevicePx, Device>> {
+    LAST_VECTOR_INKS.with(|slot| slot.borrow().clone())
+}
+
 struct NoopRenderer {
     target: Option<RenderTarget>,
     sink: NoopSink,
@@ -81,7 +105,30 @@ impl Renderer for NoopRenderer {
         self.target
     }
 
-    fn draw(&mut self, _: &zgui::scene::Scene, _: &zgui::bits::DamageSet) -> FrameOutcome {
+    fn draw(&mut self, scene: &zgui::scene::Scene, _: &zgui::bits::DamageSet) -> FrameOutcome {
+        if !scene.primitives.mono_sprites.is_empty() {
+            let placements = scene.placements();
+            let matrices: Vec<Matrix4> = placements.matrices().collect();
+            LAST_VECTOR_INKS.with(|slot| {
+                let mut inks = slot.borrow_mut();
+                inks.clear();
+                for sprite in &scene.primitives.mono_sprites {
+                    let [x, y, w, h] = sprite.bounds;
+                    if w <= 0.0 || h <= 0.0 {
+                        continue;
+                    }
+                    let local = Rect::new(
+                        Point::new(DevicePx(x), DevicePx(y)),
+                        Size::new(DevicePx(w), DevicePx(h)),
+                    );
+                    let placed = match matrices.get(sprite.transform as usize) {
+                        Some(matrix) => transformed_bounds(matrix, local),
+                        None => local,
+                    };
+                    inks.push(placed);
+                }
+            });
+        }
         FrameOutcome::Presented(FrameStats::default())
     }
 
@@ -409,6 +456,119 @@ fn responsive_toolbar_and_collapsed_rail_center_actions_on_29px_axis() {
             locations_btn.center_x(),
             locations_btn.x0,
             locations_btn.x1
+        );
+    });
+}
+
+#[test]
+fn collapsed_pinned_tab_renders_single_corner_pin_button_without_pinned_icon_badge() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let _guard = runtime.enter();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let sub = temp.path().join("workspace_dir");
+    std::fs::create_dir_all(&sub).expect("create workspace_dir");
+    clear_recorded_tab_nodes();
+
+    run_chrome_harness(&sub, |harness, browser| {
+        let surface = harness
+            .platform()
+            .offscreens()
+            .first()
+            .cloned()
+            .expect("offscreen surface");
+
+        browser.update(|ws| ws.tab_mut().navigation.cancel_pending());
+        browser.0.window_width.set(960.0);
+        flush();
+        harness.settle(16);
+
+        let tab_id = browser.read_untracked(|ws| ws.tab().id);
+        let (unpinned_tab_ref, _) =
+            recorded_tab_nodes(tab_id).expect("recorded unpinned tab nodes");
+        let unpinned_tab_bounds = unpinned_tab_ref
+            .window_bounds()
+            .expect("unpinned tab bounds");
+        let unpinned_vectors: Vec<_> = last_vector_inks()
+            .into_iter()
+            .filter(|ink| {
+                ink.origin.y.0 >= unpinned_tab_bounds.origin.y.0 - 2.0
+                    && (ink.origin.y.0 + ink.size.height.0)
+                        <= (unpinned_tab_bounds.origin.y.0
+                            + unpinned_tab_bounds.size.height.0
+                            + 2.0)
+            })
+            .collect();
+        assert!(
+            !unpinned_vectors.is_empty(),
+            "expected folder icon vectors on collapsed unpinned tab"
+        );
+
+        // Pin the tab while sidebar is collapsed (58px rail).
+        browser.toggle_pin(0);
+        flush();
+        harness.settle(16);
+
+        let (pinned_tab_ref, corner_ref) =
+            recorded_tab_nodes(tab_id).expect("recorded pinned tab nodes");
+        let tab_bounds = pinned_tab_ref.window_bounds().expect("pinned tab bounds");
+        let corner_bounds = corner_ref
+            .window_bounds()
+            .expect("corner pin button bounds");
+
+        let unpin_lbl = gds::i18n::text_untracked("unpin-tab");
+        let unpin_buttons: Vec<_> = collect_live_buttons(&surface)
+            .into_iter()
+            .filter(|btn| btn.label == unpin_lbl)
+            .collect();
+        assert_eq!(
+            unpin_buttons.len(),
+            1,
+            "collapsed pinned tab must expose only the single CornerButton unpin action, got {unpin_buttons:?}"
+        );
+        let rail_center = f64::from(COLLAPSED_SIDEBAR_WIDTH) * 0.5;
+        assert!(
+            unpin_buttons[0].center_x() > rail_center,
+            "expected CornerButton pin icon in top-right of collapsed rail (> {rail_center}), got {:?}",
+            unpin_buttons[0]
+        );
+
+        let pinned_vectors: Vec<_> = last_vector_inks()
+            .into_iter()
+            .filter(|ink| {
+                ink.origin.y.0 >= tab_bounds.origin.y.0 - 4.0
+                    && (ink.origin.y.0 + ink.size.height.0)
+                        <= (tab_bounds.origin.y.0 + tab_bounds.size.height.0 + 4.0)
+            })
+            .collect();
+
+        // Each visible `<vector>` Icon rasterizes to one `ColorSprite`:
+        // - Unpinned collapsed tab: 1 icon sprite (centered 18x18 folder icon).
+        // - Pinned collapsed tab: 2 icon sprites (centered 18x18 folder icon + single 11x11
+        //   `CornerButton` Pin icon inside `corner_bounds`), NEVER 3 from a duplicate `PinnedIcon`!
+        assert_eq!(
+            unpinned_vectors.len(),
+            1,
+            "expected exactly 1 icon sprite on collapsed unpinned tab, got {unpinned_vectors:?}"
+        );
+        assert_eq!(
+            pinned_vectors.len(),
+            2,
+            "expected exactly 2 icon sprites on collapsed pinned tab (folder + single CornerButton pin, never duplicate PinnedIcon), got {pinned_vectors:?}"
+        );
+        let has_top_left_pin_badge = pinned_vectors.iter().any(|ink| {
+            let cx = ink.origin.x.0 + ink.size.width.0 * 0.5;
+            let in_corner_btn = ink.origin.x.0 >= corner_bounds.origin.x.0 - 2.0
+                && (ink.origin.x.0 + ink.size.width.0)
+                    <= corner_bounds.origin.x.0 + corner_bounds.size.width.0 + 2.0;
+            !in_corner_btn && f64::from(cx) < rail_center - 4.0
+        });
+        assert!(
+            !has_top_left_pin_badge,
+            "collapsed pinned tab must not render a top-left PinnedIcon badge; vectors={pinned_vectors:?}"
         );
     });
 }

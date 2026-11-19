@@ -817,10 +817,11 @@ const WORKSPACE_CSS: &str = css!(
         white-space: nowrap;
     }
 
-    .gds-files-menu-content {
+    .gds-files-menu-content,
+    .gds-menu-content.gds-menu-content.gds-files-menu-content {
         min-width: 160px;
         max-width: 340px;
-        max-height: 440px;
+        max-height: min(calc(100vh - 18px), var(--zui-popper-available-height, calc(100vh - 18px)));
         overflow-y: auto;
     }
 
@@ -1142,6 +1143,22 @@ enum FileBody {
     Collection(super::surfaces::CollectionBodyState),
     List,
     Grid,
+}
+
+#[derive(Clone, PartialEq)]
+enum HeaderStructure {
+    Collection {
+        columns: Vec<(&'static str, f32)>,
+        sortable: Vec<Column>,
+        sort: crate::entities::file::sorting::Sort,
+        lang: Option<gds::i18n::Language>,
+    },
+    Directory {
+        columns: crate::entities::file::columns::Layout,
+        sortable: Vec<Column>,
+        sort: crate::entities::file::sorting::Sort,
+        lang: Option<gds::i18n::Language>,
+    },
 }
 
 impl Browser {
@@ -1923,9 +1940,30 @@ impl Browser {
         }
     }
 
+    fn table_viewport_width_untracked(&self) -> f32 {
+        (self.0.content_width.get_untracked() - TABLE_INSET * 2.0)
+            .floor()
+            .max(1.0)
+    }
+
     fn column_default_width(&self, column: Column) -> f32 {
         match column {
             Column::Name => (self.table_viewport_width() * NAME_WIDTH_FRACTION)
+                .clamp(NAME_MIN_WIDTH, NAME_DEFAULT_MAX_WIDTH),
+            Column::Modified => MODIFIED_WIDTH,
+            Column::Accessed => ACCESSED_WIDTH,
+            Column::Type => KIND_WIDTH,
+            Column::Size => SIZE_WIDTH,
+            Column::Owner => OWNER_WIDTH,
+            Column::Group => GROUP_WIDTH,
+            Column::DetailedType => DETAILED_TYPE_WIDTH,
+            Column::Permissions => PERMISSIONS_WIDTH,
+        }
+    }
+
+    fn column_default_width_untracked(&self, column: Column) -> f32 {
+        match column {
+            Column::Name => (self.table_viewport_width_untracked() * NAME_WIDTH_FRACTION)
                 .clamp(NAME_MIN_WIDTH, NAME_DEFAULT_MAX_WIDTH),
             Column::Modified => MODIFIED_WIDTH,
             Column::Accessed => ACCESSED_WIDTH,
@@ -1948,6 +1986,18 @@ impl Browser {
             return width.max(min);
         }
         self.column_default_width(column).max(min)
+    }
+
+    fn column_width_untracked(&self, column: Column) -> f32 {
+        let min = Self::column_min_width(column);
+        let explicit = self
+            .0
+            .column_widths
+            .with_untracked(|widths| widths.get(&column).copied());
+        if let Some(width) = explicit {
+            return width.max(min);
+        }
+        self.column_default_width_untracked(column).max(min)
     }
 
     fn content_columns_width(&self) -> f32 {
@@ -1976,14 +2026,16 @@ impl Browser {
         let resize_drag = self.clone();
         let resize_cancel = self.clone();
         let resize_end = self.clone();
-        let sortable = self.sortable_columns().contains(&column);
-        let sorting = self.read(|state| state.tab().sort);
+        let sortable = self.sortable_columns_untracked().contains(&column);
+        let sorting = self.read_untracked(|state| state.tab().sort);
         let active = sortable && sorting.key == column;
         let ascending = sorting.direction == Direction::Ascending;
         let align_end = column == Column::Size;
 
         let drag_state: RwSignal<Option<(f32, f32)>, LocalStorage> = RwSignal::new_local(None);
-        let start_width = RwSignal::new_local(self.column_width(column));
+        let resize_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_header_resize_node(column, resize_ref);
         let window = try_use_window();
 
         let sort_indicator = sortable.then(|| {
@@ -2053,13 +2105,13 @@ impl Browser {
                     }}
                 }
                 box(
+                    node_ref = resize_ref,
                     class = "gds-files-header-resize",
                     on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
                         if ev.button != Some(PointerButton::Primary) || !ev.primary {
                             return;
                         }
-                        let w = resize_drag.column_width(column);
-                        start_width.set(w);
+                        let w = resize_drag.column_width_untracked(column);
                         drag_state.set(Some((ev.position.x.0, w)));
                         ev.capture_pointer();
                         ev.stop_propagation();
@@ -2099,10 +2151,9 @@ impl Browser {
                         }
                     },
                     on:pointer_cancel = move |ev: &mut EventCx<'_, events::PointerCancel>| {
-                        if drag_state.get_untracked().is_some() {
+                        if let Some((_, original)) = drag_state.get_untracked() {
                             drag_state.set(None);
                             ev.release_pointer();
-                            let original = start_width.get_untracked();
                             resize_cancel.0.column_widths.update(|widths| {
                                 widths.insert(column, original);
                             });
@@ -2191,6 +2242,42 @@ impl Browser {
             let browser = self.clone();
             move || browser.collection_empty_label()
         });
+        let header_structure = local_memo({
+            let browser = self.clone();
+            move || {
+                let lang = Gds::try_current().map(|gds| gds.i18n().language());
+                let is_collection = browser.read_structure(|state| {
+                    matches!(
+                        state.tab().contents,
+                        Contents::Places(_)
+                            | Contents::Trash(_)
+                            | Contents::Tags { .. }
+                            | Contents::Remote { .. }
+                            | Contents::Volumes
+                    )
+                });
+                if is_collection && let Some(columns) = browser.collection_columns() {
+                    let sortable = browser.sortable_columns_untracked();
+                    let sort = browser.read_structure(|state| state.tab().sort);
+                    HeaderStructure::Collection {
+                        columns,
+                        sortable,
+                        sort,
+                        lang,
+                    }
+                } else {
+                    let (columns, sort) = browser
+                        .read_structure(|state| (state.tab().columns.clone(), state.tab().sort));
+                    let sortable = browser.sortable_columns_untracked();
+                    HeaderStructure::Directory {
+                        columns,
+                        sortable,
+                        sort,
+                        lang,
+                    }
+                }
+            }
+        });
 
         let has_marquee =
             self.read_untracked(|state| state.picker.is_none() && state.allows_multiple());
@@ -2228,22 +2315,27 @@ impl Browser {
                             style:min-width = move || Some(format!("{:.1}px", table_browser.table_width()))
                         ) {
                             {{move || {
-                                if let Some(header) = header_browser.collection_header() {
-                                    header
-                                } else {
-                                    let columns = header_browser
-                                        .read_structure(|state| state.tab().columns.clone());
-                                    let cells = columns
-                                        .columns()
-                                        .iter()
-                                        .map(|column| header_browser.column_header(*column))
-                                        .collect::<Vec<_>>();
-                                    AnyView::new(view! {
-                                        row(
-                                            class = "gds-files-header-row",
-                                            style:height = format!("{HEADER_HEIGHT}px")
-                                        ) {{cells}}
-                                    })
+                                let structure = header_structure.get();
+                                let _z = enter_non_reactive_zone();
+                                match structure {
+                                    HeaderStructure::Collection { .. } => {
+                                        header_browser
+                                            .collection_header()
+                                            .unwrap_or_else(|| AnyView::new(view! { box() }))
+                                    }
+                                    HeaderStructure::Directory { columns, .. } => {
+                                        let cells = columns
+                                            .columns()
+                                            .iter()
+                                            .map(|column| header_browser.column_header(*column))
+                                            .collect::<Vec<_>>();
+                                        AnyView::new(view! {
+                                            row(
+                                                class = "gds-files-header-row",
+                                                style:height = format!("{HEADER_HEIGHT}px")
+                                            ) {{cells}}
+                                        })
+                                    }
                                 }
                             }}}
                             box(class = "gds-files-list-host") {
@@ -3003,7 +3095,7 @@ mod tests {
     use zgui::app::Fonts;
     use zgui::atlas::{MemorySink, TextureSink};
     use zgui::bits::DamageSet;
-    use zgui::geom::{DevicePx, Size};
+    use zgui::geom::{CssPx, DevicePx, Point, Size};
     use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
     use zgui::prelude::NodeRef;
     use zgui::render::{
@@ -3012,7 +3104,7 @@ mod tests {
     };
     use zgui::runtime::AppError;
     use zgui::scene::Scene;
-    use zgui::vocab::Role;
+    use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Role, Timestamp};
     use zgui_platform_headless::{Harness, OffscreenSurface};
 
     use super::{Browser, CONFIRM_PREVIEW_LIMIT, Column, Location, WORKSPACE_CSS};
@@ -3023,6 +3115,7 @@ mod tests {
 
     thread_local! {
         static ROW_CONTENT_NODES: RefCell<HashMap<usize, NodeRef>> = RefCell::new(HashMap::new());
+        static HEADER_RESIZE_NODES: RefCell<HashMap<Column, NodeRef>> = RefCell::new(HashMap::new());
     }
 
     pub(super) fn record_row_content_node(index: usize, node: NodeRef) {
@@ -3031,12 +3124,23 @@ mod tests {
         });
     }
 
+    pub(super) fn record_header_resize_node(column: Column, node: NodeRef) {
+        HEADER_RESIZE_NODES.with(|slot| {
+            slot.borrow_mut().insert(column, node);
+        });
+    }
+
     fn clear_row_content_nodes() {
         ROW_CONTENT_NODES.with(|slot| slot.borrow_mut().clear());
+        HEADER_RESIZE_NODES.with(|slot| slot.borrow_mut().clear());
     }
 
     fn row_content_node(index: usize) -> Option<NodeRef> {
         ROW_CONTENT_NODES.with(|slot| slot.borrow().get(&index).copied())
+    }
+
+    fn header_resize_node(column: Column) -> Option<NodeRef> {
+        HEADER_RESIZE_NODES.with(|slot| slot.borrow().get(&column).copied())
     }
 
     #[derive(Default)]
@@ -3177,6 +3281,21 @@ mod tests {
             tile_ghosted > tile_hidden,
             "ghosted tile rule (0.35) must follow hidden rule (0.65) so cut/dragged dotfiles render at 35%"
         );
+
+        assert!(
+            WORKSPACE_CSS.contains(
+                ".gds-menu-content.gds-menu-content.gds-files-menu-content {\n        min-width: 160px;\n        max-width: 340px;\n        max-height: min(calc(100vh - 18px), var(--zui-popper-available-height, calc(100vh - 18px)));"
+            ),
+            "workspace menus must override .gds-menu-content with viewport/popper height instead of 360px/440px"
+        );
+        assert!(
+            !WORKSPACE_CSS.contains("max-height: 440px"),
+            "workspace menus must not hardcode 440px max-height"
+        );
+        assert!(
+            !super::super::inspection::INSPECTION_CSS.contains("var(--gds-panel)"),
+            "details pane must remain transparent over unified right-side --gds-content-bg"
+        );
     }
 
     #[test]
@@ -3314,6 +3433,262 @@ mod tests {
                 browser.view()
             })
             .expect("row height layout harness");
+    }
+
+    #[test]
+    fn column_header_resize_drag_tracks_continuous_pointer_moves_without_losing_capture() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join("Desktop")).expect("create Desktop");
+        std::fs::write(home.join("notes.txt"), b"hello\n").expect("create notes.txt");
+        clear_row_content_nodes();
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let start = home;
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            let offscreen = harness
+                .platform()
+                .offscreens()
+                .first()
+                .cloned()
+                .expect("primary offscreen");
+            offscreen.set_a11y_listener(true);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(16);
+
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while browser.read_untracked(|state| state.tab().rows.is_empty()) {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for Home directory rows to load"
+                );
+                harness.advance(Duration::from_millis(25));
+                harness.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            harness.settle(8);
+
+            let initial = browser.column_width_untracked(Column::Name);
+            let resize_node = header_resize_node(Column::Name)
+                .expect("recorded .gds-files-header-resize for Column::Name");
+            let initial_node_id = resize_node
+                .get_untracked()
+                .expect("bound resize handle NodeId");
+            let scale = resize_node.scale().max(1.0);
+            let bounds = resize_node
+                .window_bounds()
+                .expect("measured bounds for .gds-files-header-resize");
+            let start_x = (bounds.origin.x.0 + bounds.size.width.0 * 0.5) / scale;
+            let start_y = (bounds.origin.y.0 + bounds.size.height.0 * 0.5) / scale;
+
+            // 1. PointerDown on `.gds-files-header-resize`, then multiple PointerMove steps (+40, +110, +180)
+            // settled across frames to prove DOM nodes & pointer capture survive reactive width updates!
+            let down_pos = Point::new(CssPx(start_x), CssPx(start_y));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(down_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(4);
+
+            for delta in [40.0_f32, 110.0, 180.0] {
+                let move_pos = Point::new(CssPx(start_x + delta), CssPx(start_y + 12.0));
+                harness.deliver_to_first(SurfaceEvent::Pointer {
+                    action: PointerAction::Moved,
+                    event: PointerEvent::mouse(move_pos),
+                    modifiers: Modifiers::NONE,
+                    timestamp: Timestamp::ORIGIN,
+                });
+                harness.settle(6);
+
+                let current = browser.column_width(Column::Name);
+                assert!(
+                    (current - (initial + delta)).abs() < 0.5,
+                    "expected Column::Name width == {:.1} after +{delta}px drag, got {current:.1}",
+                    initial + delta
+                );
+                let latest_resize = header_resize_node(Column::Name)
+                    .and_then(|n| n.get_untracked())
+                    .expect("resize handle still live");
+                assert_eq!(
+                    latest_resize, initial_node_id,
+                    "header resize DOM node must not be destroyed/recreated during column drag"
+                );
+            }
+
+            let up_pos = Point::new(CssPx(start_x + 180.0), CssPx(start_y + 12.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(up_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(6);
+            assert!(
+                (browser.column_width(Column::Name) - (initial + 180.0)).abs() < 0.5,
+                "expected final Column::Name width == {:.1} on PointerUp",
+                initial + 180.0
+            );
+
+            // Moving after PointerUp must NOT continue resizing.
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Moved,
+                event: PointerEvent::mouse(Point::new(CssPx(start_x + 250.0), CssPx(start_y))),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(4);
+            assert!(
+                (browser.column_width(Column::Name) - (initial + 180.0)).abs() < 0.5,
+                "pointer capture must release on PointerUp"
+            );
+
+            // Starting a second drag and firing PointerCancel must release capture and restore width.
+            let resized_bounds = resize_node
+                .window_bounds()
+                .expect("updated bounds for .gds-files-header-resize");
+            let second_x = (resized_bounds.origin.x.0 + resized_bounds.size.width.0 * 0.5) / scale;
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(Point::new(CssPx(second_x), CssPx(start_y)))
+                    .with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(4);
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Moved,
+                event: PointerEvent::mouse(Point::new(CssPx(second_x + 50.0), CssPx(start_y))),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(4);
+            assert!(
+                (browser.column_width(Column::Name) - (initial + 230.0)).abs() < 0.5,
+                "expected second drag to reach {:.1} before cancel",
+                initial + 230.0
+            );
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Cancelled,
+                event: PointerEvent::mouse(Point::new(CssPx(second_x + 50.0), CssPx(start_y))),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(4);
+            assert!(
+                (browser.column_width(Column::Name) - (initial + 180.0)).abs() < 0.5,
+                "PointerCancel must restore pre-drag width ({:.1})",
+                initial + 180.0
+            );
+
+            // 2. Also verify workspace file context menu at 16px font size renders full height (> 360px)
+            // without premature clipping!
+            let row_node = row_content_node(0).expect("row 0 content node");
+            let row_bounds = row_node.window_bounds().expect("row 0 bounds");
+            let row_x = (row_bounds.origin.x.0 + 80.0) / scale;
+            let row_y = (row_bounds.origin.y.0 + row_bounds.size.height.0 * 0.5) / scale;
+            let ctx_pos = Point::new(CssPx(row_x), CssPx(row_y));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(ctx_pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(ctx_pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+
+            let mut a11y_nodes = HashMap::new();
+            let mut root_id = None;
+            for update in offscreen.a11y_log() {
+                if let Some(tree) = update.tree {
+                    root_id = Some(tree.root);
+                }
+                for (id, node) in update.nodes {
+                    a11y_nodes.insert(id, node);
+                }
+            }
+            let mut menu_heights = Vec::new();
+            if let Some(root) = root_id {
+                let mut stack = vec![root];
+                let mut seen = HashSet::new();
+                while let Some(id) = stack.pop() {
+                    if !seen.insert(id) {
+                        continue;
+                    }
+                    let Some(node) = a11y_nodes.get(&id) else {
+                        continue;
+                    };
+                    if node.role() == Role::Menu
+                        && let Some(rect) = node.bounds()
+                    {
+                        menu_heights.push(rect.y1 - rect.y0);
+                    }
+                    for &child in node.children().iter().rev() {
+                        stack.push(child);
+                    }
+                }
+            }
+            assert!(
+                menu_heights.iter().any(|h| *h > 360.0),
+                "expected 10-item file context menu at 16px font to exceed 360px without clipping, got {menu_heights:?}"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(false);
+                let typo = gds::appearance::typography::Preferences {
+                    size: 16.0,
+                    ..Default::default()
+                };
+                app.appearance()
+                    .typography()
+                    .apply(&typo)
+                    .expect("16px typography");
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::Chinese).expect("Chinese catalog"),
+                );
+                let _prefs =
+                    preferences::Service::install(preferences::Preferences::default(), &scope)
+                        .expect("preferences service");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: start.clone(),
+                        home: start.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("column header resize and context menu harness");
     }
 
     #[test]

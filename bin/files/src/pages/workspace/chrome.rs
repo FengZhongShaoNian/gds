@@ -23,7 +23,7 @@ use gds::ui::interaction::{
 use gds::ui::menu::{ContextMenuHostProps, MenuModel};
 use gds::ui::navigation::{
     CornerActionProps, CornerButtonProps, NavItemContentProps, NavItemDetailsProps,
-    NavItemHeaderProps, NavItemLabelProps, NavItemProps, PinnedIconProps,
+    NavItemHeaderProps, NavItemLabelProps, NavItemProps,
 };
 use gds::ui::sidebar::{
     SideBarContentProps, SideBarFooterProps, SideBarProps, SideBarSectionContentProps,
@@ -459,6 +459,10 @@ pub(super) const CHROME_CSS: &str = css!(
         min-width: 0px;
         height: 16px;
         overflow: hidden;
+    }
+
+    .gds-files-nav-icon {
+        flex: none;
     }
 
     .gds-nav-item.gds-nav-item[data-cursor="true"] {
@@ -2079,6 +2083,8 @@ impl Browser {
 
         let tab_ref = NodeRef::new();
         let corner_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_tab_nodes(id, tab_ref, corner_ref);
         if let Some(ref key) = close_shortcut {
             keytips::anchor_when(corner_ref, key.clone(), collapsed_close_shortcut_enabled);
         }
@@ -2112,7 +2118,11 @@ impl Browser {
                     }
                 }
             ) {
-                PinnedIcon(icon = location.icon(), pinned = pinned)
+                Icon(
+                    name = location.icon(),
+                    size = SIDEBAR_ICON_SIZE,
+                    class = "gds-files-nav-icon"
+                )
                 NavItemContent {
                     NavItemHeader(
                         style:padding-right = move || {
@@ -2138,11 +2148,11 @@ impl Browser {
                 box(
                     class = "gds-files-tab-action",
                     attr:data-revealed = move || expanded_action_revealed.get().then(|| "true".to_owned()),
-                    style:visibility = move || {
+                    style:display = move || {
                         Some(if presentation.get().actions_visible() {
-                            "visible".to_owned()
+                            "flex".to_owned()
                         } else {
-                            "hidden".to_owned()
+                            "none".to_owned()
                         })
                     },
                     on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {

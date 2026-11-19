@@ -23,14 +23,19 @@ pub const WIDTH: f32 = 320.0;
 pub const MIN_WIDTH: f32 = 220.0;
 /// Maximum width (in CSS px) of a popup or context menu surface (`main:menu.rs`).
 pub const MAX_WIDTH: f32 = 500.0;
-/// Maximum height (in CSS px) of a scrollable popup or context menu surface (`main:menu.rs`).
+/// Maximum height (in CSS px) of a compact dropdown popup menu surface (`main:menu.rs`).
 pub const MAX_HEIGHT: f32 = 360.0;
+/// Window edge margin (in CSS px) reserved around context menus (`main:menu.rs`).
+pub const EDGE_MARGIN: f32 = 8.0;
+/// Surface border thickness (in CSS px) around popup and context menus (`main:menu.rs`).
+pub const SURFACE_BORDER: f32 = 1.0;
 /// Horizontal gap (in CSS px) between an item label and its trailing [`ShortcutBadge`].
 pub const SHORTCUT_GAP: f32 = 24.0;
 
 const SHEET: &str = css!(
     r#"
-    .gds-menu-content {
+    .gds-menu-content,
+    .gds-menu-content.gds-menu-content {
         --zui-surface-fill: var(--gds-panel);
         --zui-surface-ink: var(--gds-panel-foreground);
         --zui-surface-border: 1px solid var(--gds-border);
@@ -41,11 +46,15 @@ const SHEET: &str = css!(
         border-radius: 8px;
         min-width: 220px;
         max-width: 500px;
-        max-height: 360px;
+        max-height: min(360px, var(--zui-popper-available-height, 360px));
         overflow-x: hidden;
         overflow-y: auto;
         font-family: var(--gds-font-sans);
         font-size: var(--gds-font-size-small, 14px);
+    }
+
+    .gds-menu-content.gds-menu-content.gds-menu-content--context {
+        max-height: min(calc(100vh - 18px), var(--zui-popper-available-height, calc(100vh - 18px)));
     }
 
     .gds-menu-content .zui-menu__item,
@@ -297,7 +306,7 @@ pub fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
                                 text(class = "gds-menu-item-label") {{label}}
                             }
                         }
-                        MenuSubContent(class = "gds-menu-content") {
+                        MenuSubContent(class = "gds-menu-content gds-menu-content--context") {
                             {sub_entries.with_value(|list| render_entries(list.clone()))}
                         }
                     }
@@ -407,7 +416,7 @@ pub fn ContextMenuHost(
                     {children.into_view_once()}
                 }
             }
-            ContextMenuContent(class = "gds-menu-content") {
+            ContextMenuContent(class = "gds-menu-content gds-menu-content--context") {
                 {render_entries(build().entries)}
             }
         }
@@ -416,21 +425,138 @@ pub fn ContextMenuHost(
 
 #[cfg(test)]
 mod tests {
-    use zgui::reactive::{Mounted, UnsyncCallback, install};
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    use zgui::app::Fonts;
+    use zgui::atlas::{MemorySink, TextureSink};
+    use zgui::bits::DamageSet;
+    use zgui::geom::{CssPx, DevicePx, Point, Size};
+    use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
+    use zgui::prelude::*;
+    use zgui::reactive::{Mounted, RwSignal, UnsyncCallback, flush, install};
+    use zgui::render::{
+        ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities, RenderTarget,
+        Renderer, TextureHandle,
+    };
+    use zgui::runtime::AppError;
+    use zgui::scene::Scene;
+    use zgui::view;
+    use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Role, Timestamp};
+    use zgui_platform_headless::{Harness, OffscreenSurface};
 
     use super::{
-        MAX_HEIGHT, MAX_WIDTH, MIN_WIDTH, MenuEntry, MenuModel, SHORTCUT_GAP, has_leading_column,
-        popup_in, render_entries,
+        ContextMenuHostProps, EDGE_MARGIN, MAX_HEIGHT, MAX_WIDTH, MIN_WIDTH, MenuEntry, MenuModel,
+        PopupMenuProps, SHEET, SHORTCUT_GAP, SURFACE_BORDER, has_leading_column, popup_in,
+        render_entries,
     };
+    use crate::app::Gds;
+    use crate::service::task_manager::Scope;
     use crate::ui::Shortcut;
     use crate::ui::icon::IconName;
+
+    #[derive(Default)]
+    struct NoopRenderer {
+        atlas: MemorySink,
+        target: Option<RenderTarget>,
+    }
+
+    impl Renderer for NoopRenderer {
+        fn capabilities(&self) -> RenderCapabilities {
+            RenderCapabilities::MINIMAL
+        }
+
+        fn configure(&mut self, target: RenderTarget) {
+            self.target = Some(target);
+        }
+
+        fn target(&self) -> Option<RenderTarget> {
+            self.target
+        }
+
+        fn register_external(&mut self, _: ExternalTexture) -> TextureHandle {
+            TextureHandle(0)
+        }
+
+        fn release_external(&mut self, _: TextureHandle) {}
+
+        fn memory(&self) -> MemoryReport {
+            MemoryReport::default()
+        }
+
+        fn draw(&mut self, _: &Scene, _: &DamageSet) -> FrameOutcome {
+            FrameOutcome::Presented(FrameStats::default())
+        }
+
+        fn texture_sink(&mut self) -> &mut dyn TextureSink {
+            &mut self.atlas
+        }
+    }
+
+    fn noop_renderer(
+        _: &Arc<dyn Surface>,
+        target: RenderTarget,
+    ) -> Result<Box<dyn Renderer>, AppError> {
+        let mut renderer = NoopRenderer::default();
+        renderer.configure(target);
+        Ok(Box::new(renderer))
+    }
+
+    fn live_menu_heights(surface: &OffscreenSurface) -> Vec<f64> {
+        let mut nodes = HashMap::new();
+        let mut root = None;
+        for update in surface.a11y_log() {
+            if let Some(tree) = update.tree {
+                root = Some(tree.root);
+            }
+            for (id, node) in update.nodes {
+                nodes.insert(id, node);
+            }
+        }
+        let Some(root_id) = root else {
+            return Vec::new();
+        };
+        let mut stack = vec![root_id];
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(node) = nodes.get(&id) else {
+                continue;
+            };
+            if node.role() == Role::Menu
+                && let Some(rect) = node.bounds()
+            {
+                out.push(rect.y1 - rect.y0);
+            }
+            for &child in node.children().iter().rev() {
+                stack.push(child);
+            }
+        }
+        out
+    }
 
     #[test]
     fn menu_dimensions_and_entry_rendering_match_spec() {
         assert_eq!(MIN_WIDTH, 220.0);
         assert_eq!(MAX_WIDTH, 500.0);
         assert_eq!(MAX_HEIGHT, 360.0);
+        assert_eq!(2.0 * (EDGE_MARGIN + SURFACE_BORDER), 18.0);
         assert_eq!(SHORTCUT_GAP, 24.0);
+        assert!(
+            SHEET.contains("max-height: min(360px, var(--zui-popper-available-height, 360px));"),
+            "compact dropdown menus must stay capped at 360px"
+        );
+        assert!(
+            SHEET.contains(
+                ".gds-menu-content.gds-menu-content.gds-menu-content--context {\n        max-height: min(calc(100vh - 18px), var(--zui-popper-available-height, calc(100vh - 18px)));"
+            ),
+            "context menus must expand up to available window/popper height (100vh - 18px)"
+        );
 
         install().ok();
         let scope = Mounted::new();
@@ -469,5 +595,153 @@ mod tests {
             assert_eq!(rendered.len(), 3);
         });
         scope.unmount();
+    }
+
+    #[test]
+    fn context_menu_expands_beyond_compact_dropdown_cap_at_large_font_sizes() {
+        let popup_open_slot: Rc<RefCell<Option<RwSignal<bool, LocalStorage>>>> =
+            Rc::new(RefCell::new(None));
+        let slot_view = Rc::clone(&popup_open_slot);
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            let offscreen = harness
+                .platform()
+                .offscreens()
+                .first()
+                .cloned()
+                .expect("offscreen surface");
+            offscreen.set_a11y_listener(true);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1024.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(12);
+
+            // 1. Right-click at (120, 48) to open a 30-item ContextMenuHost (~920px uncapped at 16px font):
+            // must expand well past 360px/440px AND cap cleanly to Popper/window available height (<= 782px).
+            let pos = Point::new(CssPx(120.0), CssPx(48.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+
+            let ctx_heights = live_menu_heights(&offscreen);
+            assert!(
+                ctx_heights
+                    .iter()
+                    .any(|h| *h > 700.0 && *h <= 800.0 - 18.0 + 0.5),
+                "expected 30-item ContextMenuHost bounded by available height (> 700px and <= 782px), got {ctx_heights:?}"
+            );
+
+            // Dismiss context menu and open 20-item compact PopupMenu: must stay capped at <= 360px.
+            let dismiss_pos = Point::new(CssPx(900.0), CssPx(700.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(dismiss_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(dismiss_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(12);
+
+            let popup_open = popup_open_slot.borrow().expect("popup signal");
+            popup_open.set(true);
+            flush();
+            harness.settle(16);
+
+            let popup_heights = live_menu_heights(&offscreen);
+            assert!(
+                popup_heights.iter().any(|h| (*h - 360.0).abs() <= 1.5),
+                "expected 20-item compact PopupMenu capped at 360px, got {popup_heights:?}"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1024.0, 800.0)
+            .run_on(driver, move || {
+                let app = Gds::install(Scope::default());
+                app.appearance().motion().set_enabled(false);
+                let typo = crate::appearance::typography::Preferences {
+                    size: 16.0,
+                    ..Default::default()
+                };
+                app.appearance()
+                    .typography()
+                    .apply(&typo)
+                    .expect("16px typography");
+                let _ = app.appearance().install_window_sheet();
+
+                let popup_open = RwSignal::new_local(false);
+                *slot_view.borrow_mut() = Some(popup_open);
+
+                let build_ctx = Rc::new(|| {
+                    let mut m = MenuModel::new();
+                    for idx in 1..=30 {
+                        m.item(
+                            format!("Context action {idx}"),
+                            Some(IconName::Folder),
+                            Shortcut::parse("Ctrl+N"),
+                            false,
+                            false,
+                            UnsyncCallback::new(|()| {}),
+                        );
+                        if idx == 5 || idx == 11 {
+                            m.separator();
+                        }
+                    }
+                    m
+                });
+
+                let mut popup_model = MenuModel::new();
+                for idx in 1..=20 {
+                    popup_model.item(
+                        format!("Dropdown option {idx}"),
+                        Some(IconName::Folder),
+                        Shortcut::parse("Ctrl+N"),
+                        false,
+                        false,
+                        UnsyncCallback::new(|()| {}),
+                    );
+                }
+                let popup_sig = Signal::stored_local(popup_model);
+
+                view! {
+                    column(style:width = "100%", style:height = "100%") {
+                        row(style:height = "40px") {
+                            PopupMenu(
+                                open = popup_open,
+                                model = popup_sig,
+                                trigger = || AnyView::new(view! { text { "Open dropdown" } })
+                            )
+                        }
+                        ContextMenuHost(model = build_ctx) {
+                            box(style:width = "600px", style:height = "500px") {
+                                text { "Target area" }
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("menu height harness");
     }
 }

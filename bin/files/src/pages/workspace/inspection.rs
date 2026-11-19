@@ -50,7 +50,7 @@ use tags::TagEditor;
 
 const INSPECTION_SHEET: &str = "gds-files-workspace-inspection";
 
-const INSPECTION_CSS: &str = css!(
+pub(super) const INSPECTION_CSS: &str = css!(
     r#"
     .gds-files-artwork-slot {
         display: flex;
@@ -105,7 +105,7 @@ const INSPECTION_CSS: &str = css!(
         overflow-y: auto;
         padding: 14px;
         gap: 14px;
-        background: var(--gds-panel);
+        background: transparent;
         border-left: 1px solid var(--gds-border);
     }
 
@@ -115,7 +115,7 @@ const INSPECTION_CSS: &str = css!(
         justify-content: center;
         gap: 10px;
         padding: 20px;
-        background: var(--gds-panel);
+        background: transparent;
         border-left: 1px solid var(--gds-border);
     }
 
@@ -1740,5 +1740,51 @@ impl Browser {
 
             static_row_details(&browser, row)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::INSPECTION_CSS;
+
+    fn css_rule_body<'a>(sheet: &'a str, selector: &str) -> Option<&'a str> {
+        let start = sheet.find(selector)?;
+        let after_selector = &sheet[start + selector.len()..];
+        let brace_open = after_selector.find('{')?;
+        let rest = &after_selector[brace_open + 1..];
+        let brace_close = rest.find('}')?;
+        Some(&rest[..brace_close])
+    }
+
+    #[test]
+    fn details_pane_keeps_transparent_background_over_unified_workspace_content_surface() {
+        assert!(
+            !INSPECTION_CSS.contains("var(--gds-panel)"),
+            "inspection details stylesheet must not paint opaque --gds-panel over unified --gds-content-bg"
+        );
+
+        let details = css_rule_body(INSPECTION_CSS, ".gds-files-details ")
+            .or_else(|| css_rule_body(INSPECTION_CSS, ".gds-files-details\n"))
+            .expect(".gds-files-details rule");
+        assert!(
+            details.contains("background: transparent;"),
+            ".gds-files-details must remain transparent: {details}"
+        );
+        assert!(
+            details.contains("border-left: 1px solid var(--gds-border);"),
+            ".gds-files-details must retain left divider border: {details}"
+        );
+
+        let empty = css_rule_body(INSPECTION_CSS, ".gds-files-details__empty ")
+            .or_else(|| css_rule_body(INSPECTION_CSS, ".gds-files-details__empty\n"))
+            .expect(".gds-files-details__empty rule");
+        assert!(
+            empty.contains("background: transparent;"),
+            ".gds-files-details__empty must remain transparent: {empty}"
+        );
+        assert!(
+            empty.contains("border-left: 1px solid var(--gds-border);"),
+            ".gds-files-details__empty must retain left divider border: {empty}"
+        );
     }
 }

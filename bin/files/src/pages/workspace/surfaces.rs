@@ -99,6 +99,7 @@ const SURFACES_CSS: &str = css!(
         flex-direction: row;
         flex: none;
         align-items: center;
+        width: 100%;
         height: 30px;
         border-bottom: 1px solid var(--gds-border);
     }
@@ -228,14 +229,6 @@ const SURFACES_CSS: &str = css!(
         text-align: right;
     }
 
-    .gds-files-collection-cell[data-hidden-entry="true"] {
-        opacity: 0.65;
-    }
-
-    .gds-files-row-content[data-selected="true"] .gds-files-collection-cell[data-hidden-entry="true"] {
-        opacity: 1;
-    }
-
     .gds-files-collection-artwork {
         position: relative;
         display: flex;
@@ -260,10 +253,9 @@ const SURFACES_CSS: &str = css!(
         position: absolute;
         right: -4px;
         bottom: -4px;
-        border-radius: 999px;
-        background: var(--gds-panel);
-        color: var(--gds-foreground);
-        padding: 1px;
+        background: transparent;
+        color: inherit;
+        padding: 0;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -459,7 +451,7 @@ fn name_cell_view(
     artwork: AnyView,
     label: String,
     tooltip: Option<String>,
-    hidden: bool,
+    _hidden: bool,
     selected: Signal<bool, LocalStorage>,
     width: Option<f32>,
 ) -> AnyView {
@@ -469,7 +461,6 @@ fn name_cell_view(
         Some(w) => AnyView::new(view! {
             row(
                 class = "gds-files-collection-cell",
-                attr:data-hidden-entry = hidden.then(|| "true".to_owned()),
                 style:width = format!("{w:.1}px"),
             ) {
                 {artwork}
@@ -477,10 +468,7 @@ fn name_cell_view(
             }
         }),
         None => AnyView::new(view! {
-            row(
-                class = "gds-files-collection-cell",
-                attr:data-hidden-entry = hidden.then(|| "true".to_owned()),
-            ) {
+            row(class = "gds-files-collection-cell") {
                 {artwork}
                 {name_label}
             }
@@ -1166,6 +1154,31 @@ impl Browser {
                     let ascending = sort.direction == Direction::Ascending;
                     let b = self.clone();
                     let a11y_label = SharedString::from(label.clone());
+                    let label_node = AnyView::new(view! {
+                        text(class = "gds-files-collection-header__label") {{label}}
+                    });
+                    let sort_node = AnyView::new(view! {
+                        column(
+                            class = "gds-files-collection-header__sort",
+                            attr:data-active = active.then(|| "true".to_owned()),
+                        ) {
+                            {{if active {
+                                let icon = if ascending {
+                                    IconName::ChevronUp
+                                } else {
+                                    IconName::ChevronDown
+                                };
+                                AnyView::new(view! { Icon(name = icon, size = 12.0) })
+                            } else {
+                                AnyView::new(view! {
+                                    column(style:align-items = "center", style:justify-content = "center") {
+                                        Icon(name = IconName::ChevronUp, size = 8.0) {}
+                                        Icon(name = IconName::ChevronDown, size = 8.0) {}
+                                    }
+                                })
+                            }}}
+                        }
+                    });
                     AnyView::new(view! {
                         row(
                             class = "gds-files-collection-header__cell",
@@ -1181,27 +1194,17 @@ impl Browser {
                                 a11y:label = a11y_label,
                                 on:click = move |_| b.column_sort(col),
                             ) {
-                                text(class = "gds-files-collection-header__label") {{label}}
-                                column(
-                                    class = "gds-files-collection-header__sort",
-                                    attr:data-active = active.then(|| "true".to_owned()),
-                                ) {
-                                    {{if active {
-                                        let icon = if ascending {
-                                            IconName::ChevronUp
-                                        } else {
-                                            IconName::ChevronDown
-                                        };
-                                        AnyView::new(view! { Icon(name = icon, size = 12.0) })
-                                    } else {
-                                        AnyView::new(view! {
-                                            column(style:align-items = "center", style:justify-content = "center") {
-                                                Icon(name = IconName::ChevronUp, size = 8.0) {}
-                                                Icon(name = IconName::ChevronDown, size = 8.0) {}
-                                            }
-                                        })
-                                    }}}
-                                }
+                                {if is_right_aligned {
+                                    AnyView::new(view! {
+                                        {sort_node}
+                                        {label_node}
+                                    })
+                                } else {
+                                    AnyView::new(view! {
+                                        {label_node}
+                                        {sort_node}
+                                    })
+                                }}
                             }
                         }
                     })

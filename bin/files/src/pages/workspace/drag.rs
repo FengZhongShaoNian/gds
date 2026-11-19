@@ -68,9 +68,25 @@ const DRAG_PREVIEW_CSS: &str = css!(
     .gds-files-drag-row-host {
         display: flex;
         flex-direction: column;
-        width: 100%;
-        height: 100%;
         min-width: 0px;
+    }
+
+    .gds-files-drag-row-host.gds-drop-target.gds-drop-target[data-drop-active="true"] {
+        background: transparent;
+        outline: none;
+    }
+
+    .gds-files-drag-row-host[data-drop-target="true"] .gds-files-row-content,
+    .gds-files-drag-row-host[data-drop-active="true"] .gds-files-row-content,
+    .gds-files-drag-row-host[data-drop-target="true"] .gds-files-row-content.gds-files-row-content,
+    .gds-files-drag-row-host[data-drop-active="true"] .gds-files-row-content.gds-files-row-content,
+    .gds-files-drag-row-host[data-drop-target="true"] .gds-files-tile,
+    .gds-files-drag-row-host[data-drop-active="true"] .gds-files-tile,
+    .gds-files-drag-row-host[data-drop-target="true"] .gds-files-tile.gds-files-tile,
+    .gds-files-drag-row-host[data-drop-active="true"] .gds-files-tile.gds-files-tile {
+        background-color: var(--gds-drag-target);
+        outline: 1px solid var(--gds-primary);
+        outline-offset: -1px;
     }
     "#
 );
@@ -789,6 +805,9 @@ impl Browser {
                     }
                 });
             drop_target_attrs(internal_active, Some(on_external_drop))
+                .attribute(zgui::view::AttrName::new("data-drop-target"), move || {
+                    internal_active.get().then(|| "true".to_owned())
+                })
         } else {
             Attrs::new()
         };

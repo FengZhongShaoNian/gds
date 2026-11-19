@@ -66,6 +66,25 @@ const HEADER_HEIGHT: f32 = DataListStyle::HEADER_HEIGHT;
 const DETAILS_WIDTH: f32 = 280.0;
 const TAB_ENTER_INITIAL_OPACITY: f32 = 0.88;
 const CONFIRM_PREVIEW_LIMIT: usize = 5;
+const NAME_MIN_WIDTH: f32 = 180.0;
+const NAME_DEFAULT_MAX_WIDTH: f32 = 500.0;
+const NAME_WIDTH_FRACTION: f32 = 0.45;
+const MODIFIED_WIDTH: f32 = 160.0;
+const MODIFIED_MIN_WIDTH: f32 = 144.0;
+const KIND_WIDTH: f32 = 110.0;
+const KIND_MIN_WIDTH: f32 = 96.0;
+const SIZE_WIDTH: f32 = 100.0;
+const SIZE_MIN_WIDTH: f32 = 88.0;
+const OWNER_WIDTH: f32 = 130.0;
+const OWNER_MIN_WIDTH: f32 = 90.0;
+const GROUP_WIDTH: f32 = 130.0;
+const GROUP_MIN_WIDTH: f32 = 90.0;
+const PERMISSIONS_WIDTH: f32 = 96.0;
+const PERMISSIONS_MIN_WIDTH: f32 = 84.0;
+const ACCESSED_WIDTH: f32 = 160.0;
+const ACCESSED_MIN_WIDTH: f32 = 144.0;
+const DETAILED_TYPE_WIDTH: f32 = 130.0;
+const DETAILED_TYPE_MIN_WIDTH: f32 = 90.0;
 const WORKSPACE_SHEET: &str = "gds-files-workspace";
 
 const WORKSPACE_CSS: &str = css!(
@@ -354,6 +373,7 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex: none;
         align-items: center;
+        width: 100%;
         height: 30px;
         border-bottom: 1px solid var(--gds-border);
     }
@@ -402,12 +422,16 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-header-label {
         flex: 0 1 auto;
         min-width: 0px;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 400;
         color: var(--gds-muted-foreground);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+
+    .gds-files-header-button:not([data-align-end="true"]) .gds-files-header-label {
+        flex: 1 1 0%;
     }
 
     .gds-files-header-button[data-active="true"] .gds-files-header-label {
@@ -465,7 +489,18 @@ const WORKSPACE_CSS: &str = css!(
         min-height: 0px;
     }
 
-    .gds-files-row-wrap {
+    .gds-files-virtual-list .zui-virtual-list__row {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        min-width: 0px;
+        box-sizing: border-box;
+    }
+
+    .gds-files-row-wrap:not([data-grid="true"]) {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0%;
         width: 100%;
         height: 100%;
         min-width: 0px;
@@ -477,6 +512,24 @@ const WORKSPACE_CSS: &str = css!(
         width: auto;
         height: auto;
         padding: 0px;
+        flex: none;
+    }
+
+    .gds-files-row-wrap:not([data-grid="true"]) > .gds-files-menu-wrap,
+    .gds-files-row-wrap:not([data-grid="true"]) .gds-files-drag-row-host {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0%;
+        width: 100%;
+        height: 100%;
+        min-width: 0px;
+    }
+
+    .gds-files-row-wrap[data-grid="true"] > .gds-files-menu-wrap,
+    .gds-files-row-wrap[data-grid="true"] .gds-files-drag-row-host {
+        width: auto;
+        height: auto;
+        flex: none;
     }
 
     .gds-files-row-content {
@@ -494,6 +547,20 @@ const WORKSPACE_CSS: &str = css!(
             color var(--gds-motion-normal, 160ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
     }
 
+    .gds-files-row-wrap:not([data-grid="true"]) .gds-files-row-content {
+        flex: 1 1 0%;
+        width: 100%;
+        height: 100%;
+        min-height: 36px;
+        align-items: center;
+    }
+
+    .gds-files-row-content > .zui-tooltip__trigger {
+        height: 100%;
+        flex: none;
+        min-width: 0px;
+    }
+
     .gds-files-row-content:hover {
         background-color: var(--gds-hover);
     }
@@ -504,16 +571,20 @@ const WORKSPACE_CSS: &str = css!(
         color: var(--gds-selection-foreground);
     }
 
-    .gds-files-row-content[data-cursor="true"] {
+    .gds-files-row-content[data-cursor="true"]:not([data-selected="true"]) {
         outline: 1px solid var(--gds-primary);
         outline-offset: -1px;
     }
 
-    .gds-files-row-content[data-hidden-entry="true"] {
+    .gds-files-row-content[data-hidden-entry="true"] .gds-files-name-cell,
+    .gds-files-row-content[data-hidden-entry="true"] .gds-files-meta-cell,
+    .gds-files-row-content[data-hidden-entry="true"] .gds-files-collection-cell {
         opacity: 0.65;
     }
 
-    .gds-files-row-content[data-ghosted="true"] {
+    .gds-files-row-content[data-ghosted="true"] .gds-files-name-cell,
+    .gds-files-row-content[data-ghosted="true"] .gds-files-meta-cell,
+    .gds-files-row-content[data-ghosted="true"] .gds-files-collection-cell {
         opacity: 0.35;
     }
 
@@ -589,7 +660,7 @@ const WORKSPACE_CSS: &str = css!(
     }
 
     .gds-files-meta-cell[data-current-owner="true"] {
-        color: var(--gds-foreground);
+        font-weight: 600;
     }
 
     .gds-files-meta-text {
@@ -652,11 +723,13 @@ const WORKSPACE_CSS: &str = css!(
         border-color: var(--gds-primary);
     }
 
-    .gds-files-tile[data-hidden-entry="true"] {
+    .gds-files-tile[data-hidden-entry="true"] .gds-files-tile-artwork,
+    .gds-files-tile[data-hidden-entry="true"] .gds-files-tile-name-wrap {
         opacity: 0.65;
     }
 
-    .gds-files-tile[data-ghosted="true"] {
+    .gds-files-tile[data-ghosted="true"] .gds-files-tile-artwork,
+    .gds-files-tile[data-ghosted="true"] .gds-files-tile-name-wrap {
         opacity: 0.35;
     }
 
@@ -1836,52 +1909,50 @@ impl Browser {
         })
     }
 
+    fn column_min_width(column: Column) -> f32 {
+        match column {
+            Column::Name => NAME_MIN_WIDTH,
+            Column::Modified => MODIFIED_MIN_WIDTH,
+            Column::Accessed => ACCESSED_MIN_WIDTH,
+            Column::Type => KIND_MIN_WIDTH,
+            Column::Size => SIZE_MIN_WIDTH,
+            Column::Owner => OWNER_MIN_WIDTH,
+            Column::Group => GROUP_MIN_WIDTH,
+            Column::DetailedType => DETAILED_TYPE_MIN_WIDTH,
+            Column::Permissions => PERMISSIONS_MIN_WIDTH,
+        }
+    }
+
+    fn column_default_width(&self, column: Column) -> f32 {
+        match column {
+            Column::Name => (self.table_viewport_width() * NAME_WIDTH_FRACTION)
+                .clamp(NAME_MIN_WIDTH, NAME_DEFAULT_MAX_WIDTH),
+            Column::Modified => MODIFIED_WIDTH,
+            Column::Accessed => ACCESSED_WIDTH,
+            Column::Type => KIND_WIDTH,
+            Column::Size => SIZE_WIDTH,
+            Column::Owner => OWNER_WIDTH,
+            Column::Group => GROUP_WIDTH,
+            Column::DetailedType => DETAILED_TYPE_WIDTH,
+            Column::Permissions => PERMISSIONS_WIDTH,
+        }
+    }
+
     fn column_width(&self, column: Column) -> f32 {
+        let min = Self::column_min_width(column);
         let explicit = self
             .0
             .column_widths
             .with(|widths| widths.get(&column).copied());
         if let Some(width) = explicit {
-            return width;
+            return width.max(min);
         }
-        let viewport = self.table_viewport_width();
-        let columns = self.read(|state| state.tab().columns.columns().to_vec());
-        let weights: f32 = columns
-            .iter()
-            .map(|col| Self::column_weight(*col))
-            .sum::<f32>()
-            .max(1.0);
-        if columns.last() == Some(&column) {
-            let preceding: f32 = columns
-                .iter()
-                .take(columns.len().saturating_sub(1))
-                .map(|col| (viewport * Self::column_weight(*col) / weights).floor())
-                .sum();
-            (viewport - preceding).max(60.0)
-        } else {
-            (viewport * Self::column_weight(column) / weights)
-                .floor()
-                .max(60.0)
-        }
-    }
-
-    fn column_weight(column: Column) -> f32 {
-        match column {
-            Column::Name => 4.2,
-            Column::DetailedType => 1.8,
-            Column::Modified | Column::Accessed => 1.6,
-            Column::Type => 1.3,
-            Column::Size | Column::Owner | Column::Group | Column::Permissions => 1.0,
-        }
+        self.column_default_width(column).max(min)
     }
 
     fn content_columns_width(&self) -> f32 {
         if let Some(columns) = self.collection_columns() {
             return columns.into_iter().map(|(_, width)| width).sum::<f32>();
-        }
-        let has_explicit = self.0.column_widths.with(|widths| !widths.is_empty());
-        if !has_explicit {
-            return self.table_viewport_width();
         }
         self.read(|state| {
             state
@@ -2001,7 +2072,10 @@ impl Browser {
                             };
                             let delta = ev.position.x.0 - start_x;
                             b.0.column_widths.update(|widths| {
-                                widths.insert(column, (base_w + delta).clamp(60.0, 900.0));
+                                widths.insert(
+                                    column,
+                                    (base_w + delta).clamp(Self::column_min_width(column), 900.0),
+                                );
                             });
                         }
                     },
@@ -2329,33 +2403,29 @@ impl Browser {
     }
 
     fn row_view(&self, index: usize, motion: Option<GridMotion>) -> AnyView {
-        let (row, columns, grid, cut, hidden) = self.read_structure(|state| {
+        let (row, columns, grid, cut) = self.read_structure(|state| {
             let tab = state.tab();
             let Some(row) = tab.rows.get(index).cloned() else {
-                return (
-                    None,
-                    tab.columns.clone(),
-                    tab.mode == ViewMode::Grid,
-                    None,
-                    false,
-                );
+                return (None, tab.columns.clone(), tab.mode == ViewMode::Grid, None);
             };
             let cut = row.path().map(|path| path.to_owned());
-            let hidden = match &row {
-                Row::File(entry) => entry.is_hidden,
-                Row::Remote(entry) => entry.name.starts_with('.'),
-                _ => false,
-            };
             (
                 Some(row),
                 tab.columns.clone(),
                 tab.mode == ViewMode::Grid,
                 cut,
-                hidden,
             )
         });
         let Some(row) = row else {
             return AnyView::new(view! { box() });
+        };
+        let hidden = match &row {
+            Row::File(entry) => entry.is_hidden,
+            Row::Remote(entry) => entry.name.starts_with('.'),
+            Row::Place(location) => self
+                .place_entry(location)
+                .is_some_and(|entry| entry.is_hidden),
+            _ => false,
         };
 
         let key = row.key();
@@ -2586,8 +2656,13 @@ impl Browser {
                 .collect()
         };
 
+        let row_content_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_row_content_node(index, row_content_ref);
+
         let target = AnyView::new(view! {
             row(
+                node_ref = row_content_ref,
                 class = "gds-files-row-content",
                 attr:data-selected = move || selected_sig.get().then(|| "true".to_owned()),
                 attr:data-cursor = move || cursor_sig.get().then(|| "true".to_owned()),
@@ -2916,7 +2991,136 @@ impl Browser {
 
 #[cfg(test)]
 mod tests {
-    use super::{CONFIRM_PREVIEW_LIMIT, WORKSPACE_CSS};
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use gds::app::Gds;
+    use gds::i18n::Language;
+    use gds::service::task_manager::{Scope, Supervisor};
+    use zgui::app::Fonts;
+    use zgui::atlas::{MemorySink, TextureSink};
+    use zgui::bits::DamageSet;
+    use zgui::geom::{DevicePx, Size};
+    use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
+    use zgui::prelude::NodeRef;
+    use zgui::render::{
+        ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities, RenderTarget,
+        Renderer, TextureHandle,
+    };
+    use zgui::runtime::AppError;
+    use zgui::scene::Scene;
+    use zgui::vocab::Role;
+    use zgui_platform_headless::{Harness, OffscreenSurface};
+
+    use super::{Browser, CONFIRM_PREVIEW_LIMIT, Column, Location, WORKSPACE_CSS};
+    use crate::entities::location::{places::Places, volumes};
+    use crate::entities::preferences;
+    use crate::pages::workspace::ui::LaunchOptions;
+    use crate::shared::i18n as files_i18n;
+
+    thread_local! {
+        static ROW_CONTENT_NODES: RefCell<HashMap<usize, NodeRef>> = RefCell::new(HashMap::new());
+    }
+
+    pub(super) fn record_row_content_node(index: usize, node: NodeRef) {
+        ROW_CONTENT_NODES.with(|slot| {
+            slot.borrow_mut().insert(index, node);
+        });
+    }
+
+    fn clear_row_content_nodes() {
+        ROW_CONTENT_NODES.with(|slot| slot.borrow_mut().clear());
+    }
+
+    fn row_content_node(index: usize) -> Option<NodeRef> {
+        ROW_CONTENT_NODES.with(|slot| slot.borrow().get(&index).copied())
+    }
+
+    #[derive(Default)]
+    struct NoopRenderer {
+        atlas: MemorySink,
+        target: Option<RenderTarget>,
+    }
+
+    impl Renderer for NoopRenderer {
+        fn capabilities(&self) -> RenderCapabilities {
+            RenderCapabilities::MINIMAL
+        }
+
+        fn configure(&mut self, target: RenderTarget) {
+            self.target = Some(target);
+        }
+
+        fn target(&self) -> Option<RenderTarget> {
+            self.target
+        }
+
+        fn register_external(&mut self, _: ExternalTexture) -> TextureHandle {
+            TextureHandle(0)
+        }
+
+        fn release_external(&mut self, _: TextureHandle) {}
+
+        fn memory(&self) -> MemoryReport {
+            MemoryReport::default()
+        }
+
+        fn draw(&mut self, _: &Scene, _: &DamageSet) -> FrameOutcome {
+            FrameOutcome::Presented(FrameStats::default())
+        }
+
+        fn texture_sink(&mut self) -> &mut dyn TextureSink {
+            &mut self.atlas
+        }
+    }
+
+    fn noop_renderer(
+        _: &Arc<dyn Surface>,
+        target: RenderTarget,
+    ) -> Result<Box<dyn Renderer>, AppError> {
+        let mut renderer = NoopRenderer::default();
+        renderer.configure(target);
+        Ok(Box::new(renderer))
+    }
+
+    fn virtual_list_slot_heights(surface: &OffscreenSurface) -> Vec<f64> {
+        let mut nodes = HashMap::new();
+        let mut root = None;
+        for update in surface.a11y_log() {
+            if let Some(tree) = update.tree {
+                root = Some(tree.root);
+            }
+            for (id, node) in update.nodes {
+                nodes.insert(id, node);
+            }
+        }
+        let Some(root_id) = root else {
+            return Vec::new();
+        };
+        let mut stack = vec![root_id];
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(node) = nodes.get(&id) else {
+                continue;
+            };
+            if node.role() == Role::ListItem
+                && let Some(rect) = node.bounds()
+            {
+                out.push(rect.y1 - rect.y0);
+            }
+            for &child in node.children().iter().rev() {
+                stack.push(child);
+            }
+        }
+        out
+    }
 
     #[test]
     fn workspace_css_drops_resting_table_border_and_toolbar_spacer_and_prioritizes_ghosted_opacity()
@@ -2937,28 +3141,179 @@ mod tests {
             !super::super::chrome::CHROME_CSS.contains("scrollbar-width"),
             "chrome stylesheet must not emit unsupported scrollbar-width CSS declarations"
         );
+        assert!(
+            WORKSPACE_CSS.contains(
+                ".gds-files-row-content[data-cursor=\"true\"]:not([data-selected=\"true\"])"
+            ),
+            "selected list rows must never draw a 1px outline; only detached unselected cursor rows draw 1px primary outline"
+        );
+        assert!(
+            !WORKSPACE_CSS.contains(".gds-files-row-content[data-hidden-entry=\"true\"] {"),
+            "hidden opacity must target inner cells, never .gds-files-row-content pill background"
+        );
+        assert!(
+            !WORKSPACE_CSS.contains(".gds-files-tile[data-hidden-entry=\"true\"] {"),
+            "hidden opacity must target inner tile slots, never .gds-files-tile selection background/border"
+        );
 
         let row_hidden = WORKSPACE_CSS
-            .find(".gds-files-row-content[data-hidden-entry=\"true\"]")
-            .expect("row hidden rule");
+            .find(".gds-files-row-content[data-hidden-entry=\"true\"] .gds-files-name-cell")
+            .expect("row inner hidden rule");
         let row_ghosted = WORKSPACE_CSS
-            .find(".gds-files-row-content[data-ghosted=\"true\"]")
-            .expect("row ghosted rule");
+            .find(".gds-files-row-content[data-ghosted=\"true\"] .gds-files-name-cell")
+            .expect("row inner ghosted rule");
         assert!(
             row_ghosted > row_hidden,
             "ghosted row rule (0.35) must follow hidden rule (0.65) so cut/dragged dotfiles render at 35%"
         );
 
         let tile_hidden = WORKSPACE_CSS
-            .find(".gds-files-tile[data-hidden-entry=\"true\"]")
-            .expect("tile hidden rule");
+            .find(".gds-files-tile[data-hidden-entry=\"true\"] .gds-files-tile-artwork")
+            .expect("tile inner hidden rule");
         let tile_ghosted = WORKSPACE_CSS
-            .find(".gds-files-tile[data-ghosted=\"true\"]")
-            .expect("tile ghosted rule");
+            .find(".gds-files-tile[data-ghosted=\"true\"] .gds-files-tile-artwork")
+            .expect("tile inner ghosted rule");
         assert!(
             tile_ghosted > tile_hidden,
             "ghosted tile rule (0.35) must follow hidden rule (0.65) so cut/dragged dotfiles render at 35%"
         );
+    }
+
+    #[test]
+    fn list_row_content_pill_measures_thirty_six_px_inside_forty_px_virtual_row_and_matches_main_column_widths()
+     {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join("Desktop")).expect("create Desktop");
+        std::fs::create_dir_all(home.join("Documents")).expect("create Documents");
+        clear_row_content_nodes();
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let start = home.clone();
+        let driver_start = home;
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            if let Some(offscreen) = harness.platform().offscreens().first() {
+                offscreen.set_a11y_listener(true);
+            }
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(16);
+
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while browser.read_untracked(|state| state.tab().rows.is_empty()) {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for Home directory rows to load"
+                );
+                harness.advance(Duration::from_millis(25));
+                harness.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            harness.settle(8);
+
+            // Default column widths match GPUI `main:table.rs:42-60, 500-520` while full-width
+            // `.gds-files-row-content` spans `table_viewport_width()`.
+            let viewport_w = browser.table_viewport_width();
+            let expected_name_w = (viewport_w * 0.45).clamp(180.0, 500.0);
+            assert!((browser.column_width(Column::Name) - expected_name_w).abs() < 0.5);
+            assert!((browser.column_width(Column::Modified) - 160.0).abs() < 0.5);
+            assert!((browser.column_width(Column::Type) - 110.0).abs() < 0.5);
+            assert!((browser.column_width(Column::Size) - 100.0).abs() < 0.5);
+            assert!((browser.column_width(Column::Owner) - 130.0).abs() < 0.5);
+            assert!((browser.column_width(Column::Permissions) - 96.0).abs() < 0.5);
+
+            let offscreen = harness
+                .platform()
+                .offscreens()
+                .first()
+                .cloned()
+                .expect("primary offscreen");
+            let slot_heights = virtual_list_slot_heights(&offscreen);
+            assert!(
+                slot_heights.iter().any(|h| (*h - 40.0).abs() < 0.5),
+                "expected 40.0px VirtualList row slot, got {slot_heights:?}"
+            );
+
+            let file_row_node =
+                row_content_node(0).expect("rendered Row::File .gds-files-row-content");
+            let scale = file_row_node.scale().max(1.0);
+            let file_bounds = file_row_node
+                .window_bounds()
+                .expect("measured bounds for Row::File .gds-files-row-content");
+            let file_h = file_bounds.size.height.0 / scale;
+            let file_w = file_bounds.size.width.0 / scale;
+            assert!(
+                (file_h - 36.0).abs() < 0.5,
+                "expected Row::File .gds-files-row-content height == 36.0px inside 40.0px slot, got {file_h}"
+            );
+            assert!(
+                (file_w - viewport_w).abs() < 1.0,
+                "expected .gds-files-row-content width ({file_w}) to span full table viewport ({viewport_w})"
+            );
+
+            // Also verify collection rows (`Row::Place` on `Recent`, which mount directly under
+            // `.gds-files-menu-wrap` without `.gds-files-drag-row-host`) measure `height == 36.0`.
+            clear_row_content_nodes();
+            browser.update(|state| {
+                state
+                    .places
+                    .record(Location::from(driver_start.join("Documents")));
+            });
+            browser.open(Location::Recent);
+            harness.settle(12);
+
+            let place_row_node =
+                row_content_node(0).expect("rendered Row::Place .gds-files-row-content");
+            let place_bounds = place_row_node
+                .window_bounds()
+                .expect("measured bounds for Row::Place .gds-files-row-content");
+            let place_h = place_bounds.size.height.0 / place_row_node.scale().max(1.0);
+            assert!(
+                (place_h - 36.0).abs() < 0.5,
+                "expected Row::Place .gds-files-row-content height == 36.0px on Recent, got {place_h}"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(false);
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::English).expect("English catalog"),
+                );
+                let _prefs =
+                    preferences::Service::install(preferences::Preferences::default(), &scope)
+                        .expect("preferences service");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: start.clone(),
+                        home: start.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("row height layout harness");
     }
 
     #[test]

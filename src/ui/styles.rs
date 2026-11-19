@@ -170,18 +170,28 @@ const STATIC_BASE_CSS: &str = r#"
     align-items: center;
     justify-content: center;
     opacity: 0;
+    pointer-events: none;
 }
 
-.gds-hover-slot:hover .gds-hover-slot__action,
-.gds-hover-slot[data-revealed="true"] .gds-hover-slot__action,
-.gds-nav-item:hover .gds-hover-slot__action {
+.gds-hover-slot[data-has-action="true"]:hover .gds-hover-slot__action,
+.gds-hover-slot[data-has-action="true"][data-revealed="true"] .gds-hover-slot__action,
+.gds-nav-item:not([data-collapsed="true"]):hover .gds-hover-slot[data-has-action="true"] .gds-hover-slot__action,
+.gds-nav-item:not([data-collapsed="true"]):focus-within .gds-hover-slot[data-has-action="true"] .gds-hover-slot__action {
     opacity: 1;
+    pointer-events: auto;
 }
 
-.gds-hover-slot:hover .gds-hover-slot__status,
-.gds-hover-slot[data-revealed="true"] .gds-hover-slot__status,
-.gds-nav-item:hover .gds-hover-slot__status {
+.gds-hover-slot[data-has-action="true"]:hover .gds-hover-slot__status,
+.gds-hover-slot[data-has-action="true"][data-revealed="true"] .gds-hover-slot__status,
+.gds-nav-item:not([data-collapsed="true"]):hover .gds-hover-slot[data-has-action="true"] .gds-hover-slot__status,
+.gds-nav-item:not([data-collapsed="true"]):focus-within .gds-hover-slot[data-has-action="true"] .gds-hover-slot__status {
     opacity: 0;
+}
+
+.gds-nav-item[data-collapsed="true"] .gds-hover-slot,
+.gds-nav-item[data-collapsed="true"] .gds-hover-slot__action {
+    opacity: 0;
+    pointer-events: none;
 }
 
 .gds-corner-action {
@@ -189,11 +199,19 @@ const STATIC_BASE_CSS: &str = r#"
     top: 1px;
     right: 1px;
     opacity: 0;
+    pointer-events: none;
 }
 
 .gds-corner-action[data-revealed="true"],
-.gds-nav-item:hover .gds-corner-action {
+.gds-nav-item[data-collapsed="true"]:hover .gds-corner-action,
+.gds-nav-item[data-collapsed="true"]:focus-within .gds-corner-action {
     opacity: 1;
+    pointer-events: auto;
+}
+
+.gds-nav-item[data-expanded="true"] .gds-corner-action {
+    opacity: 0;
+    pointer-events: none;
 }
 
 .gds-pinned-icon {

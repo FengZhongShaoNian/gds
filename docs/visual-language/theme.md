@@ -1,6 +1,6 @@
 # Shared Themes & Materials
 
-`src/appearance/theme` resolves external, built-in, and user-authored color palettes into one source-agnostic semantic snapshot (`Palette` / `Colors`) consumed by GPUI Kit and GDS components. External themes supply colors only—never layout metrics, corner radii, or widget chrome.
+`src/appearance/theme` resolves external, built-in, and user-authored color palettes into one source-agnostic semantic snapshot (`Palette` / `Colors`) consumed by `zgui-ui-tokens` (`--zui-*`), Stylo `--gds-*` custom properties, and GDS components. External themes supply colors only—never layout metrics, corner radii, or widget chrome.
 
 ```text
 System (Noctalia / DMS / KDE / GNOME)  |  Built-in TOML  |  Custom User TOML
@@ -9,7 +9,7 @@ System (Noctalia / DMS / KDE / GNOME)  |  Built-in TOML  |  Custom User TOML
                                       ↓
                         Palette / Colors immutable snapshot
                                       ↓
-                        GPUI Kit Theme + GDS components
+                   --zui-* + --gds-* Stylo sheet & GDS components
 ```
 
 ## 1. Theme Sources & Light/Dark Mode
@@ -61,7 +61,7 @@ en-US = "Forest"
 
 ## 2. Semantic Palette & Terminal Mapping
 
-Components read semantic roles from GPUI Kit or `cx.gds().appearance().theme().colors()`:
+Components read semantic roles from `--gds-*` / `--zui-*` Stylo custom properties or `Gds::current().appearance().theme().colors()`:
 
 | GDS Role | Noctalia / DMS (Material 3) Input | KDE Plasma Input | Contract |
 | --- | --- | --- | --- |
@@ -80,6 +80,6 @@ Components read semantic roles from GPUI Kit or `cx.gds().appearance().theme().c
 
 ## 3. Surface Opacity, Corners & Hot-Reload
 
-- **Surface opacity**: Configured independently for **Main background** and **Sidebar background** (`100%` / `85%` default on floating desktops; `85%` / `50%` on recognized tiling compositors). Applied via `RootPlugin::style` so native dialogs, menus, tooltips, and text/icons remain `100%` opaque. Opacity changes update surface alpha without re-parsing theme files.
+- **Surface opacity**: Configured independently for **Main background** and **Sidebar background** (`100%` / `85%` default on floating desktops; `85%` / `50%` on recognized tiling compositors). Applied via `:root` `--gds-content-bg` / `--gds-sidebar-bg` custom properties (`Appearance::install_window_sheet`) so native dialogs, menus, tooltips, and text/icons remain `100%` opaque. Opacity changes update surface alpha without re-parsing theme files.
 - **Rounded window corners**: Opt-in per app (`appearance.rounded_corners`, default `false`). Applies a `10 px` radius to Linux client-side frames, content clip, and input hit regions while keeping maximized, fullscreen, and tiled edges square.
 - **Observer & hot-reload (`theme::Observer`)**: Watches parent directories and symlink targets for Noctalia and DMS exports, Noctalia IPC socket start/stop, `kdeglobals`, GNOME dconf/Portal signals, GTK 3/4 CSS, and active custom TOML files. Parsing runs off the UI thread; invalid edits report an error and retain the last valid theme snapshot, and stale async loads never overwrite a newer source selection.

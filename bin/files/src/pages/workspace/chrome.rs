@@ -416,6 +416,11 @@ pub(super) const CHROME_CSS: &str = css!(
         pointer-events: auto;
     }
 
+    .gds-nav-item[data-collapsed="true"] .gds-files-tab-action {
+        opacity: 0;
+        pointer-events: none;
+    }
+
     .gds-files-volume-item.gds-files-volume-item {
         padding: 6px 0px;
         min-height: 38px;
@@ -2133,6 +2138,13 @@ impl Browser {
                 box(
                     class = "gds-files-tab-action",
                     attr:data-revealed = move || expanded_action_revealed.get().then(|| "true".to_owned()),
+                    style:visibility = move || {
+                        Some(if presentation.get().actions_visible() {
+                            "visible".to_owned()
+                        } else {
+                            "hidden".to_owned()
+                        })
+                    },
                     on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
                         ev.stop_propagation();
                         if let Some(ref handler) = no_drag_exp {

@@ -178,31 +178,45 @@ const NAVIGATION_CSS: &str = css!(
         transition: opacity var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
     }
     .gds-hover-slot__action {
+        opacity: 0;
         pointer-events: none;
         transition: opacity var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
     }
     .gds-hover-slot[data-has-action=\"true\"]:hover .gds-hover-slot__action,
     .gds-hover-slot[data-has-action=\"true\"][data-revealed=\"true\"] .gds-hover-slot__action,
-    .gds-nav-item:hover .gds-hover-slot[data-has-action=\"true\"] .gds-hover-slot__action,
-    .gds-nav-item:focus-within .gds-hover-slot[data-has-action=\"true\"] .gds-hover-slot__action {
+    .gds-nav-item:not([data-collapsed=\"true\"]):hover .gds-hover-slot[data-has-action=\"true\"] .gds-hover-slot__action,
+    .gds-nav-item:not([data-collapsed=\"true\"]):focus-within .gds-hover-slot[data-has-action=\"true\"] .gds-hover-slot__action {
         opacity: 1;
         pointer-events: auto;
     }
     .gds-hover-slot:not([data-has-action=\"true\"]):hover .gds-hover-slot__status,
     .gds-hover-slot:not([data-has-action=\"true\"])[data-revealed=\"true\"] .gds-hover-slot__status,
-    .gds-nav-item:hover .gds-hover-slot:not([data-has-action=\"true\"]) .gds-hover-slot__status {
+    .gds-nav-item:not([data-collapsed=\"true\"]):hover .gds-hover-slot:not([data-has-action=\"true\"]) .gds-hover-slot__status {
         opacity: 1;
     }
+    .gds-nav-item[data-collapsed=\"true\"] .gds-hover-slot,
+    .gds-nav-item[data-collapsed=\"true\"] .gds-hover-slot__action {
+        opacity: 0;
+        pointer-events: none;
+    }
     .gds-corner-action {
+        position: absolute;
+        top: 1px;
+        right: 1px;
+        opacity: 0;
         pointer-events: none;
         z-index: 2;
         transition: opacity var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
     }
     .gds-corner-action[data-revealed=\"true\"],
-    .gds-nav-item:hover .gds-corner-action,
-    .gds-nav-item:focus-within .gds-corner-action {
+    .gds-nav-item[data-collapsed=\"true\"]:hover .gds-corner-action,
+    .gds-nav-item[data-collapsed=\"true\"]:focus-within .gds-corner-action {
         opacity: 1;
         pointer-events: auto;
+    }
+    .gds-nav-item[data-expanded=\"true\"] .gds-corner-action {
+        opacity: 0;
+        pointer-events: none;
     }
     .gds-corner-button {
         width: 16px;
@@ -318,6 +332,15 @@ pub fn NavItem(
             attr:data-drop-target = move || drop_target.get().then(|| "true".to_owned()),
             attr:data-disabled = move || disabled.get().then(|| "true".to_owned()),
             attr:data-compact = move || compact.get().then(|| "true".to_owned()),
+            attr:data-collapsed = move || {
+                effective_presentation
+                    .get()
+                    .is_collapsed()
+                    .then(|| "true".to_owned())
+            },
+            attr:data-expanded = move || {
+                (!effective_presentation.get().is_collapsed()).then(|| "true".to_owned())
+            },
             a11y:role = Role::Button,
             a11y:selected = move || selected.get(),
             a11y:disabled = move || disabled.get(),
@@ -396,6 +419,7 @@ mod tests {
         NavItemActionsProps, NavItemContentProps, NavItemDetailsProps, NavItemHeaderProps,
         NavItemLabelProps, NavItemProps, corner_action, corner_button, hover_action, pinned_icon,
     };
+    use crate::ui::button::IconButtonProps;
     use crate::ui::icon::{IconName, IconProps};
     use crate::ui::sidebar::{
         SideBarProps, SideBarSectionContentProps, SideBarSectionProps, SidebarPresentation,
@@ -508,8 +532,8 @@ mod tests {
                 }
             }
 
-            // Click the revealed corner close button at top-right of the 240x38 item.
-            let corner_pos = Point::new(CssPx(230.0), CssPx(9.0));
+            // Click the revealed corner close button at top-right of the 38x38 collapsed item.
+            let corner_pos = Point::new(CssPx(30.0), CssPx(9.0));
             harness.deliver_to_first(SurfaceEvent::Pointer {
                 action: PointerAction::Pressed,
                 event: PointerEvent::mouse(corner_pos).with_button(PointerButton::Primary),
@@ -524,8 +548,8 @@ mod tests {
             });
             harness.settle(16);
 
-            // Middle-click the row center -> invokes on_middle_click without firing primary on:click.
-            let center_pos = Point::new(CssPx(80.0), CssPx(19.0));
+            // Middle-click the row body -> invokes on_middle_click without firing primary on:click.
+            let center_pos = Point::new(CssPx(12.0), CssPx(26.0));
             harness.deliver_to_first(SurfaceEvent::Pointer {
                 action: PointerAction::Pressed,
                 event: PointerEvent::mouse(center_pos).with_button(PointerButton::Middle),
@@ -559,10 +583,11 @@ mod tests {
                     UnsyncCallback::new(move |()| corner_clicks.set(corner_clicks.get() + 1)),
                 );
                 view! {
-                    column(style:width = "240px") {
+                    column(style:width = "38px") {
                         NavItem(
                             selected = true,
                             drop_target = true,
+                            presentation = SidebarPresentation::from_collapsed(true),
                             a11y:label = "Inbox",
                             on_middle_click = UnsyncCallback::new(move |()| {
                                 middle_clicks.set(middle_clicks.get() + 1);
@@ -685,5 +710,172 @@ mod tests {
                 }
             })
             .expect("collapsed geometry test runs");
+    }
+
+    #[test]
+    fn corner_action_is_suppressed_when_expanded_and_reveals_on_collapsed_hover() {
+        let row_clicks = Rc::new(Cell::new(0usize));
+        let expanded_clicks = Rc::new(Cell::new(0usize));
+        let corner_clicks = Rc::new(Cell::new(0usize));
+        let pres_slot: Arc<
+            Mutex<Option<RwSignal<SidebarPresentation, zgui::reactive::LocalStorage>>>,
+        > = Arc::new(Mutex::new(None));
+        let revealed_slot: Arc<Mutex<Option<RwSignal<bool, zgui::reactive::LocalStorage>>>> =
+            Arc::new(Mutex::new(None));
+
+        let row_clicks_driver = Rc::clone(&row_clicks);
+        let expanded_clicks_driver = Rc::clone(&expanded_clicks);
+        let corner_clicks_driver = Rc::clone(&corner_clicks);
+        let row_clicks_view = Rc::clone(&row_clicks);
+        let expanded_clicks_view = Rc::clone(&expanded_clicks);
+        let corner_clicks_view = Rc::clone(&corner_clicks);
+        let pres_driver = Arc::clone(&pres_slot);
+        let revealed_driver = Arc::clone(&revealed_slot);
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(260.0),
+                DevicePx(120.0),
+            )));
+            harness.settle(32);
+
+            // 1. Expanded (240px SideBar -> 220px NavItem at x=10..230, y=0..38):
+            // Hovering the row (and even forcing revealed=true on CornerAction) must NEVER
+            // expose or hit-test CornerButton; clicking the shared top-right action overlap
+            // at (221, 9) must hit the expanded HoverAction IconButton instead.
+            let expanded_action_pos = Point::new(CssPx(221.0), CssPx(9.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Moved,
+                event: PointerEvent::mouse(expanded_action_pos),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(expanded_action_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(expanded_action_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+            assert_eq!(
+                corner_clicks_driver.get(),
+                0,
+                "expanded NavItem hover must never activate CornerAction"
+            );
+            assert_eq!(
+                expanded_clicks_driver.get(),
+                1,
+                "expanded NavItem hover must activate trailing HoverAction"
+            );
+            assert_eq!(row_clicks_driver.get(), 0);
+
+            // 2. Collapse to 58px rail (NavItem at x=10..48, y=0..38) with revealed=false:
+            // Hovering the collapsed row must reveal CornerAction at (39, 9) while keeping
+            // trailing HoverAction hidden.
+            if let Some(rev) = *revealed_driver.lock().expect("lock") {
+                rev.set(false);
+            }
+            if let Some(pres) = *pres_driver.lock().expect("lock") {
+                pres.set(SidebarPresentation::from_collapsed(true));
+                flush();
+            }
+            harness.settle(32);
+
+            let collapsed_corner_pos = Point::new(CssPx(39.0), CssPx(9.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Moved,
+                event: PointerEvent::mouse(collapsed_corner_pos),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(collapsed_corner_pos)
+                    .with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(collapsed_corner_pos)
+                    .with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(260.0, 120.0)
+            .run_on(driver, move || {
+                let row_clicks = Rc::clone(&row_clicks_view);
+                let expanded_clicks = Rc::clone(&expanded_clicks_view);
+                let corner_clicks = Rc::clone(&corner_clicks_view);
+
+                let pres = RwSignal::new_local(SidebarPresentation::from_width(240.0, 240.0, 58.0));
+                let corner_revealed = RwSignal::new_local(true);
+                *pres_slot.lock().expect("lock") = Some(pres);
+                *revealed_slot.lock().expect("lock") = Some(corner_revealed);
+
+                let expanded_close = AnyView::new(view! {
+                    IconButton(
+                        icon = IconName::X,
+                        label = "Close expanded",
+                        on:click = move |ev: &mut zgui::view::EventCx<'_, zgui::view::events::Click>| {
+                            ev.stop_propagation();
+                            expanded_clicks.set(expanded_clicks.get() + 1);
+                        }
+                    )
+                });
+                let collapsed_close = corner_button(
+                    IconName::X,
+                    "Close collapsed",
+                    UnsyncCallback::new(move |()| corner_clicks.set(corner_clicks.get() + 1)),
+                );
+
+                view! {
+                    SideBar(presentation = Signal::from(pres)) {
+                        SideBarSection(style:padding = "0 10px") {
+                            SideBarSectionContent {
+                                NavItem(
+                                    presentation = Signal::from(pres),
+                                    a11y:label = "folder_a",
+                                    on:click = move |_| row_clicks.set(row_clicks.get() + 1)
+                                ) {
+                                    {pinned_icon(IconName::Folder, false)}
+                                    NavItemContent {
+                                        NavItemHeader {
+                                            NavItemLabel { "folder_a" }
+                                        }
+                                    }
+                                    NavItemActions {
+                                        {hover_action(view! { box() }, Some(expanded_close))}
+                                    }
+                                    {corner_action(collapsed_close, corner_revealed.into())}
+                                }
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("expanded vs collapsed corner action test runs");
+
+        assert_eq!(expanded_clicks.get(), 1);
+        assert_eq!(corner_clicks.get(), 1);
+        assert_eq!(row_clicks.get(), 0);
     }
 }

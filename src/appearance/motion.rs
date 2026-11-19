@@ -15,6 +15,8 @@ pub const INLINE_DURATION_MS: u64 = 140;
 pub const WORKSPACE_DURATION_MS: u64 = 160;
 pub const WORKSPACE_EASING: &str = "cubic-bezier(0, 0, 0.2, 1)";
 const SETTLE_EPSILON: f32 = 1e-4;
+const INITIAL_FRAME_STEP: Duration = Duration::from_millis(8);
+const MIN_BACKDATE_DURATION: Duration = Duration::from_millis(32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Transition {
@@ -149,7 +151,13 @@ fn arm_frame(
             } else {
                 st.pending = None;
                 st.last_frame = Some(at);
-                let origin = *st.start.get_or_insert(at);
+                let origin = *st.start.get_or_insert_with(|| {
+                    if duration >= MIN_BACKDATE_DURATION {
+                        Timestamp::from_origin(at.since_origin().saturating_sub(INITIAL_FRAME_STEP))
+                    } else {
+                        at
+                    }
+                });
                 let elapsed = at.saturating_since(origin);
                 if elapsed >= duration || duration.is_zero() {
                     let target_value = st.to;
@@ -278,4 +286,163 @@ pub fn use_transition(
     });
 
     current.into()
+}
+
+#[cfg(test)]
+mod first_frame_tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use zgui::app::Fonts;
+    use zgui::atlas::{SinkError, TextureFormat, TextureId, TextureSink};
+    use zgui::geom::{Device, DevicePx, Rect, Size};
+    use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
+    use zgui::prelude::*;
+    use zgui::reactive::{LocalStorage, RwSignal, Signal, flush};
+    use zgui::render::{
+        ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities, RenderTarget,
+        Renderer, TextureHandle,
+    };
+    use zgui::runtime::AppError;
+    use zgui::view;
+    use zgui_platform_headless::Harness;
+
+    use super::{WORKSPACE_DURATION_MS, use_transition};
+    use crate::app::Gds;
+    use crate::service::task_manager::Scope;
+
+    struct NoopSink;
+
+    impl TextureSink for NoopSink {
+        fn create_texture(
+            &mut self,
+            _: TextureId,
+            _: Size<i32, Device>,
+            _: TextureFormat,
+        ) -> Result<(), SinkError> {
+            Ok(())
+        }
+
+        fn write_texture(
+            &mut self,
+            _: TextureId,
+            _: Rect<i32, Device>,
+            _: TextureFormat,
+            _: &[u8],
+        ) -> Result<(), SinkError> {
+            Ok(())
+        }
+
+        fn destroy_texture(&mut self, _: TextureId) {}
+    }
+
+    struct NoopRenderer {
+        target: Option<RenderTarget>,
+        sink: NoopSink,
+    }
+
+    impl Renderer for NoopRenderer {
+        fn capabilities(&self) -> RenderCapabilities {
+            RenderCapabilities::MINIMAL
+        }
+
+        fn configure(&mut self, target: RenderTarget) {
+            self.target = Some(target);
+        }
+
+        fn target(&self) -> Option<RenderTarget> {
+            self.target
+        }
+
+        fn draw(&mut self, _: &zgui::scene::Scene, _: &zgui::bits::DamageSet) -> FrameOutcome {
+            FrameOutcome::Presented(FrameStats::default())
+        }
+
+        fn register_external(&mut self, _: ExternalTexture) -> TextureHandle {
+            TextureHandle(1)
+        }
+
+        fn release_external(&mut self, _: TextureHandle) {}
+
+        fn memory(&self) -> MemoryReport {
+            MemoryReport::ZERO
+        }
+
+        fn texture_sink(&mut self) -> &mut dyn TextureSink {
+            &mut self.sink
+        }
+    }
+
+    fn noop_renderer(
+        _: &Arc<dyn Surface>,
+        target: RenderTarget,
+    ) -> Result<Box<dyn Renderer>, AppError> {
+        Ok(Box::new(NoopRenderer {
+            target: Some(target),
+            sink: NoopSink,
+        }))
+    }
+
+    #[test]
+    fn first_frame_from_rest_advances_immediately_without_dead_stall() {
+        let target_slot: Rc<RefCell<Option<RwSignal<f32, LocalStorage>>>> =
+            Rc::new(RefCell::new(None));
+        let value_slot: Rc<RefCell<Option<Signal<f32, LocalStorage>>>> =
+            Rc::new(RefCell::new(None));
+
+        let target_driver = Rc::clone(&target_slot);
+        let value_driver = Rc::clone(&value_slot);
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(400.0),
+                DevicePx(300.0),
+            )));
+            harness.settle(16);
+            harness.advance(Duration::from_millis(32));
+            harness.settle(8);
+
+            let target = target_driver.borrow().expect("target signal");
+            let animated = value_driver.borrow().expect("animated signal");
+            assert_eq!(animated.get_untracked(), 0.0);
+
+            // Trigger 160ms transition from rest and advance exactly ONE 16ms frame.
+            target.set(280.0);
+            flush();
+            harness.run_for(Duration::from_millis(16), Duration::from_millis(16));
+            let first_frame = animated.get_untracked();
+            assert!(
+                first_frame > 20.0 && first_frame < 120.0,
+                "first rendered frame after input must already advance smoothly (no 0.0 stall), got {first_frame}"
+            );
+
+            harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+            assert_eq!(animated.get_untracked(), 280.0);
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(400.0, 300.0)
+            .run_on(driver, move || {
+                let _gds = Gds::install(Scope::default());
+                let target = RwSignal::new_local(0.0_f32);
+                let animated = use_transition(target.into(), WORKSPACE_DURATION_MS);
+                *target_slot.borrow_mut() = Some(target);
+                *value_slot.borrow_mut() = Some(animated);
+                view! {
+                    box(
+                        style:width = move || Some(format!("{:.2}px", animated.get())),
+                        style:height = "38px"
+                    ) {}
+                }
+            })
+            .expect("first-frame motion test ran");
+    }
 }

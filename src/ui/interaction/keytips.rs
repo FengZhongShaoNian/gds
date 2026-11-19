@@ -10,9 +10,11 @@
 mod tests;
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Duration;
 
-use zgui::geom::{Css, CssPx, Point, Rect, Size};
+use zgui::geom::{Css, CssPx, Device, DevicePx, Point, Rect, Size};
 use zgui::prelude::*;
 use zgui::reactive::{
     LocalStorage, RenderEffect, RwSignal, Signal, on_cleanup_local, provide_local_context,
@@ -186,6 +188,7 @@ pub struct StagedHint {
     pub enabled: Signal<bool, LocalStorage>,
     pub dialog_scope: Option<u64>,
     pub badge_ref: NodeRef,
+    observed_target: Signal<Option<Rect<DevicePx, Device>>, LocalStorage>,
 }
 
 /// Window-local passive modifier-hold state and staged keytip registry.
@@ -284,6 +287,12 @@ impl KeytipRegistry {
         self.next_hint_id.set(id.saturating_add(1));
         let dialog_scope = DialogScopeId::current().map(|s| s.0);
         let badge_ref = NodeRef::new();
+        let is_held = self.held();
+        let observed_target = if current_host().is_some() {
+            target.observe_border_box_while(move || is_held.get().is_some())
+        } else {
+            Signal::stored_local(None)
+        };
 
         self.hints.update(|list| {
             list.retain(|entry| entry.target != target || entry.shortcut != shortcut);
@@ -295,6 +304,7 @@ impl KeytipRegistry {
                 enabled,
                 dialog_scope,
                 badge_ref,
+                observed_target,
             });
         });
 
@@ -760,13 +770,21 @@ pub fn use_inline_transition(
                 let start = match anim.started_at {
                     Some(start) => start,
                     None => {
-                        let base = anim.last_frame_at.unwrap_or(at);
+                        let base = anim.last_frame_at.unwrap_or_else(|| {
+                            if duration_ms >= 32 {
+                                Timestamp::from_origin(
+                                    at.since_origin().saturating_sub(Duration::from_millis(8)),
+                                )
+                            } else {
+                                at
+                            }
+                        });
                         anim.started_at = Some(base);
                         base
                     }
                 };
                 anim.last_frame_at = Some(at);
-                let elapsed_secs = (at - start).as_secs_f32();
+                let elapsed_secs = at.saturating_since(start).as_secs_f32();
                 let total_secs = (duration_ms as f32) / 1000.0;
                 let progress = (elapsed_secs / total_secs).clamp(0.0, 1.0);
                 if progress >= 1.0 {
@@ -853,31 +871,265 @@ pub(crate) fn install_keytip_stylesheet() {
     }
 }
 
+const POSITION_EPSILON: f32 = 0.05;
+
 #[derive(Clone)]
-struct PositionedKeytip {
+struct VisibleKeytip {
     id: u64,
     badge_ref: NodeRef,
-    left: f32,
-    top: f32,
     label: String,
 }
 
-fn render_positioned_keytip(item: PositionedKeytip) -> AnyView {
-    let left = format!("{:.1}px", item.left.round());
-    let top = format!("{:.1}px", item.top.round());
+fn render_positioned_keytip(
+    item: VisibleKeytip,
+    positions: RwSignal<HashMap<u64, (f32, f32)>, LocalStorage>,
+) -> AnyView {
+    let id = item.id;
     let aria = item.label.clone();
     AnyView::new(view! {
         box(
             node_ref = item.badge_ref,
             class = "gds-keytip-floating",
-            style:left = left,
-            style:top = top,
+            style:left = move || {
+                positions.with(|map| map.get(&id).map(|(x, _)| format!("{:.1}px", x.round())))
+            },
+            style:top = move || {
+                positions.with(|map| map.get(&id).map(|(_, y)| format!("{:.1}px", y.round())))
+            },
             a11y:role = Role::Label,
             a11y:label = aria,
         ) {
             text(class = "gds-keytip-badge") {{item.label}}
         }
     })
+}
+
+fn sample_keytips(
+    host_ref: NodeRef,
+    held_mod: HeldModifier,
+    active_modals: &[u64],
+    staged: &[StagedHint],
+    tracked: bool,
+) -> (Vec<VisibleKeytip>, HashMap<u64, (f32, f32)>) {
+    if tracked {
+        let _ = host_ref.get();
+    }
+    let window_root = host_ref.window_root();
+    let toast_occlusion = crate::ui::feedback::notifications::active_stack_occlusion(
+        window_root.and_then(|r| r.get_untracked()),
+    );
+    let content = window_root
+        .and_then(|root| {
+            let bounds = root.window_bounds()?;
+            let scale = root.scale().max(0.01);
+            Some(Rect::new(
+                Point::new(
+                    CssPx(bounds.origin.x.0 / scale),
+                    CssPx(bounds.origin.y.0 / scale),
+                ),
+                Size::new(
+                    CssPx(bounds.size.width.0 / scale),
+                    CssPx(bounds.size.height.0 / scale),
+                ),
+            ))
+        })
+        .unwrap_or_else(|| {
+            Rect::new(
+                Point::new(CssPx(0.0), CssPx(0.0)),
+                Size::new(CssPx(1280.0), CssPx(800.0)),
+            )
+        });
+
+    let mut candidates_list = Vec::new();
+    for entry in staged {
+        if !scope_allows(active_modals, entry.dialog_scope) {
+            continue;
+        }
+        let is_enabled = if tracked {
+            entry.enabled.get()
+        } else {
+            entry.enabled.get_untracked()
+        };
+        if !is_enabled {
+            continue;
+        }
+        let Some(label) = entry.shortcut.compact_label(held_mod) else {
+            continue;
+        };
+        if tracked {
+            let _ = entry.observed_target.get();
+        }
+        let Some(dev_bounds) = entry.target.window_bounds() else {
+            continue;
+        };
+        let scale = entry.target.scale().max(0.01);
+        let anchor = Rect::new(
+            Point::new(
+                CssPx(dev_bounds.origin.x.0 / scale),
+                CssPx(dev_bounds.origin.y.0 / scale),
+            ),
+            Size::new(
+                CssPx(dev_bounds.size.width.0 / scale),
+                CssPx(dev_bounds.size.height.0 / scale),
+            ),
+        );
+        if anchor.size.width.0 <= 0.0
+            || anchor.size.height.0 <= 0.0
+            || !rects_intersect(anchor, content)
+        {
+            continue;
+        }
+
+        let badge_size = entry
+            .badge_ref
+            .window_bounds()
+            .map(|b| {
+                let s = entry.badge_ref.scale().max(0.01);
+                Size::new(
+                    CssPx((b.size.width.0 / s).ceil()),
+                    CssPx((b.size.height.0 / s).ceil()),
+                )
+            })
+            .filter(|sz| sz.width.0 > 1.0 && sz.height.0 > 1.0)
+            .unwrap_or_else(|| estimated_badge_size(&label));
+
+        if let Some((toast_ref, toast_rect)) = toast_occlusion {
+            let is_toast_hint = entry.target == toast_ref
+                || entry
+                    .target
+                    .get_untracked()
+                    .is_some_and(|id| toast_ref.contains(id));
+            if !is_toast_hint {
+                let control_occluded = anchor.size.width.0 <= toast_rect.size.width.0
+                    && anchor.size.height.0 <= toast_rect.size.height.0
+                    && rects_intersect(anchor, toast_rect);
+                let slot = LabelSlot {
+                    anchor,
+                    size: badge_size,
+                    placement: entry.placement,
+                };
+                let badge_occluded = candidates(slot, content).first().is_some_and(|origin| {
+                    rects_intersect(Rect::new(*origin, badge_size), toast_rect)
+                });
+                if control_occluded || badge_occluded {
+                    continue;
+                }
+            }
+        }
+
+        candidates_list.push((
+            entry.id,
+            entry.badge_ref,
+            entry.placement,
+            label,
+            anchor,
+            badge_size,
+        ));
+    }
+
+    // Deterministic visual order: top-to-bottom, then left-to-right, then id.
+    candidates_list.sort_by(|left, right| {
+        left.4
+            .origin
+            .y
+            .0
+            .total_cmp(&right.4.origin.y.0)
+            .then_with(|| left.4.origin.x.0.total_cmp(&right.4.origin.x.0))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    let slots: Vec<LabelSlot> = candidates_list
+        .iter()
+        .map(|(_, _, placement, _, anchor, size)| LabelSlot {
+            anchor: *anchor,
+            size: *size,
+            placement: *placement,
+        })
+        .collect();
+
+    let origins = place_labels(&slots, content);
+    let mut next_items = Vec::with_capacity(candidates_list.len());
+    let mut next_positions = HashMap::with_capacity(candidates_list.len());
+    for ((id, badge_ref, _, label, _, _), pos) in candidates_list.into_iter().zip(origins) {
+        next_positions.insert(id, (pos.x.0, pos.y.0));
+        next_items.push(VisibleKeytip {
+            id,
+            badge_ref,
+            label,
+        });
+    }
+    (next_items, next_positions)
+}
+
+fn commit_keytip_sample(
+    visible_items: RwSignal<Vec<VisibleKeytip>, LocalStorage>,
+    positions: RwSignal<HashMap<u64, (f32, f32)>, LocalStorage>,
+    next_items: Vec<VisibleKeytip>,
+    next_positions: HashMap<u64, (f32, f32)>,
+) {
+    let positions_changed = positions.with_untracked(|cur| {
+        cur.len() != next_positions.len()
+            || next_positions.iter().any(|(id, (nx, ny))| {
+                cur.get(id).is_none_or(|(cx, cy)| {
+                    (nx - cx).abs() > POSITION_EPSILON || (ny - cy).abs() > POSITION_EPSILON
+                })
+            })
+    });
+    if positions_changed {
+        positions.set(next_positions);
+    }
+
+    let items_changed = visible_items.with_untracked(|cur| {
+        cur.len() != next_items.len()
+            || cur
+                .iter()
+                .zip(&next_items)
+                .any(|(a, b)| a.id != b.id || a.label != b.label)
+    });
+    if items_changed {
+        visible_items.set(next_items);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn schedule_keytip_frame(
+    timers: &Timers,
+    frame_slot: &Rc<RefCell<Option<FrameHandle>>>,
+    host_ref: NodeRef,
+    effective_held: Signal<Option<HeldModifier>, LocalStorage>,
+    modal_scopes: RwSignal<Vec<u64>, LocalStorage>,
+    hints: RwSignal<Vec<StagedHint>, LocalStorage>,
+    visible_items: RwSignal<Vec<VisibleKeytip>, LocalStorage>,
+    positions: RwSignal<HashMap<u64, (f32, f32)>, LocalStorage>,
+) {
+    if frame_slot.borrow().is_some() {
+        return;
+    }
+    let timers_next = timers.clone();
+    let slot_cb = Rc::clone(frame_slot);
+    let handle = timers.request_frame(move |_at| {
+        slot_cb.borrow_mut().take();
+        let Some(held_mod) = effective_held.get_untracked() else {
+            commit_keytip_sample(visible_items, positions, Vec::new(), HashMap::new());
+            return;
+        };
+        let active_modals = modal_scopes.get_untracked();
+        let staged = hints.get_untracked();
+        let (next_items, next_positions) =
+            sample_keytips(host_ref, held_mod, &active_modals, &staged, false);
+        commit_keytip_sample(visible_items, positions, next_items, next_positions);
+        schedule_keytip_frame(
+            &timers_next,
+            &slot_cb,
+            host_ref,
+            effective_held,
+            modal_scopes,
+            hints,
+            visible_items,
+            positions,
+        );
+    });
+    *frame_slot.borrow_mut() = Some(handle);
 }
 
 /// In-flow `140ms` width-animated keytip suffix rendered beside text [`crate::ui::button::Button`] labels.
@@ -1074,6 +1326,47 @@ pub fn KeytipHost(
     });
 
     let effective_held = registry.held();
+    let visible_items: RwSignal<Vec<VisibleKeytip>, LocalStorage> = RwSignal::new_local(Vec::new());
+    let positions: RwSignal<HashMap<u64, (f32, f32)>, LocalStorage> =
+        RwSignal::new_local(HashMap::new());
+    let timers = Timers::current();
+    let tracking_frame: Rc<RefCell<Option<FrameHandle>>> = Rc::new(RefCell::new(None));
+
+    let tracking_fx = {
+        let tracking_frame = Rc::clone(&tracking_frame);
+        let timers = timers.clone();
+        RenderEffect::new(move |_| {
+            let Some(held_mod) = effective_held.get() else {
+                let pending = tracking_frame.borrow_mut().take();
+                drop(pending);
+                commit_keytip_sample(visible_items, positions, Vec::new(), HashMap::new());
+                return;
+            };
+            let active_modals = modal_scopes.get();
+            let staged = hints.get();
+            let (next_items, next_positions) =
+                sample_keytips(host_ref, held_mod, &active_modals, &staged, true);
+            commit_keytip_sample(visible_items, positions, next_items, next_positions);
+            if let Some(ref timers) = timers {
+                schedule_keytip_frame(
+                    timers,
+                    &tracking_frame,
+                    host_ref,
+                    effective_held,
+                    modal_scopes,
+                    hints,
+                    visible_items,
+                    positions,
+                );
+            }
+        })
+    };
+
+    on_cleanup_local(move || {
+        drop(tracking_fx);
+        let pending = tracking_frame.borrow_mut().take();
+        drop(pending);
+    });
 
     view! {
         box(node_ref = host_ref, class = "gds-keytip-host") {
@@ -1081,149 +1374,8 @@ pub fn KeytipHost(
             Portal(layer = OverlayLayer::Toast) {
                 Show(when = move || effective_held.get().is_some()) {
                     box(class = "gds-keytip-overlay") {
-                        for item in move || {
-                            let Some(held_mod) = effective_held.get() else {
-                                return Vec::new();
-                            };
-                            let active_modals = modal_scopes.get();
-                            let staged = hints.get();
-
-                            let window_root = host_ref.window_root();
-                            let toast_occlusion =
-                                crate::ui::feedback::notifications::active_stack_occlusion(
-                                    window_root.and_then(|r| r.get_untracked()),
-                                );
-                            let content = window_root
-                                .and_then(|root| {
-                                    let bounds = root.window_bounds()?;
-                                    let scale = root.scale().max(0.01);
-                                    Some(Rect::new(
-                                        Point::new(
-                                            CssPx(bounds.origin.x.0 / scale),
-                                            CssPx(bounds.origin.y.0 / scale),
-                                        ),
-                                        Size::new(
-                                            CssPx(bounds.size.width.0 / scale),
-                                            CssPx(bounds.size.height.0 / scale),
-                                        ),
-                                    ))
-                                })
-                                .unwrap_or_else(|| {
-                                    Rect::new(
-                                        Point::new(CssPx(0.0), CssPx(0.0)),
-                                        Size::new(CssPx(1280.0), CssPx(800.0)),
-                                    )
-                                });
-
-                            let mut candidates_list = Vec::new();
-                            for entry in staged {
-                                if !scope_allows(&active_modals, entry.dialog_scope) {
-                                    continue;
-                                }
-                                if !entry.enabled.get() {
-                                    continue;
-                                }
-                                let Some(label) = entry.shortcut.compact_label(held_mod) else {
-                                    continue;
-                                };
-                                let Some(dev_bounds) = entry.target.window_bounds() else {
-                                    continue;
-                                };
-                                let scale = entry.target.scale().max(0.01);
-                                let anchor = Rect::new(
-                                    Point::new(
-                                        CssPx(dev_bounds.origin.x.0 / scale),
-                                        CssPx(dev_bounds.origin.y.0 / scale),
-                                    ),
-                                    Size::new(
-                                        CssPx(dev_bounds.size.width.0 / scale),
-                                        CssPx(dev_bounds.size.height.0 / scale),
-                                    ),
-                                );
-                                if anchor.size.width.0 <= 0.0 || anchor.size.height.0 <= 0.0 {
-                                    continue;
-                                }
-
-                                let badge_size = entry
-                                    .badge_ref
-                                    .window_bounds()
-                                    .map(|b| {
-                                        let s = entry.badge_ref.scale().max(0.01);
-                                        Size::new(
-                                            CssPx((b.size.width.0 / s).ceil()),
-                                            CssPx((b.size.height.0 / s).ceil()),
-                                        )
-                                    })
-                                    .filter(|sz| sz.width.0 > 1.0 && sz.height.0 > 1.0)
-                                    .unwrap_or_else(|| estimated_badge_size(&label));
-
-                                if let Some((toast_ref, toast_rect)) = toast_occlusion {
-                                    let is_toast_hint = entry.target == toast_ref
-                                        || entry
-                                            .target
-                                            .get_untracked()
-                                            .is_some_and(|id| toast_ref.contains(id));
-                                    if !is_toast_hint {
-                                        let control_occluded =
-                                            anchor.size.width.0 <= toast_rect.size.width.0
-                                                && anchor.size.height.0 <= toast_rect.size.height.0
-                                                && rects_intersect(anchor, toast_rect);
-                                        let slot = LabelSlot {
-                                            anchor,
-                                            size: badge_size,
-                                            placement: entry.placement,
-                                        };
-                                        let badge_occluded = candidates(slot, content)
-                                            .first()
-                                            .is_some_and(|origin| {
-                                                rects_intersect(
-                                                    Rect::new(*origin, badge_size),
-                                                    toast_rect,
-                                                )
-                                            });
-                                        if control_occluded || badge_occluded {
-                                            continue;
-                                        }
-                                    }
-                                }
-
-                                candidates_list.push((entry, label, anchor, badge_size));
-                            }
-
-                            // Deterministic visual order: top-to-bottom, then left-to-right, then id.
-                            candidates_list.sort_by(|left, right| {
-                                left.2
-                                    .origin
-                                    .y
-                                    .0
-                                    .total_cmp(&right.2.origin.y.0)
-                                    .then_with(|| left.2.origin.x.0.total_cmp(&right.2.origin.x.0))
-                                    .then_with(|| left.0.id.cmp(&right.0.id))
-                            });
-
-                            let slots: Vec<LabelSlot> = candidates_list
-                                .iter()
-                                .map(|(entry, _, anchor, size)| LabelSlot {
-                                    anchor: *anchor,
-                                    size: *size,
-                                    placement: entry.placement,
-                                })
-                                .collect();
-
-                            let origins = place_labels(&slots, content);
-                            candidates_list
-                                .into_iter()
-                                .zip(origins)
-                                .map(|((entry, label, _, _), pos)| PositionedKeytip {
-                                    id: entry.id,
-                                    badge_ref: entry.badge_ref,
-                                    left: pos.x.0,
-                                    top: pos.y.0,
-                                    label,
-                                })
-                                .collect::<Vec<_>>()
-                        }, key = |item| item.id {
-                            {render_positioned_keytip(item)}
+                        for item in move || visible_items.get(), key = |item| (item.id, item.label.clone()) {
+                            {render_positioned_keytip(item, positions)}
                         }
                     }
                 }
@@ -1241,5 +1393,547 @@ pub fn KeytipBadge(
     install_keytip_stylesheet();
     view! {
         text(class = "gds-keytip-badge", class = class) {{chord}}
+    }
+}
+
+#[cfg(test)]
+mod live_tracking_tests {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use zgui::app::Fonts;
+    use zgui::atlas::{SinkError, TextureFormat, TextureId, TextureSink};
+    use zgui::geom::{Device, DevicePx, Rect, Size};
+    use zgui::platform::{AppHandler, PlatformError, Surface, SurfaceEvent};
+    use zgui::prelude::*;
+    use zgui::reactive::{LocalStorage, RwSignal, flush};
+    use zgui::render::{
+        ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities, RenderTarget,
+        Renderer, TextureHandle,
+    };
+    use zgui::runtime::AppError;
+    use zgui::view;
+    use zgui::vocab::{
+        KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, Role, Timestamp,
+    };
+    use zgui_platform_headless::Harness;
+
+    use super::{EDGE_INSET, KeytipHostProps, KeytipRegistry, anchor};
+    use crate::app::Gds;
+    use crate::appearance::motion::{WORKSPACE_DURATION_MS, use_transition};
+    use crate::service::task_manager::Scope;
+    use crate::ui::shortcut::Shortcut;
+
+    struct NoopSink;
+
+    impl TextureSink for NoopSink {
+        fn create_texture(
+            &mut self,
+            _: TextureId,
+            _: Size<i32, Device>,
+            _: TextureFormat,
+        ) -> Result<(), SinkError> {
+            Ok(())
+        }
+
+        fn write_texture(
+            &mut self,
+            _: TextureId,
+            _: Rect<i32, Device>,
+            _: TextureFormat,
+            _: &[u8],
+        ) -> Result<(), SinkError> {
+            Ok(())
+        }
+
+        fn destroy_texture(&mut self, _: TextureId) {}
+    }
+
+    struct NoopRenderer {
+        target: Option<RenderTarget>,
+        sink: NoopSink,
+    }
+
+    impl Renderer for NoopRenderer {
+        fn capabilities(&self) -> RenderCapabilities {
+            RenderCapabilities::MINIMAL
+        }
+
+        fn configure(&mut self, target: RenderTarget) {
+            self.target = Some(target);
+        }
+
+        fn target(&self) -> Option<RenderTarget> {
+            self.target
+        }
+
+        fn draw(&mut self, _: &zgui::scene::Scene, _: &zgui::bits::DamageSet) -> FrameOutcome {
+            FrameOutcome::Presented(FrameStats::default())
+        }
+
+        fn register_external(&mut self, _: ExternalTexture) -> TextureHandle {
+            TextureHandle(1)
+        }
+
+        fn release_external(&mut self, _: TextureHandle) {}
+
+        fn memory(&self) -> MemoryReport {
+            MemoryReport::ZERO
+        }
+
+        fn texture_sink(&mut self) -> &mut dyn TextureSink {
+            &mut self.sink
+        }
+    }
+
+    fn noop_renderer(
+        _: &Arc<dyn Surface>,
+        target: RenderTarget,
+    ) -> Result<Box<dyn Renderer>, AppError> {
+        Ok(Box::new(NoopRenderer {
+            target: Some(target),
+            sink: NoopSink,
+        }))
+    }
+
+    #[derive(Clone, Debug)]
+    struct A11yEntry {
+        role: Role,
+        label: Option<String>,
+        bounds: Option<(f64, f64, f64, f64)>,
+        tx: f64,
+        children: Vec<String>,
+    }
+
+    struct A11yMirror {
+        root: Option<String>,
+        nodes: HashMap<String, A11yEntry>,
+    }
+
+    impl A11yMirror {
+        fn new() -> Self {
+            Self {
+                root: None,
+                nodes: HashMap::new(),
+            }
+        }
+
+        fn sync(&mut self, surface: &zgui_platform_headless::OffscreenSurface) {
+            for update in surface.take_a11y_log() {
+                if let Some(tree) = update.tree {
+                    self.root = Some(format!("{:?}", tree.root));
+                }
+                for (id, node) in update.nodes {
+                    let tx = node.transform().map_or(0.0, |aff| aff.as_coeffs()[4]);
+                    let bounds = node.bounds().map(|b| (b.x0, b.y0, b.x1, b.y1));
+                    let children = node.children().iter().map(|c| format!("{c:?}")).collect();
+                    self.nodes.insert(
+                        format!("{id:?}"),
+                        A11yEntry {
+                            role: node.role(),
+                            label: node.label().map(str::to_owned),
+                            bounds,
+                            tx,
+                            children,
+                        },
+                    );
+                }
+            }
+        }
+
+        fn label_right_edge(&self, expected_label: &str) -> Option<f32> {
+            let root_id = self.root.as_ref()?;
+            Self::find_right_edge(&self.nodes, root_id, 0.0, expected_label)
+        }
+
+        fn find_right_edge(
+            nodes: &HashMap<String, A11yEntry>,
+            id: &str,
+            accum_tx: f64,
+            expected_label: &str,
+        ) -> Option<f32> {
+            let entry = nodes.get(id)?;
+            let next_tx = accum_tx + entry.tx;
+            if entry.role == Role::Label
+                && entry.label.as_deref() == Some(expected_label)
+                && let Some((_, _, x1, _)) = entry.bounds
+            {
+                return Some((next_tx + x1) as f32);
+            }
+            for child in &entry.children {
+                if let Some(found) = Self::find_right_edge(nodes, child, next_tx, expected_label) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+    }
+
+    #[test]
+    fn floating_keytip_badge_tracks_animated_target_every_frame_and_idles_on_release() {
+        let x_slot: Rc<RefCell<Option<RwSignal<f32, LocalStorage>>>> = Rc::new(RefCell::new(None));
+        let smooth_slot: Rc<RefCell<Option<RwSignal<f32, LocalStorage>>>> =
+            Rc::new(RefCell::new(None));
+        let target_slot: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
+        let smooth_target_slot: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
+        let reg_slot: Rc<RefCell<Option<KeytipRegistry>>> = Rc::new(RefCell::new(None));
+
+        let x_driver = Rc::clone(&x_slot);
+        let smooth_driver = Rc::clone(&smooth_slot);
+        let target_driver = Rc::clone(&target_slot);
+        let smooth_target_driver = Rc::clone(&smooth_target_slot);
+        let reg_driver = Rc::clone(&reg_slot);
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(640.0),
+                DevicePx(240.0),
+            )));
+            harness.settle(16);
+
+            let surface = harness.platform().offscreens()[0].clone();
+            let mut a11y = A11yMirror::new();
+            a11y.sync(&surface);
+
+            // 1. Idle when Ctrl/Alt is NOT held: zero request_frame callbacks and 0% CPU.
+            harness.reset_counts();
+            let idle_frames =
+                harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+            assert_eq!(
+                idle_frames, 0,
+                "KeytipHost must schedule zero frames when no modifier is held"
+            );
+
+            let x_sig = x_driver.borrow().expect("x signal");
+            let smooth_sig = smooth_driver.borrow().expect("smooth signal");
+            let target_ref = target_driver.borrow().expect("target ref");
+            let smooth_target_ref = smooth_target_driver.borrow().expect("smooth target ref");
+            let reg = reg_driver.borrow().expect("registry");
+
+            let badge_ref_for = |label_str: &str| -> NodeRef {
+                reg.hints
+                    .get_untracked()
+                    .into_iter()
+                    .find(|h| {
+                        h.shortcut
+                            .compact_label(crate::ui::shortcut::HeldModifier::Ctrl)
+                            == Some(label_str.to_owned())
+                    })
+                    .expect("staged hint")
+                    .badge_ref
+            };
+
+            // 2. Hold Ctrl -> Frame 0 immediately places badge on X=40px without (0,0) flash.
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Pressed,
+                event: KeyEvent::named(NamedKey::Control, PhysicalKey::Code(KeyCode::ControlLeft)),
+                modifiers: Modifiers::CONTROL,
+                timestamp: Timestamp::from_origin(Duration::from_millis(200)),
+            });
+            harness.settle(8);
+            a11y.sync(&surface);
+
+            let badge_i = badge_ref_for("I");
+            let badge_b = badge_ref_for("B");
+
+            let assert_locked = |ctrl: NodeRef,
+                                 badge: NodeRef,
+                                 a11y_tree: &A11yMirror,
+                                 label_txt: &str,
+                                 expected_ctrl_x: Option<f32>| {
+                let scale = ctrl.scale().max(1.0);
+                let ctrl_b = ctrl.window_bounds().expect("control bounds");
+                let badge_b = badge.window_bounds().expect("badge bounds");
+                let ctrl_x = ctrl_b.origin.x.0 / scale;
+                let ctrl_right = (ctrl_b.origin.x.0 + ctrl_b.size.width.0) / scale;
+                let badge_right = (badge_b.origin.x.0 + badge_b.size.width.0) / scale;
+                if let Some(exp_x) = expected_ctrl_x {
+                    assert!(
+                        (ctrl_x - exp_x).abs() <= 0.5,
+                        "expected control X={exp_x}, got {ctrl_x}"
+                    );
+                }
+                let expected_badge_right = ctrl_right - EDGE_INSET;
+                assert!(
+                    (badge_right - expected_badge_right).abs() <= 1.5,
+                    "badge '{label_txt}' window_bounds right={badge_right} lagged behind control right-inset={expected_badge_right}"
+                );
+                let a11y_right = a11y_tree
+                    .label_right_edge(label_txt)
+                    .expect("AT-SPI keytip label node");
+                assert!(
+                    (a11y_right - expected_badge_right).abs() <= 1.5,
+                    "badge '{label_txt}' AT-SPI right={a11y_right} lagged behind control right-inset={expected_badge_right}"
+                );
+            };
+
+            // Verify Frame 0 at X = 40px, then step across frames 40px -> 160px -> 320px!
+            assert_locked(target_ref, badge_i, &a11y, "I", Some(40.0));
+
+            for next_x in [160.0_f32, 320.0_f32] {
+                x_sig.set(next_x);
+                flush();
+                harness.run_for(Duration::from_millis(16), Duration::from_millis(16));
+                a11y.sync(&surface);
+                assert_locked(target_ref, badge_i, &a11y, "I", Some(next_x));
+            }
+
+            // 3. Continuous 160ms `use_transition` animation (40px -> 320px) while Ctrl is held:
+            //    verify badge stays locked onto the moving control on EVERY SINGLE 16ms frame!
+            smooth_sig.set(320.0);
+            flush();
+            let mut prev_x = 40.0_f32;
+            for step_idx in 0..12 {
+                harness.run_for(Duration::from_millis(16), Duration::from_millis(16));
+                a11y.sync(&surface);
+                let cur_x = smooth_target_ref
+                    .window_bounds()
+                    .expect("smooth bounds")
+                    .origin
+                    .x
+                    .0
+                    / smooth_target_ref.scale().max(1.0);
+                if step_idx == 0 {
+                    assert!(
+                        cur_x > prev_x + 5.0,
+                        "first animation frame must advance immediately past {prev_x}, got {cur_x}"
+                    );
+                }
+                assert!(cur_x >= prev_x - 0.1);
+                prev_x = cur_x;
+                assert_locked(smooth_target_ref, badge_b, &a11y, "B", None);
+            }
+            assert!((prev_x - 320.0).abs() <= 0.5);
+
+            // 4. Release Ctrl -> immediately cancels pending FrameHandle and parks idle at 0% CPU.
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Released,
+                event: KeyEvent::named(NamedKey::Control, PhysicalKey::Code(KeyCode::ControlLeft)),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::from_origin(Duration::from_millis(500)),
+            });
+            harness.settle(8);
+            assert!(badge_i.window_bounds().is_none());
+            harness.reset_counts();
+            let post_release_frames =
+                harness.run_for(Duration::from_secs(2), Duration::from_millis(16));
+            assert_eq!(
+                post_release_frames, 0,
+                "releasing Ctrl must cancel FrameHandle immediately with zero extra frames"
+            );
+            assert_eq!(harness.parked_deadline(), None);
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(640.0, 240.0)
+            .run_on(driver, move || {
+                let _gds = Gds::install(Scope::default());
+                let x_sig = RwSignal::new_local(40.0_f32);
+                let smooth_goal = RwSignal::new_local(40.0_f32);
+                let smooth_x = use_transition(smooth_goal.into(), WORKSPACE_DURATION_MS);
+                let target_ref = NodeRef::new();
+                let smooth_target_ref = NodeRef::new();
+
+                *x_slot.borrow_mut() = Some(x_sig);
+                *smooth_slot.borrow_mut() = Some(smooth_goal);
+                *target_slot.borrow_mut() = Some(target_ref);
+                *smooth_target_slot.borrow_mut() = Some(smooth_target_ref);
+
+                let reg_slot = Rc::clone(&reg_slot);
+                view! {
+                    KeytipHost {
+                        {{
+                            *reg_slot.borrow_mut() = KeytipRegistry::current();
+                            anchor(target_ref, Shortcut::parse("Ctrl+I").expect("Ctrl+I"));
+                            anchor(smooth_target_ref, Shortcut::parse("Ctrl+B").expect("Ctrl+B"));
+                            view! {
+                                box(style:position = "relative", style:width = "640px", style:height = "240px") {
+                                    box(
+                                        node_ref = target_ref,
+                                        style:position = "absolute",
+                                        style:top = "24px",
+                                        style:left = move || Some(format!("{:.2}px", x_sig.get())),
+                                        style:width = "32px",
+                                        style:height = "32px",
+                                    ) {}
+                                    box(
+                                        node_ref = smooth_target_ref,
+                                        style:position = "absolute",
+                                        style:top = "96px",
+                                        style:left = move || Some(format!("{:.2}px", smooth_x.get())),
+                                        style:width = "32px",
+                                        style:height = "32px",
+                                    ) {}
+                                }
+                            }
+                        }}
+                    }
+                }
+            })
+            .expect("live keytip tracking headless test ran");
+    }
+
+    #[test]
+    fn inline_suffix_first_frame_pushes_sibling_floating_keytip_and_skips_offscreen_targets() {
+        use crate::ui::button::{ButtonProps, IconButtonProps};
+        use crate::ui::icon::IconName;
+
+        let btn_slot: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
+        let icon_slot: Rc<RefCell<Option<NodeRef>>> = Rc::new(RefCell::new(None));
+        let offscreen_x_slot: Rc<RefCell<Option<RwSignal<f32, LocalStorage>>>> =
+            Rc::new(RefCell::new(None));
+        let reg_slot: Rc<RefCell<Option<KeytipRegistry>>> = Rc::new(RefCell::new(None));
+
+        let btn_driver = Rc::clone(&btn_slot);
+        let icon_driver = Rc::clone(&icon_slot);
+        let offscreen_x_driver = Rc::clone(&offscreen_x_slot);
+        let reg_driver = Rc::clone(&reg_slot);
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(480.0),
+                DevicePx(160.0),
+            )));
+            harness.settle(16);
+            harness.advance(Duration::from_millis(32));
+            harness.settle(8);
+
+            let btn_ref = btn_driver.borrow().expect("btn ref");
+            let icon_ref = icon_driver.borrow().expect("icon ref");
+            let offscreen_x = offscreen_x_driver.borrow().expect("offscreen x");
+            let reg = reg_driver.borrow().expect("registry");
+
+            let scale = btn_ref.scale().max(1.0);
+            let initial_btn_w = btn_ref.window_bounds().expect("btn bounds").size.width.0 / scale;
+
+            let badge_for = |label_str: &str| -> NodeRef {
+                reg.hints
+                    .get_untracked()
+                    .into_iter()
+                    .find(|h| {
+                        h.shortcut
+                            .compact_label(crate::ui::shortcut::HeldModifier::Ctrl)
+                            == Some(label_str.to_owned())
+                    })
+                    .expect("staged hint")
+                    .badge_ref
+            };
+
+            // Hold Ctrl: Frame 1 (16ms) must immediately expand KeytipSuffix past initial_btn_w
+            // (zero 1-frame dead stall), and the sibling IconButton's floating 'I' badge must
+            // follow IconButton's right edge on every single frame! Meanwhile offscreen 'O' at
+            // x=-200px does not intersect window content and must not mount a visible badge.
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Pressed,
+                event: KeyEvent::named(NamedKey::Control, PhysicalKey::Code(KeyCode::ControlLeft)),
+                modifiers: Modifiers::CONTROL,
+                timestamp: Timestamp::from_origin(Duration::from_millis(32)),
+            });
+            harness.settle(8);
+
+            let badge_i = badge_for("I");
+            let badge_o = badge_for("O");
+            assert!(
+                badge_o.window_bounds().is_none(),
+                "offscreen target outside window content must not render a clamped keytip badge"
+            );
+
+            for frame_idx in 0..10 {
+                harness.run_for(Duration::from_millis(16), Duration::from_millis(16));
+                let cur_btn_w = btn_ref.window_bounds().expect("btn bounds").size.width.0 / scale;
+                if frame_idx == 0 {
+                    assert!(
+                        cur_btn_w > initial_btn_w + 1.0,
+                        "KeytipSuffix first frame must advance immediately past {initial_btn_w}, got {cur_btn_w}"
+                    );
+                }
+                let icon_b = icon_ref.window_bounds().expect("icon bounds");
+                let badge_b = badge_i.window_bounds().expect("badge I bounds");
+                let icon_right = (icon_b.origin.x.0 + icon_b.size.width.0) / scale;
+                let badge_right = (badge_b.origin.x.0 + badge_b.size.width.0) / scale;
+                assert!(
+                    (badge_right - (icon_right - EDGE_INSET)).abs() <= 1.5,
+                    "frame {frame_idx}: sibling badge right={badge_right} lagged behind icon right-inset={}",
+                    icon_right - EDGE_INSET
+                );
+            }
+
+            // Bring 'O' back onscreen -> badge mounts and locks onto x=120px!
+            offscreen_x.set(120.0);
+            flush();
+            harness.run_for(Duration::from_millis(16), Duration::from_millis(16));
+            let badge_o_b = badge_o
+                .window_bounds()
+                .expect("onscreen target must render badge");
+            let badge_o_right = (badge_o_b.origin.x.0 + badge_o_b.size.width.0) / scale;
+            assert!(
+                (badge_o_right - (120.0 + 32.0 - EDGE_INSET)).abs() <= 1.5,
+                "restored onscreen badge right={badge_o_right}"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(480.0, 160.0)
+            .run_on(driver, move || {
+                let _gds = Gds::install(Scope::default());
+                let btn_ref = NodeRef::new();
+                let icon_ref = NodeRef::new();
+                let offscreen_ref = NodeRef::new();
+                let offscreen_x = RwSignal::new_local(-200.0_f32);
+
+                *btn_slot.borrow_mut() = Some(btn_ref);
+                *icon_slot.borrow_mut() = Some(icon_ref);
+                *offscreen_x_slot.borrow_mut() = Some(offscreen_x);
+
+                let reg_slot = Rc::clone(&reg_slot);
+                view! {
+                    KeytipHost {
+                        {{
+                            *reg_slot.borrow_mut() = KeytipRegistry::current();
+                            anchor(offscreen_ref, Shortcut::parse("Ctrl+O").expect("Ctrl+O"));
+                            view! {
+                                box(style:position = "relative", style:width = "480px", style:height = "160px") {
+                                    row(style:gap = "8px", style:align-items = "center") {
+                                        Button(
+                                            node_ref = btn_ref,
+                                            shortcut = Shortcut::parse("Ctrl+R").expect("Ctrl+R"),
+                                        ) { "Run" }
+                                        IconButton(
+                                            node_ref = icon_ref,
+                                            icon = IconName::Info,
+                                            label = "Details",
+                                            shortcut = Shortcut::parse("Ctrl+I").expect("Ctrl+I"),
+                                        )
+                                    }
+                                    box(
+                                        node_ref = offscreen_ref,
+                                        style:position = "absolute",
+                                        style:top = "80px",
+                                        style:left = move || Some(format!("{:.1}px", offscreen_x.get())),
+                                        style:width = "32px",
+                                        style:height = "32px",
+                                    ) {}
+                                }
+                            }
+                        }}
+                    }
+                }
+            })
+            .expect("inline suffix + offscreen clipping test ran");
     }
 }

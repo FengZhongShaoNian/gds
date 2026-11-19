@@ -116,6 +116,7 @@ const STATIC_BASE_CSS: &str = r#"
     display: flex;
     flex-direction: row;
     align-items: center;
+    flex-shrink: 0;
     gap: 8px;
     min-height: var(--gds-sidebar-item-height, 38px);
     padding: 0 8px;

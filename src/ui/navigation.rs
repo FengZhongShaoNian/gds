@@ -55,6 +55,7 @@ const NAVIGATION_SHEET: &str = "gds-ui-navigation";
 const NAVIGATION_CSS: &str = css!(
     ".gds-nav-item {
         position: relative;
+        flex-shrink: 0;
         width: 100%;
         max-width: 100%;
         min-width: 0px;
@@ -877,5 +878,81 @@ mod tests {
         assert_eq!(expanded_clicks.get(), 1);
         assert_eq!(corner_clicks.get(), 1);
         assert_eq!(row_clicks.get(), 0);
+    }
+
+    #[test]
+    fn nav_items_never_squish_vertically_inside_collapsing_parent_section() {
+        let refs_slot: Arc<Mutex<Vec<NodeRef>>> = Arc::new(Mutex::new(Vec::new()));
+        let height_slot: Arc<Mutex<Option<RwSignal<f32, zgui::reactive::LocalStorage>>>> =
+            Arc::new(Mutex::new(None));
+
+        let refs_driver = Arc::clone(&refs_slot);
+        let height_driver = Arc::clone(&height_slot);
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(260.0),
+                DevicePx(260.0),
+            )));
+            harness.settle(32);
+
+            // Collapse the section container mid-flight to 60px and then 14px (far smaller than
+            // 5 * 38px = 190px): every NavItem must retain its full 38px height (`flex-shrink: 0`).
+            for collapsed_h in [206.0_f32, 60.0, 14.0] {
+                if let Some(sig) = *height_driver.lock().expect("lock") {
+                    sig.set(collapsed_h);
+                    flush();
+                }
+                harness.settle(16);
+
+                let refs = refs_driver.lock().expect("lock").clone();
+                assert_eq!(refs.len(), 5);
+                for (idx, row_ref) in refs.iter().enumerate() {
+                    let bounds = row_ref.window_bounds().expect("nav item bounds");
+                    let h = bounds.size.height.0 / row_ref.scale().max(1.0);
+                    assert!(
+                        (h - 38.0).abs() <= 0.5,
+                        "NavItem {idx} vertically squished to {h}px at container height {collapsed_h}px"
+                    );
+                }
+            }
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(260.0, 260.0)
+            .run_on(driver, move || {
+                let section_h = RwSignal::new_local(206.0_f32);
+                *height_slot.lock().expect("lock") = Some(section_h);
+
+                let r0 = NodeRef::new();
+                let r1 = NodeRef::new();
+                let r2 = NodeRef::new();
+                let r3 = NodeRef::new();
+                let r4 = NodeRef::new();
+                *refs_slot.lock().expect("lock") = vec![r0, r1, r2, r3, r4];
+
+                view! {
+                    SideBar {
+                        column(
+                            style:overflow = "hidden",
+                            style:gap = "4px",
+                            style:height = move || Some(format!("{:.1}px", section_h.get())),
+                        ) {
+                            NavItem(node_ref = r0, style:height = "38px", label = AnyView::new(view! { text { "Recent" } }))
+                            NavItem(node_ref = r1, style:height = "38px", label = AnyView::new(view! { text { "Starred" } }))
+                            NavItem(node_ref = r2, style:height = "38px", label = AnyView::new(view! { text { "Home" } }))
+                            NavItem(node_ref = r3, style:height = "38px", label = AnyView::new(view! { text { "Network" } }))
+                            NavItem(node_ref = r4, style:height = "38px", label = AnyView::new(view! { text { "Trash" } }))
+                        }
+                    }
+                }
+            })
+            .expect("collapsing section nav item test runs");
     }
 }

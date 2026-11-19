@@ -35,7 +35,8 @@ struct TerminalInner {
     focused: RwSignal<bool, LocalStorage>,
     focus_target: RefCell<Option<NodeRef>>,
     focus_requested: Cell<bool>,
-    callbacks: RefCell<Vec<UnsyncCallback<Event>>>,
+    next_callback_id: Cell<u64>,
+    callbacks: RefCell<Vec<(u64, UnsyncCallback<Event>)>>,
     observed: RefCell<(Status, Option<String>)>,
     shutdown_done: watch::Receiver<bool>,
     theme_effect: RefCell<Option<RenderEffect<()>>>,
@@ -138,7 +139,7 @@ impl Terminal {
             });
             let redraw_signal = RwSignal::new_local(0_u64);
             let focused_signal = RwSignal::new_local(false);
-            let callbacks: RefCell<Vec<UnsyncCallback<Event>>> = RefCell::new(Vec::new());
+            let callbacks: RefCell<Vec<(u64, UnsyncCallback<Event>)>> = RefCell::new(Vec::new());
             let observed = RefCell::new((initial_status, initial_title));
 
             let theme_effect = gds.as_ref().map(|gds| {
@@ -162,6 +163,7 @@ impl Terminal {
                 focused: focused_signal,
                 focus_target: RefCell::new(None),
                 focus_requested: Cell::new(false),
+                next_callback_id: Cell::new(0),
                 callbacks,
                 observed,
                 shutdown_done,
@@ -192,8 +194,13 @@ impl Terminal {
     /// Replace active preferences (`normalized`); shell changes apply to future sessions only.
     pub fn apply_preferences(&self, prefs: Preferences) {
         let normalized = prefs.normalized();
-        if self.0.preferences.get_untracked() != normalized {
-            self.0.preferences.set(normalized);
+        if self
+            .0
+            .preferences
+            .try_get_untracked()
+            .is_some_and(|cur| cur != normalized)
+        {
+            let _ = self.0.preferences.try_set(normalized);
         }
     }
 
@@ -237,13 +244,16 @@ impl Terminal {
     /// Current non-reactive check of whether the terminal is still alive.
     #[must_use]
     pub fn is_running(&self) -> bool {
-        self.0.status.get_untracked().is_running()
+        self.0
+            .status
+            .try_get_untracked()
+            .is_some_and(|status| status.is_running())
     }
 
     /// Localized label describing the current terminal lifecycle state.
     #[must_use]
     pub fn status_label(&self) -> String {
-        match self.0.status.get_untracked() {
+        match self.0.status.try_get_untracked().unwrap_or(Status::Closed) {
             Status::Starting => i18n::text("gds-terminal-starting"),
             Status::Running => i18n::text("gds-terminal-running"),
             Status::Stopping => i18n::text("gds-terminal-stopping"),
@@ -265,17 +275,8 @@ impl Terminal {
             return;
         };
         match session.write(bytes) {
-            Ok(()) => {
-                if self.0.error.get_untracked().is_some() {
-                    self.0.error.set(None);
-                }
-            }
-            Err(error) => {
-                let message = error.to_string();
-                if self.0.error.get_untracked().as_deref() != Some(message.as_str()) {
-                    self.0.error.set(Some(message));
-                }
-            }
+            Ok(()) => self.set_error(None),
+            Err(error) => self.set_error(Some(error.to_string())),
         }
     }
 
@@ -288,7 +289,8 @@ impl Terminal {
 
     /// Move keyboard focus to the mounted `TerminalView`, or defer until it mounts.
     pub fn focus(&self) {
-        self.0.focus_requested.set(!self.0.focused.get_untracked());
+        let already_focused = self.0.focused.try_get_untracked().unwrap_or(false);
+        self.0.focus_requested.set(!already_focused);
         if let Some(node) = *self.0.focus_target.borrow() {
             node.focus();
         }
@@ -296,7 +298,9 @@ impl Terminal {
 
     /// Register a callback invoked for [`Event`] transitions on the UI thread.
     pub fn on_event(&self, cb: UnsyncCallback<Event>) {
-        self.0.callbacks.borrow_mut().push(cb);
+        let id = self.0.next_callback_id.get();
+        self.0.next_callback_id.set(id.wrapping_add(1));
+        self.0.callbacks.borrow_mut().push((id, cb));
     }
 
     /// Change the active shell working directory asynchronously.
@@ -339,6 +343,7 @@ impl Terminal {
         self.0.scope.cancel();
         drop(self.0.service.shutdown());
         sync_from_service(&self.0);
+        self.0.callbacks.borrow_mut().clear();
         let mut done = self.0.shutdown_done.clone();
         Box::pin(async move {
             let _ = done.wait_for(|finished| *finished).await;
@@ -466,7 +471,155 @@ fn sync_from_service(inner: &TerminalInner) {
 
 fn emit_event(inner: &TerminalInner, event: &Event) {
     let listeners: Vec<_> = inner.callbacks.borrow().iter().copied().collect();
-    for cb in listeners {
-        cb.run(event.clone());
+    let mut dead_ids = Vec::new();
+    for (id, cb) in listeners {
+        if cb.try_run(event.clone()).is_none() {
+            dead_ids.push(id);
+        }
+    }
+    if !dead_ids.is_empty()
+        && let Ok(mut callbacks) = inner.callbacks.try_borrow_mut()
+    {
+        callbacks.retain(|(id, _)| !dead_ids.contains(id));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod teardown_tests {
+    use std::cell::{Cell, RefCell};
+    use std::path::PathBuf;
+    use std::rc::Rc;
+
+    use zgui::reactive::{Owner, UnsyncCallback};
+
+    use super::{Event, Preferences, Terminal, sync_from_service};
+    use crate::service::task_manager::Supervisor;
+    use crate::service::terminal::SpawnOptions;
+
+    fn posix_shell() -> PathBuf {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+            .map(|path| path.join("sh"))
+            .chain([PathBuf::from("/bin/sh")])
+            .find(|path| path.is_absolute() && path.is_file())
+            .expect("POSIX shell")
+    }
+
+    #[test]
+    fn shutdown_skips_disposed_child_owner_callbacks_without_panicking() {
+        zgui::reactive::install().expect("install zgui reactive runtime");
+        let supervisor = Supervisor::new(false).expect("test Tokio supervisor");
+        let directory = tempfile::tempdir().expect("tempdir");
+        let runtime = supervisor
+            .scope()
+            .runtime_handle()
+            .expect("supervisor runtime handle")
+            .clone();
+        let root_owner = Owner::new();
+
+        root_owner.with(|| {
+            let terminal = Terminal::spawn(
+                SpawnOptions {
+                    cwd: directory.path().to_owned(),
+                    ..SpawnOptions::default()
+                },
+                Preferences {
+                    shell: Some(posix_shell()),
+                    shell_args: vec!["-c".into(), "read go; exit 7".into()],
+                    ..Default::default()
+                },
+                &supervisor.scope(),
+            )
+            .expect("spawn terminal");
+
+            let session = runtime
+                .block_on(terminal.ready())
+                .expect("terminal session ready");
+            sync_from_service(&terminal.0);
+
+            let disposed_calls = Rc::new(Cell::new(0_usize));
+            let child_owner = root_owner.child();
+            child_owner.with(|| {
+                let counter = Rc::clone(&disposed_calls);
+                terminal.on_event(UnsyncCallback::new(move |_| {
+                    counter.set(counter.get() + 1);
+                }));
+            });
+
+            let live_events = Rc::new(RefCell::new(Vec::new()));
+            let events_sink = Rc::clone(&live_events);
+            terminal.on_event(UnsyncCallback::new(move |event| {
+                events_sink.borrow_mut().push(event);
+            }));
+
+            // Dispose the child scope before the status transition is observed by Terminal.
+            child_owner.cleanup();
+
+            // Trigger an Exited status transition without flushing the UI reactive executor,
+            // so `Terminal::shutdown` observes `Running -> Exited` synchronously.
+            session.write(b"go\n").expect("trigger shell exit");
+            runtime.block_on(session.wait_stopped());
+
+            runtime.block_on(terminal.shutdown());
+
+            assert_eq!(
+                disposed_calls.get(),
+                0,
+                "disposed child Owner callback must be skipped cleanly"
+            );
+            let observed_events = live_events.borrow();
+            assert!(
+                matches!(
+                    observed_events.as_slice(),
+                    [Event::Closed(Some(7) | None), Event::Changed]
+                ),
+                "live Owner callback must still observe final shutdown transition: {observed_events:?}"
+            );
+        });
+        root_owner.cleanup();
+    }
+
+    #[test]
+    fn shutdown_after_root_owner_cleanup_completes_without_panicking() {
+        zgui::reactive::install().expect("install zgui reactive runtime");
+        let supervisor = Supervisor::new(false).expect("test Tokio supervisor");
+        let directory = tempfile::tempdir().expect("tempdir");
+        let runtime = supervisor
+            .scope()
+            .runtime_handle()
+            .expect("supervisor runtime handle")
+            .clone();
+        let root_owner = Owner::new();
+
+        let terminal = root_owner.with(|| {
+            let terminal = Terminal::spawn(
+                SpawnOptions {
+                    cwd: directory.path().to_owned(),
+                    ..SpawnOptions::default()
+                },
+                Preferences {
+                    shell: Some(posix_shell()),
+                    shell_args: vec!["-c".into(), "read go; exit 0".into()],
+                    ..Default::default()
+                },
+                &supervisor.scope(),
+            )
+            .expect("spawn terminal");
+
+            terminal.on_event(UnsyncCallback::new(|_| {}));
+            terminal
+        });
+
+        let session = runtime
+            .block_on(terminal.ready())
+            .expect("terminal session ready");
+        sync_from_service(&terminal.0);
+
+        session.write(b"go\n").expect("trigger shell exit");
+        runtime.block_on(session.wait_stopped());
+
+        // Cleaning up the root owner disposes both `TerminalInner.owner` and the registered
+        // `UnsyncCallback` before `Terminal::shutdown` runs (mirroring window teardown order).
+        root_owner.cleanup();
+        runtime.block_on(terminal.shutdown());
     }
 }

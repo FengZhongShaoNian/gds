@@ -319,12 +319,12 @@ impl SessionEntry {
     }
 
     fn display_title(&self) -> String {
-        if let Some(custom) = self.custom_title.get()
+        if let Some(custom) = self.custom_title.try_get().flatten()
             && !custom.trim().is_empty()
         {
             return custom;
         }
-        if let Some(pty_title) = self.terminal.title().get()
+        if let Some(pty_title) = self.terminal.title().try_get().flatten()
             && !pty_title.trim().is_empty()
         {
             return pty_title;
@@ -333,12 +333,12 @@ impl SessionEntry {
     }
 
     fn display_title_untracked(&self) -> String {
-        if let Some(custom) = self.custom_title.get_untracked()
+        if let Some(custom) = self.custom_title.try_get_untracked().flatten()
             && !custom.trim().is_empty()
         {
             return custom;
         }
-        if let Some(pty_title) = self.terminal.title().get_untracked()
+        if let Some(pty_title) = self.terminal.title().try_get_untracked().flatten()
             && !pty_title.trim().is_empty()
         {
             return pty_title;
@@ -351,7 +351,7 @@ impl SessionEntry {
             "files-terminal-started-in",
             path = self.started_in.display().to_string()
         );
-        let status = match self.terminal.status().get() {
+        let status = match self.terminal.status().try_get().unwrap_or(Status::Closed) {
             Status::Starting => i18n::text("gds-terminal-starting"),
             Status::Running => i18n::text("gds-terminal-running"),
             Status::Stopping => i18n::text("gds-terminal-stopping"),
@@ -455,23 +455,42 @@ impl Dock {
     }
 
     fn bump(&self) {
-        self.inner.revision.update(|rev| *rev = rev.wrapping_add(1));
+        let _ = self
+            .inner
+            .revision
+            .try_update(|rev| *rev = rev.wrapping_add(1));
     }
 
     fn clamped_height(&self, raw: f32) -> f32 {
-        let available = self.inner.workspace_size.get_untracked().1;
+        let available = self
+            .inner
+            .workspace_size
+            .try_get_untracked()
+            .map_or(640.0, |(_, h)| h);
         let max_height = (available - MIN_CONTENT_HEIGHT).max(MIN_DOCK_HEIGHT);
         raw.clamp(MIN_DOCK_HEIGHT, max_height)
     }
 
     fn base_height(&self) -> f32 {
-        let (_, available) = self.inner.workspace_size.get();
+        let available = self
+            .inner
+            .workspace_size
+            .try_get()
+            .map_or(640.0, |(_, h)| h);
         let max_height = (available - MIN_CONTENT_HEIGHT).max(MIN_DOCK_HEIGHT);
-        self.inner.height.get().clamp(MIN_DOCK_HEIGHT, max_height)
+        self.inner
+            .height
+            .try_get()
+            .unwrap_or(DEFAULT_DOCK_HEIGHT)
+            .clamp(MIN_DOCK_HEIGHT, max_height)
     }
 
     fn maximized_height(&self) -> f32 {
-        let (_, available) = self.inner.workspace_size.get();
+        let available = self
+            .inner
+            .workspace_size
+            .try_get()
+            .map_or(640.0, |(_, h)| h);
         available.max(MIN_DOCK_HEIGHT)
     }
 
@@ -492,13 +511,18 @@ impl Dock {
         if self.inner.sealed.replace(true) {
             return;
         }
+        *self.inner.pending_rename_focus.borrow_mut() = None;
+        self.inner.drag_listeners.borrow_mut().clear();
         let drained: Vec<SessionEntry> = self.inner.sessions.borrow_mut().drain(..).collect();
         if drained.is_empty() {
             return;
         }
         let shutdowns: Vec<_> = drained
             .into_iter()
-            .map(|entry| entry.terminal.shutdown())
+            .map(|entry| {
+                entry.closing.set(true);
+                entry.terminal.shutdown()
+            })
             .collect();
         if let Some(gds) = Gds::try_current() {
             gds.tasks()
@@ -514,7 +538,7 @@ impl Dock {
 
 impl Browser {
     pub(super) fn terminal_visible(&self) -> bool {
-        self.0.terminal.get()
+        self.0.terminal.try_get().unwrap_or(false)
             && self
                 .0
                 .preferences
@@ -525,14 +549,14 @@ impl Browser {
     }
 
     fn terminal_visible_untracked(&self) -> bool {
-        self.0.terminal.get_untracked()
+        self.0.terminal.try_get_untracked().unwrap_or(false)
             && self.0.preferences.snapshot().terminal_enabled()
             && self.pane_untracked() == Pane::Files
             && self.read_untracked(|state| state.picker.is_none())
     }
 
     pub(super) fn terminal_focused(&self) -> bool {
-        if !self.terminal_visible_untracked() {
+        if self.0.terminals.inner.sealed.get() || !self.terminal_visible_untracked() {
             return false;
         }
         let Some(focused) = zgui::view::current_host()
@@ -553,8 +577,15 @@ impl Browser {
             .borrow_mut()
             .take()
             .is_some_and(|drag| drag.active);
-        if self.0.terminals.inner.internal_drop_hover.get_untracked() {
-            self.0.terminals.inner.internal_drop_hover.set(false);
+        if self
+            .0
+            .terminals
+            .inner
+            .internal_drop_hover
+            .try_get_untracked()
+            .unwrap_or(false)
+        {
+            let _ = self.0.terminals.inner.internal_drop_hover.try_set(false);
         }
         was_active
     }
@@ -616,7 +647,10 @@ impl Browser {
     }
 
     fn focus_active_terminal(&self) {
-        if let Some(id) = self.0.terminals.active.get_untracked()
+        if self.0.terminals.inner.sealed.get() {
+            return;
+        }
+        if let Some(id) = self.0.terminals.active.try_get_untracked().flatten()
             && let Some(entry) = self.0.terminals.find_session(id)
             && !entry.closing.get()
         {
@@ -627,12 +661,15 @@ impl Browser {
     }
 
     fn cycle_terminal_session(&self, backward: bool) {
+        if self.0.terminals.inner.sealed.get() {
+            return;
+        }
         let next_id = {
             let sessions = self.0.terminals.inner.sessions.borrow();
             if sessions.len() <= 1 {
                 return;
             }
-            let active = self.0.terminals.active.get_untracked();
+            let active = self.0.terminals.active.try_get_untracked().flatten();
             let current = active
                 .and_then(|id| sessions.iter().position(|entry| entry.id == id))
                 .unwrap_or(0);
@@ -646,7 +683,7 @@ impl Browser {
                 .map(|entry| (entry.id, entry.terminal.clone()))
         };
         if let Some((id, terminal)) = next_id {
-            self.0.terminals.active.set(Some(id));
+            let _ = self.0.terminals.active.try_set(Some(id));
             terminal.focus();
         }
     }
@@ -670,14 +707,15 @@ impl Browser {
             };
             let removed = sessions.remove(pos);
             removed.closing.set(true);
-            let was_active = self.0.terminals.active.get_untracked() == Some(id);
+            let current_active = self.0.terminals.active.try_get_untracked().flatten();
+            let was_active = current_active == Some(id);
             let next_active = if was_active {
                 sessions
                     .get(pos)
                     .or_else(|| pos.checked_sub(1).and_then(|i| sessions.get(i)))
                     .map(|entry| entry.id)
             } else {
-                self.0.terminals.active.get_untracked()
+                current_active
             };
             (removed, was_active, next_active)
         };
@@ -688,14 +726,14 @@ impl Browser {
             .terminals
             .inner
             .rename_dialog
-            .get_untracked()
-            .as_ref()
+            .try_get_untracked()
+            .flatten()
             .is_some_and(|dlg| dlg.session_id == id)
         {
-            self.0.terminals.inner.rename_dialog.set(None);
+            let _ = self.0.terminals.inner.rename_dialog.try_set(None);
         }
 
-        self.0.terminals.active.set(next_active);
+        let _ = self.0.terminals.active.try_set(next_active);
         self.0.terminals.bump();
 
         if let Some(gds) = Gds::try_current() {
@@ -724,6 +762,9 @@ impl Browser {
     }
 
     fn begin_terminal_rename(&self, id: u64) {
+        if self.0.terminals.inner.sealed.get() {
+            return;
+        }
         let Some(entry) = self.0.terminals.find_session(id) else {
             return;
         };
@@ -732,11 +773,12 @@ impl Browser {
             .0
             .owner
             .with(|| (RwSignal::new_local(current.clone()), NodeRef::new()));
-        self.0
+        let _ = self
+            .0
             .terminals
             .inner
             .rename_dialog
-            .set(Some(RenameDialogState {
+            .try_set(Some(RenameDialogState {
                 session_id: id,
                 draft,
                 input_ref,
@@ -746,11 +788,14 @@ impl Browser {
         let initial = current;
         let handle = self.0.owner.with(|| {
             request_frame(move |_| {
+                if dock.inner.sealed.get() {
+                    return;
+                }
                 if dock
                     .inner
                     .rename_dialog
-                    .get_untracked()
-                    .as_ref()
+                    .try_get_untracked()
+                    .flatten()
                     .is_some_and(|state| state.session_id == id)
                     && input_ref.is_bound()
                 {
@@ -765,17 +810,26 @@ impl Browser {
 
     fn finish_terminal_rename(&self, accept: bool) {
         *self.0.terminals.inner.pending_rename_focus.borrow_mut() = None;
-        let Some(dialog) = self.0.terminals.inner.rename_dialog.get_untracked() else {
+        if self.0.terminals.inner.sealed.get() {
+            return;
+        }
+        let Some(dialog) = self
+            .0
+            .terminals
+            .inner
+            .rename_dialog
+            .try_get_untracked()
+            .flatten()
+        else {
             return;
         };
-        self.0.terminals.inner.rename_dialog.set(None);
+        let _ = self.0.terminals.inner.rename_dialog.try_set(None);
         if let Some(entry) = self.0.terminals.find_session(dialog.session_id) {
-            if accept {
-                let raw = dialog.draft.get_untracked();
+            if accept && let Some(raw) = dialog.draft.try_get_untracked() {
                 let trimmed = raw.trim();
-                entry
+                let _ = entry
                     .custom_title
-                    .set((!trimmed.is_empty()).then(|| trimmed.to_owned()));
+                    .try_set((!trimmed.is_empty()).then(|| trimmed.to_owned()));
             }
             entry.terminal.focus();
         } else {
@@ -784,19 +838,22 @@ impl Browser {
     }
 
     pub(super) fn apply_terminal_preferences(&self, preferences: &Preferences) {
-        if !preferences.terminal_enabled() {
-            self.0.terminal.set(false);
-            self.0.terminals.inner.maximized.set(false);
+        if self.0.terminals.inner.sealed.get() {
+            return;
         }
-        if let Some(content_height) = preferences.files.terminal_content_height {
-            let available = self.0.terminals.inner.workspace_size.get_untracked().1;
-            if available > MIN_CONTENT_HEIGHT + MIN_DOCK_HEIGHT {
-                let target = self
-                    .0
-                    .terminals
-                    .clamped_height((available - content_height).max(MIN_DOCK_HEIGHT));
-                self.0.terminals.inner.height.set(target);
-            }
+        if !preferences.terminal_enabled() {
+            let _ = self.0.terminal.try_set(false);
+            let _ = self.0.terminals.inner.maximized.try_set(false);
+        }
+        if let Some(content_height) = preferences.files.terminal_content_height
+            && let Some((_, available)) = self.0.terminals.inner.workspace_size.try_get_untracked()
+            && available > MIN_CONTENT_HEIGHT + MIN_DOCK_HEIGHT
+        {
+            let target = self
+                .0
+                .terminals
+                .clamped_height((available - content_height).max(MIN_DOCK_HEIGHT));
+            let _ = self.0.terminals.inner.height.try_set(target);
         }
         let term_prefs = preferences.terminal.clone();
         let terminals: Vec<Terminal> = self
@@ -814,17 +871,20 @@ impl Browser {
     }
 
     pub(super) fn toggle_terminal(&self) {
+        if self.0.terminals.inner.sealed.get() {
+            return;
+        }
         if self.read_untracked(|state| state.picker.is_some())
             || !self.0.preferences.snapshot().terminal_enabled()
         {
-            self.0.terminal.set(false);
-            self.0.terminals.inner.maximized.set(false);
+            let _ = self.0.terminal.try_set(false);
+            let _ = self.0.terminals.inner.maximized.try_set(false);
             return;
         }
         if self.pane_untracked() != Pane::Files {
             self.show_files();
-            if !self.0.terminal.get_untracked() {
-                self.0.terminal.set(true);
+            if !self.0.terminal.try_get_untracked().unwrap_or(false) {
+                let _ = self.0.terminal.try_set(true);
             }
             let empty = self.0.terminals.inner.sessions.borrow().is_empty();
             if empty && self.0.terminals.inner.next_id.get() == 1 {
@@ -835,8 +895,8 @@ impl Browser {
             return;
         }
 
-        let next = !self.0.terminal.get_untracked();
-        self.0.terminal.set(next);
+        let next = !self.0.terminal.try_get_untracked().unwrap_or(false);
+        let _ = self.0.terminal.try_set(next);
         if next {
             let empty = self.0.terminals.inner.sessions.borrow().is_empty();
             if empty {
@@ -845,13 +905,14 @@ impl Browser {
                 self.focus_active_terminal();
             }
         } else {
-            self.0.terminals.inner.maximized.set(false);
+            let _ = self.0.terminals.inner.maximized.try_set(false);
             self.focus_content();
         }
     }
 
     pub(super) fn new_terminal(&self) {
-        if self.read_untracked(|state| state.picker.is_some())
+        if self.0.terminals.inner.sealed.get()
+            || self.read_untracked(|state| state.picker.is_some())
             || !self.0.preferences.snapshot().terminal_enabled()
         {
             return;
@@ -877,55 +938,60 @@ impl Browser {
         if self.pane_untracked() != Pane::Files {
             self.show_files();
         }
-        self.0.terminal.set(true);
+        let _ = self.0.terminal.try_set(true);
 
         let term_prefs = self.0.preferences.snapshot().terminal;
         let options = SpawnOptions {
             cwd: path.clone(),
             ..SpawnOptions::default()
         };
-        let terminal = match self
-            .0
-            .owner
-            .with(|| Terminal::spawn(options, term_prefs, &self.0.tasks))
-        {
-            Ok(term) => term,
+        let id = self.0.terminals.inner.next_id.get();
+        let weak = self.downgrade();
+        let spawned = self.0.owner.with(|| {
+            Terminal::spawn(options, term_prefs, &self.0.tasks).map(|terminal| {
+                let observed_term = terminal.clone();
+                let on_event = UnsyncCallback::new(move |event| {
+                    let Some(browser) = weak.upgrade() else {
+                        return;
+                    };
+                    if browser.0.terminals.inner.sealed.get() {
+                        return;
+                    }
+                    if let TerminalEvent::Closed(_) = event
+                        && matches!(
+                            observed_term.status().try_get_untracked(),
+                            Some(Status::Exited { .. } | Status::Closed)
+                        )
+                    {
+                        browser.close_terminal_session(id);
+                    }
+                });
+                terminal.on_event(on_event);
+                let entry = SessionEntry {
+                    id,
+                    terminal: terminal.clone(),
+                    view_ref: NodeRef::new(),
+                    started_in: path,
+                    custom_title: RwSignal::new_local(None),
+                    closing: Cell::new(false),
+                };
+                (terminal, entry)
+            })
+        });
+
+        let (terminal, entry) = match spawned {
+            Ok(pair) => pair,
             Err(err) => {
                 self.report_notice(err.to_string());
                 return;
             }
         };
 
-        let id = self.0.terminals.inner.next_id.get();
         self.0.terminals.inner.next_id.set(id + 1);
-
-        let weak = self.downgrade();
-        let observed_term = terminal.clone();
-        terminal.on_event(UnsyncCallback::new(move |event| {
-            let Some(browser) = weak.upgrade() else {
-                return;
-            };
-            if let TerminalEvent::Closed(_) = event {
-                let status = observed_term.status().get_untracked();
-                if matches!(status, Status::Exited { .. } | Status::Closed) {
-                    browser.close_terminal_session(id);
-                }
-            }
-        }));
-
-        let entry = self.0.owner.with(|| SessionEntry {
-            id,
-            terminal: terminal.clone(),
-            view_ref: NodeRef::new(),
-            started_in: path,
-            custom_title: RwSignal::new_local(None),
-            closing: Cell::new(false),
-        });
-
         {
             self.0.terminals.inner.sessions.borrow_mut().push(entry);
         }
-        self.0.terminals.active.set(Some(id));
+        let _ = self.0.terminals.active.try_set(Some(id));
         self.0.terminals.bump();
         terminal.focus();
     }
@@ -937,7 +1003,8 @@ impl Browser {
                 .terminals
                 .inner
                 .rename_dialog
-                .get_untracked()
+                .try_get_untracked()
+                .flatten()
                 .is_some()
         {
             return;
@@ -946,10 +1013,12 @@ impl Browser {
             .0
             .terminals
             .active
-            .get_untracked()
+            .try_get_untracked()
+            .flatten()
             .and_then(|id| self.0.terminals.find_session(id))
             .is_some_and(|entry| {
-                !entry.closing.get() && entry.terminal.status().get_untracked() == Status::Running
+                !entry.closing.get()
+                    && entry.terminal.status().try_get_untracked() == Some(Status::Running)
             });
         if !active_running {
             return;
@@ -962,10 +1031,13 @@ impl Browser {
     }
 
     fn paste_paths_to_active_terminal(&self, paths: &[PathBuf]) {
-        if paths.is_empty() || !self.terminal_visible_untracked() {
+        if self.0.terminals.inner.sealed.get()
+            || paths.is_empty()
+            || !self.terminal_visible_untracked()
+        {
             return;
         }
-        if let Some(id) = self.0.terminals.active.get_untracked()
+        if let Some(id) = self.0.terminals.active.try_get_untracked().flatten()
             && let Some(entry) = self.0.terminals.find_session(id)
             && !entry.closing.get()
         {
@@ -975,15 +1047,15 @@ impl Browser {
     }
 
     pub(super) fn observe_terminals(&self) {
-        if let Some(content_height) = self.0.preferences.snapshot().files.terminal_content_height {
-            let available = self.0.terminals.inner.workspace_size.get_untracked().1;
-            if available > MIN_CONTENT_HEIGHT + MIN_DOCK_HEIGHT {
-                let target = self
-                    .0
-                    .terminals
-                    .clamped_height((available - content_height).max(MIN_DOCK_HEIGHT));
-                self.0.terminals.inner.height.set(target);
-            }
+        if let Some(content_height) = self.0.preferences.snapshot().files.terminal_content_height
+            && let Some((_, available)) = self.0.terminals.inner.workspace_size.try_get_untracked()
+            && available > MIN_CONTENT_HEIGHT + MIN_DOCK_HEIGHT
+        {
+            let target = self
+                .0
+                .terminals
+                .clamped_height((available - content_height).max(MIN_DOCK_HEIGHT));
+            let _ = self.0.terminals.inner.height.try_set(target);
         }
 
         // Folder navigation NEVER injects auto-cd commands into running shells.
@@ -1020,6 +1092,9 @@ impl Browser {
                         let Some(b) = down_weak.upgrade() else {
                             return;
                         };
+                        if b.0.terminals.inner.sealed.get() {
+                            return;
+                        }
                         let pos = (ev.position.x.0, ev.position.y.0);
                         if !drop_hit_test(&b.0.list, pos) {
                             *b.0.terminals.inner.internal_drag.borrow_mut() = None;
@@ -1069,8 +1144,13 @@ impl Browser {
                         let Some(b) = move_weak.upgrade() else {
                             return;
                         };
+                        if b.0.terminals.inner.sealed.get() {
+                            return;
+                        }
                         let pos = (ev.position.x.0, ev.position.y.0);
-                        let shared_sources = b.drag_sources().get_untracked();
+                        let Some(shared_sources) = b.drag_sources().try_get_untracked() else {
+                            return;
+                        };
                         let active = {
                             let mut drag = b.0.terminals.inner.internal_drag.borrow_mut();
                             if !shared_sources.is_empty() {
@@ -1093,8 +1173,14 @@ impl Browser {
                         let over_pane = active
                             && b.terminal_visible_untracked()
                             && drop_hit_test(&b.0.terminals.inner.pane_node, pos);
-                        if b.0.terminals.inner.internal_drop_hover.get_untracked() != over_pane {
-                            b.0.terminals.inner.internal_drop_hover.set(over_pane);
+                        if b.0
+                            .terminals
+                            .inner
+                            .internal_drop_hover
+                            .try_get_untracked()
+                            .is_some_and(|cur| cur != over_pane)
+                        {
+                            let _ = b.0.terminals.inner.internal_drop_hover.try_set(over_pane);
                         }
                     },
                 );
@@ -1110,12 +1196,24 @@ impl Browser {
                         let Some(b) = up_weak.upgrade() else {
                             return;
                         };
-                        if b.0.terminals.inner.internal_drop_hover.get_untracked() {
-                            b.0.terminals.inner.internal_drop_hover.set(false);
+                        if b.0.terminals.inner.sealed.get() {
+                            return;
+                        }
+                        if b.0
+                            .terminals
+                            .inner
+                            .internal_drop_hover
+                            .try_get_untracked()
+                            .unwrap_or(false)
+                        {
+                            let _ = b.0.terminals.inner.internal_drop_hover.try_set(false);
                         }
                         let tracked = b.0.terminals.inner.internal_drag.borrow_mut().take();
-                        let shared: Vec<PathBuf> =
-                            b.drag_sources().get_untracked().into_iter().collect();
+                        let shared: Vec<PathBuf> = b
+                            .drag_sources()
+                            .try_get_untracked()
+                            .map(|s| s.into_iter().collect())
+                            .unwrap_or_default();
                         let dropped_paths = if !shared.is_empty() {
                             Some(shared)
                         } else {
@@ -1154,29 +1252,33 @@ impl Browser {
     }
 
     pub(super) fn terminal_workspace_resized(&self, width: f32, available: f32) {
-        self.0
+        if self.0.terminals.inner.sealed.get() {
+            return;
+        }
+        let _ = self
+            .0
             .terminals
             .inner
             .workspace_size
-            .set((width.max(320.0), available.max(MIN_DOCK_HEIGHT)));
+            .try_set((width.max(320.0), available.max(MIN_DOCK_HEIGHT)));
         if let Some(content_height) = self.0.preferences.snapshot().files.terminal_content_height {
             if available > MIN_CONTENT_HEIGHT + MIN_DOCK_HEIGHT {
                 let target = self
                     .0
                     .terminals
                     .clamped_height((available - content_height).max(MIN_DOCK_HEIGHT));
-                self.0.terminals.inner.height.set(target);
+                let _ = self.0.terminals.inner.height.try_set(target);
             }
-        } else {
-            let clamped = self
-                .0
-                .terminals
-                .clamped_height(self.0.terminals.inner.height.get_untracked());
-            self.0.terminals.inner.height.set(clamped);
+        } else if let Some(cur_h) = self.0.terminals.inner.height.try_get_untracked() {
+            let clamped = self.0.terminals.clamped_height(cur_h);
+            let _ = self.0.terminals.inner.height.try_set(clamped);
         }
     }
 
     fn handle_terminal_shortcut(&self, key: &Key, modifiers: Modifiers) -> bool {
+        if self.0.terminals.inner.sealed.get() {
+            return false;
+        }
         let key_event = KeyEvent {
             key: key.clone(),
             key_without_modifiers: key.clone(),
@@ -1197,12 +1299,12 @@ impl Browser {
             return true;
         }
         if *key == Key::Named(NamedKey::F6) && modifiers.is_empty() {
-            self.0.terminals.inner.maximized.set(false);
+            let _ = self.0.terminals.inner.maximized.try_set(false);
             self.focus_content();
             return true;
         }
         if *key == Key::Named(NamedKey::F2) && modifiers.is_empty() {
-            if let Some(id) = self.0.terminals.active.get_untracked() {
+            if let Some(id) = self.0.terminals.active.try_get_untracked().flatten() {
                 self.begin_terminal_rename(id);
             }
             return true;
@@ -1216,7 +1318,7 @@ impl Browser {
                 return true;
             }
             if ch.eq_ignore_ascii_case("w") {
-                if let Some(id) = self.0.terminals.active.get_untracked() {
+                if let Some(id) = self.0.terminals.active.try_get_untracked().flatten() {
                     self.close_terminal_session(id);
                 }
                 return true;
@@ -1317,7 +1419,8 @@ impl Browser {
                     .get()
                     .and_then(|id| dock.find_session(id))
                     .is_some_and(|entry| {
-                        !entry.closing.get() && entry.terminal.status().get() == Status::Running
+                        !entry.closing.get()
+                            && entry.terminal.status().try_get() == Some(Status::Running)
                     });
                 !has_dir || !running
             }
@@ -1378,12 +1481,24 @@ impl Browser {
                 open = Binding::controlled(rename_open, {
                     let b = self.clone();
                     move |next: bool| {
-                        if !next && b.0.terminals.inner.rename_dialog.get_untracked().is_some() {
+                        if !next
+                            && !b.0.terminals.inner.sealed.get()
+                            && b.0
+                                .terminals
+                                .inner
+                                .rename_dialog
+                                .try_get_untracked()
+                                .flatten()
+                                .is_some()
+                        {
                             b.finish_terminal_rename(false);
                         }
                     }
                 }),
                 on_decision = UnsyncCallback::new(move |decision: DialogDecision| {
+                    if b_rename_decision.0.terminals.inner.sealed.get() {
+                        return;
+                    }
                     match decision {
                         DialogDecision::Confirm => b_rename_decision.finish_terminal_rename(true),
                         DialogDecision::Cancel | DialogDecision::Dismiss => {
@@ -1747,7 +1862,14 @@ impl Browser {
                                                     })),
                                                     trailing = Some(trailing_view),
                                                     on_click = Some(UnsyncCallback::new(move |()| {
-                                                        b_select.0.terminals.active.set(Some(id));
+                                                        if b_select.0.terminals.inner.sealed.get() {
+                                                            return;
+                                                        }
+                                                        let _ = b_select
+                                                            .0
+                                                            .terminals
+                                                            .active
+                                                            .try_set(Some(id));
                                                         entry_for_term.terminal.focus();
                                                     })),
                                                     on_middle_click = Some(UnsyncCallback::new(move |()| {
@@ -1888,5 +2010,171 @@ mod tests {
             empty.contains("background: transparent;"),
             ".gds-files-terminal-empty must stay transparent inside .gds-files-terminal-pane: {empty}"
         );
+    }
+
+    #[test]
+    fn headless_window_teardown_with_disposed_child_owner_and_pending_failed_shell_does_not_panic()
+    {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use gds::{
+            app::Gds,
+            i18n::Language,
+            service::task_manager::{Scope, Supervisor},
+        };
+        use zgui::{
+            app::Fonts,
+            atlas::{MemorySink, TextureSink},
+            bits::DamageSet,
+            geom::{DevicePx, Size},
+            platform::{AppHandler, PlatformError, Surface, SurfaceEvent},
+            prelude::GetUntracked,
+            render::{
+                ExternalTexture, FrameOutcome, FrameStats, MemoryReport, RenderCapabilities,
+                RenderTarget, Renderer, TextureHandle,
+            },
+            runtime::AppError,
+            scene::Scene,
+        };
+        use zgui_platform_headless::Harness;
+
+        use crate::{
+            entities::{
+                location::{places::Places, volumes},
+                preferences::{self, Preferences},
+            },
+            pages::workspace::ui::{Browser, LaunchOptions},
+            shared::i18n as files_i18n,
+        };
+
+        #[derive(Default)]
+        struct NoopRenderer {
+            atlas: MemorySink,
+            target: Option<RenderTarget>,
+        }
+
+        impl Renderer for NoopRenderer {
+            fn capabilities(&self) -> RenderCapabilities {
+                RenderCapabilities::MINIMAL
+            }
+
+            fn configure(&mut self, target: RenderTarget) {
+                self.target = Some(target);
+            }
+
+            fn target(&self) -> Option<RenderTarget> {
+                self.target
+            }
+
+            fn register_external(&mut self, _: ExternalTexture) -> TextureHandle {
+                TextureHandle(0)
+            }
+
+            fn release_external(&mut self, _: TextureHandle) {}
+
+            fn memory(&self) -> MemoryReport {
+                MemoryReport::default()
+            }
+
+            fn draw(&mut self, _: &Scene, _: &DamageSet) -> FrameOutcome {
+                FrameOutcome::Presented(FrameStats::default())
+            }
+
+            fn texture_sink(&mut self) -> &mut dyn TextureSink {
+                &mut self.atlas
+            }
+        }
+
+        fn noop_renderer(
+            _: &Arc<dyn Surface>,
+            target: RenderTarget,
+        ) -> Result<Box<dyn Renderer>, AppError> {
+            let mut renderer = NoopRenderer::default();
+            renderer.configure(target);
+            Ok(Box::new(renderer))
+        }
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let driver_start = home.clone();
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(8);
+
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+
+            // Spawn inside a transient child Owner (mirroring a `<Show>` footer/header button),
+            // then immediately dispose that child Owner before window teardown runs.
+            let transient_button_owner = browser.0.owner.child();
+            transient_button_owner.with(|| {
+                browser.new_terminal_at(driver_start.clone());
+            });
+            transient_button_owner.cleanup();
+            assert!(browser.0.terminal.get_untracked());
+            assert_eq!(browser.0.terminals.inner.sessions.borrow().len(), 1);
+
+            // Spawn a second session whose `missing-shell` transition (`Starting -> Failed`) stays
+            // pending on the background service without settling UI frames before `shut_down()`.
+            let second_transient_owner = browser.0.owner.child();
+            second_transient_owner.with(|| {
+                browser.new_terminal_at(driver_start.clone());
+            });
+            second_transient_owner.cleanup();
+            assert_eq!(browser.0.terminals.inner.sessions.borrow().len(), 2);
+
+            std::thread::sleep(Duration::from_millis(30));
+
+            harness.shut_down();
+            assert!(
+                browser.0.terminals.inner.sealed.get(),
+                "window teardown must seal the terminal dock before shutting down sessions"
+            );
+            assert!(browser.0.terminals.inner.sessions.borrow().is_empty());
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(false);
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::English).expect("English catalog"),
+                );
+                let mut prefs = Preferences::default();
+                prefs.terminal.shell = Some(home.join("missing-shell"));
+                let _prefs = preferences::Service::install(prefs, &scope).expect("preferences");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: home.clone(),
+                        home: home.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("headless terminal teardown harness");
     }
 }

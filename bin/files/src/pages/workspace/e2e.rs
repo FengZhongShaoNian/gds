@@ -2215,10 +2215,39 @@ mod driven {
                     );
                     ctx.snap_primary("02-browser-list-keyboard-focus")?;
 
-                    // 03: Browser list in Dark Bamboo (advance timestamp past double-click window).
+                    // 03: Browser list in Dark Bamboo (advance timestamp past double-click window),
+                    // selecting both Desktop and symlink Docs-Shortcut to verify multi-row 36px pills
+                    // and selected symlink corner badge without any gray panel circle.
                     ctx.ts.set(ctx.ts.get() + 1_000);
                     apply_bamboo_mode(&browser, ModePreference::Dark);
                     send_click(ctx.harness, desktop_pos, PointerButton::Primary, ctx.ts);
+                    ctx.semantic.ingest_from(ctx.harness);
+                    if let Some(shortcut_pos) = ctx.semantic.find_entry_center("Docs-Shortcut") {
+                        let now = Timestamp::from_origin(Duration::from_millis(ctx.ts.get()));
+                        ctx.ts.set(ctx.ts.get() + 16);
+                        for (action, event) in [
+                            (PointerAction::Moved, PointerEvent::mouse(shortcut_pos)),
+                            (
+                                PointerAction::Pressed,
+                                PointerEvent::mouse(shortcut_pos)
+                                    .with_button(PointerButton::Primary),
+                            ),
+                            (
+                                PointerAction::Released,
+                                PointerEvent::mouse(shortcut_pos)
+                                    .with_button(PointerButton::Primary),
+                            ),
+                        ] {
+                            ctx.harness.deliver_to_first(SurfaceEvent::Pointer {
+                                action,
+                                event,
+                                modifiers: Modifiers::CONTROL,
+                                timestamp: now,
+                            });
+                            ctx.harness.pump();
+                        }
+                        pump_frames(ctx.harness);
+                    }
                     park_pointer(ctx.harness, ctx.ts);
                     ctx.snap_primary("03-browser-list-dark")?;
 
@@ -2304,6 +2333,7 @@ mod driven {
                     // 06: Recent page.
                     browser.update(|state| {
                         state.places.record(Location::from(&docs));
+                        state.places.record(Location::from(home.join("Docs-Shortcut")));
                         state.places.record(Location::from(home.join("Pictures")));
                         state.places.record(Location::from(home.join("Downloads")));
                     });
@@ -2312,6 +2342,10 @@ mod driven {
                         ctx.semantic.ingest_from(h);
                         ctx.semantic.find_entry_center("Documents").is_some()
                     });
+                    if let Some(pos) = ctx.semantic.find_entry_center("Documents") {
+                        send_click(ctx.harness, pos, PointerButton::Primary, ctx.ts);
+                        park_pointer(ctx.harness, ctx.ts);
+                    }
                     ctx.snap_primary("06-page-recent")?;
 
                     // 07: Favorites page.
@@ -2331,6 +2365,10 @@ mod driven {
                         ctx.semantic.ingest_from(h);
                         ctx.semantic.find_entry_center("Documents").is_some()
                     });
+                    if let Some(pos) = ctx.semantic.find_entry_center("Documents") {
+                        send_click(ctx.harness, pos, PointerButton::Primary, ctx.ts);
+                        park_pointer(ctx.harness, ctx.ts);
+                    }
                     ctx.snap_primary("07-page-favorites")?;
 
                     // 08: Volumes page.
@@ -2684,11 +2722,15 @@ mod driven {
                     close_secondary(ctx.harness, &save_picker_surface);
 
                     // 18: Remote Directory Picker modal dialog (`DirectoryPickerDialog`).
+                    let remote_dir_picker_slot: Rc<RefCell<Option<DirectoryPicker>>> =
+                        Rc::new(RefCell::new(None));
+                    let remote_dir_picker_out = Rc::clone(&remote_dir_picker_slot);
                     let remote_picker_surface = open_secondary_and_wait(ctx.harness, || {
                         browser.0.owner.with(|| {
                             if let Some(windows) = try_use_windows() {
                                 let opts = workspace_options("Remote Directory Picker", None)
                                     .with_size(GALLERY_WIDTH, GALLERY_HEIGHT);
+                                let picker_slot = Rc::clone(&remote_dir_picker_out);
                                 windows.open(opts, move || {
                                     let _ = Gds::current().appearance().install_window_sheet();
                                     let loader: gds::ui::picker::directory::Loader =
@@ -2757,6 +2799,7 @@ mod driven {
                                         });
                                     let dir_picker =
                                         DirectoryPicker::with_path(loader, "/srv/shared/projects");
+                                    *picker_slot.borrow_mut() = Some(dir_picker.clone());
                                     let open_sig = RwSignal::new_local(true);
                                     view! {
                                         Frame(without_sidebar = true) {
@@ -2777,6 +2820,13 @@ mod driven {
                             }
                         });
                     })?;
+                    if let Some(ref picker) = *remote_dir_picker_slot.borrow() {
+                        let _ = wait_until(ctx.harness, Duration::from_secs(2), |_| {
+                            !picker.rows().get_untracked().is_empty()
+                        });
+                        picker.select_row(0);
+                        pump_frames(ctx.harness);
+                    }
                     ctx.snap_surface(
                         "18-dialog-remote-directory-picker",
                         &remote_picker_surface,

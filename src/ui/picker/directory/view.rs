@@ -123,7 +123,7 @@ const SHEET: &str = css!(
         height: 30px;
         flex-shrink: 0;
         padding: 0px 12px;
-        font-size: calc(12px * var(--gds-font-scale, 1));
+        font-size: calc(11px * var(--gds-font-scale, 1));
         color: var(--gds-muted-foreground);
         border-bottom: 1px solid var(--gds-border);
         user-select: none;
@@ -136,25 +136,56 @@ const SHEET: &str = css!(
         overflow-x: hidden;
     }
 
+    .gds-picker-list .zui-virtual-list__row {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        min-width: 0px;
+        padding: 2px 0px;
+        box-sizing: border-box;
+    }
+
+    .gds-picker-list .zui-virtual-list__row > .zui-tooltip__trigger {
+        display: flex;
+        flex: 1 1 0%;
+        width: 100%;
+        height: 100%;
+        min-width: 0px;
+    }
+
     .gds-picker-row {
         display: flex;
         flex-direction: row;
+        flex: 1 1 0%;
         align-items: center;
-        gap: 8px;
+        gap: 10px;
         width: 100%;
-        height: 40px;
+        height: 100%;
+        min-height: 36px;
+        min-width: 0px;
         padding: 0px 12px;
+        box-sizing: border-box;
         cursor: pointer;
         border-radius: 6px;
         color: var(--gds-foreground);
-        font-size: calc(14px * var(--gds-font-scale, 1));
+        font-size: calc(13px * var(--gds-font-scale, 1));
+    }
+
+    .gds-picker-row__icon {
+        flex-shrink: 0;
+        color: var(--gds-primary);
+    }
+
+    .gds-picker-row[data-selected="true"] .gds-picker-row__icon {
+        color: var(--gds-selection-foreground);
     }
 
     .gds-picker-row:hover {
         background-color: var(--gds-hover);
     }
 
-    .gds-picker-row[data-hidden="true"]:not([data-selected="true"]) {
+    .gds-picker-row[data-hidden="true"]:not([data-selected="true"]) .gds-picker-row__icon,
+    .gds-picker-row[data-hidden="true"]:not([data-selected="true"]) .gds-picker-row__label {
         opacity: 0.65;
     }
 
@@ -164,9 +195,13 @@ const SHEET: &str = css!(
         color: var(--gds-selection-foreground);
     }
 
-    .gds-picker-row:focus-visible {
+    .gds-picker-row:not([data-selected="true"]):focus-visible {
         outline: 1px solid var(--gds-primary);
         outline-offset: -1px;
+    }
+
+    .gds-picker-row[data-selected="true"]:focus-visible {
+        outline: none;
     }
 
     .gds-picker-row__label {
@@ -791,7 +826,11 @@ pub fn DirectoryPickerView(
                                                     on:click = move |_| p_click.select_row(index),
                                                     on:double_click = move |_| p_dbl.navigate(open_path.clone()),
                                                 ) {
-                                                    Icon(name = IconName::Folder, size = SIDEBAR_ICON_SIZE)
+                                                    Icon(
+                                                        name = IconName::Folder,
+                                                        size = SIDEBAR_ICON_SIZE,
+                                                        class = "gds-picker-row__icon",
+                                                    )
                                                     text(class = "gds-picker-row__label") {{label}}
                                                 }
                                             }

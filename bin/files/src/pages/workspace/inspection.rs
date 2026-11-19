@@ -89,10 +89,9 @@ const INSPECTION_CSS: &str = css!(
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border-radius: 999px;
-        background: var(--gds-panel);
+        background: transparent;
         color: inherit;
-        padding: 1px;
+        padding: 0;
         pointer-events: none;
         z-index: 1;
     }

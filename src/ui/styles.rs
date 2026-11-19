@@ -880,12 +880,21 @@ fn base_css() -> &'static str {
 .{sel}.{sel}:focus,
 .{sel}.{sel}:focus-visible,
 .{nsel}.{nsel}:focus,
-.{nsel}.{nsel}:focus-visible,
-.{sw}.{sw}:focus,
-.{sw}.{sw}:focus-visible {{
+.{nsel}.{nsel}:focus-visible {{
     border-color: var(--gds-primary);
     box-shadow: none;
     outline: none;
+}}
+
+.{sw}.{sw}:focus:not(:focus-visible) {{
+    outline: none;
+    box-shadow: none;
+}}
+
+.{sw}.{sw}:focus-visible {{
+    box-shadow: none;
+    outline: 1px solid var(--gds-primary);
+    outline-offset: 2px;
 }}
 
 .{inp}.{inp}:invalid:focus,

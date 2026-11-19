@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use gds::ui::ToggleSwitchProps;
 use gds::ui::button::{ButtonProps, ButtonSize, ButtonVariant};
 use gds::ui::field::FieldLabelProps;
 use gds::ui::settings::{
@@ -14,7 +15,6 @@ use zgui::reactive::{
 };
 use zgui::view;
 use zgui::view::install_stylesheet;
-use zgui_ui::{SwitchProps, SwitchSize};
 use zgui_ui_primitives::Binding;
 
 use super::{Preferences, View};
@@ -237,10 +237,9 @@ impl View {
                     SettingActions {
                         {reset}
                         SettingControl {
-                            Switch(
+                            ToggleSwitch(
                                 checked = enabled,
                                 disabled = switch_disabled,
-                                size = SwitchSize::Sm,
                                 labelled_by = Some(title_ref),
                             )
                         }

@@ -3,12 +3,15 @@ use std::fmt::Write as _;
 use zgui::canvas::zgui_color::Color;
 use zgui_ui_tokens::Theme;
 
-use super::provider::color::color_css;
+use super::provider::color::{ColorExt as _, color_css};
 use crate::appearance::{motion, typography};
 
 const HOVER_OPACITY: f32 = 0.08;
 const PRESSED_OPACITY: f32 = 0.12;
 const DRAG_OPACITY: f32 = 0.12;
+const SWITCH_OFF_TINT_LIGHT: f32 = 0.14;
+const SWITCH_OFF_TINT_DARK: f32 = 0.16;
+const SWITCH_THUMB_INK_LIGHT: f32 = 0.28;
 
 /// Resolved GDS color roles shared by native components and custom surfaces.
 /// Surface/foreground and action/foreground pairs must be used together.
@@ -77,6 +80,47 @@ impl Palette {
         self.primary.with_alpha(DRAG_OPACITY)
     }
 
+    fn inferred_mode(self) -> super::Mode {
+        if self.content.lightness() < 0.5 {
+            super::Mode::Dark
+        } else {
+            super::Mode::Light
+        }
+    }
+
+    /// Unchecked toggle track fill resolved for `mode`, keeping distinct contrast from `content`
+    /// and pairing cleanly with `outline` borders and `switch_thumb_off_for(mode)` thumbs.
+    #[must_use]
+    pub fn switch_off_for(self, mode: super::Mode) -> Color {
+        let tint = match mode {
+            super::Mode::Light => SWITCH_OFF_TINT_LIGHT,
+            super::Mode::Dark => SWITCH_OFF_TINT_DARK,
+        };
+        self.panel.overlay(self.outline.with_alpha(tint))
+    }
+
+    /// Unchecked toggle thumb fill resolved for `mode` (high-contrast neutral ink on light tracks,
+    /// crisp foreground circle on dark tracks).
+    #[must_use]
+    pub fn switch_thumb_off_for(self, mode: super::Mode) -> Color {
+        match mode {
+            super::Mode::Light => self
+                .outline
+                .overlay(self.foreground.with_alpha(SWITCH_THUMB_INK_LIGHT)),
+            super::Mode::Dark => self.foreground,
+        }
+    }
+
+    #[must_use]
+    pub fn switch_off(self) -> Color {
+        self.switch_off_for(self.inferred_mode())
+    }
+
+    #[must_use]
+    pub fn switch_thumb_off(self) -> Color {
+        self.switch_thumb_off_for(self.inferred_mode())
+    }
+
     pub(crate) fn write_css_declarations(self, out: &mut String) {
         let colors = [
             ("--gds-content", self.content),
@@ -109,6 +153,8 @@ impl Palette {
             ("--gds-pressed", self.pressed()),
             ("--gds-sidebar-hover", self.sidebar_hover()),
             ("--gds-drag-target", self.drag_target()),
+            ("--gds-switch-off", self.switch_off()),
+            ("--gds-switch-thumb-off", self.switch_thumb_off()),
         ];
         for (name, value) in colors {
             let _ = writeln!(out, "    {name}: {};", color_css(value));
@@ -169,6 +215,9 @@ impl Palette {
 
         theme.control.ghost_hover = color_css(self.hover());
         theme.control.outline_hover = color_css(self.hover());
+        theme.control.switch_off = color_css(self.switch_off_for(mode));
+        theme.control.switch_thumb = color_css(self.switch_thumb_off_for(mode));
+        theme.control.switch_thumb_on = color_css(self.primary_foreground);
 
         let _ = rounded_corners;
         "4px".clone_into(&mut theme.radius.sm);
@@ -210,5 +259,54 @@ impl Palette {
             theme.motion.ease_out = motion::WORKSPACE_EASING.to_owned();
         }
         theme
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::appearance::theme::{Appearance, BuiltinTheme, Mode, ModePreference, Source};
+    use crate::appearance::{motion, typography};
+
+    #[test]
+    fn switch_palette_tokens_are_emitted_and_high_contrast_across_all_builtin_themes() {
+        let typo = typography::Preferences::default()
+            .resolve()
+            .expect("default typography");
+        let motion_policy = motion::Policy::default();
+
+        for builtin in BuiltinTheme::ALL {
+            for (pref, expected_mode) in [
+                (ModePreference::Light, Mode::Light),
+                (ModePreference::Dark, Mode::Dark),
+            ] {
+                let prepared = Appearance {
+                    source: Source::Builtin,
+                    builtin,
+                    mode: pref,
+                    ..Appearance::default()
+                }
+                .prepare(expected_mode)
+                .expect("prepare builtin theme");
+
+                let palette = prepared.colors();
+                assert_ne!(
+                    palette.switch_off_for(expected_mode),
+                    palette.switch_thumb_off_for(expected_mode),
+                    "unchecked switch track and thumb must contrast in {builtin:?} {expected_mode:?}"
+                );
+                assert_ne!(
+                    palette.primary, palette.primary_foreground,
+                    "checked switch track and thumb must contrast in {builtin:?} {expected_mode:?}"
+                );
+
+                let css = prepared.gds_stylesheet_css(&typo, motion_policy);
+                assert!(css.contains("--gds-switch-off:"));
+                assert!(css.contains("--gds-switch-thumb-off:"));
+
+                let tokens = prepared.tokens_theme(&typo, motion_policy);
+                assert_ne!(tokens.control.switch_off, tokens.control.switch_thumb);
+                assert!(!tokens.control.switch_thumb_on.is_empty());
+            }
+        }
     }
 }

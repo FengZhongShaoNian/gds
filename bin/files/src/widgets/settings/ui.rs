@@ -20,14 +20,17 @@ use gds::ui::settings::{
 };
 use gds::ui::sidebar::{SideBarContentProps, SideBarProps, SidebarPresentation};
 use gds::ui::tooltip::{HintTooltipProps, TooltipTextProps};
-use gds::ui::{FrameContext, IconButtonProps, IconName, IconProps, Shortcut, ShortcutBadgeProps};
+use gds::ui::{
+    FrameContext, IconButtonProps, IconName, IconProps, Shortcut, ShortcutBadgeProps,
+    ToggleSwitchProps,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, ReadSignal, RwSignal, UnsyncCallback};
-use zgui::view::install_stylesheet;
+use zgui::view::{ShowProps, install_stylesheet};
 use zgui::vocab::{Key, NamedKey};
 use zgui::{component, view};
-use zgui_ui::{SwitchProps, SwitchSize, TooltipContentProps, TooltipProps, TooltipTriggerProps};
+use zgui_ui::{TooltipContentProps, TooltipProps, TooltipTriggerProps};
 use zgui_ui_primitives::Binding;
 
 use crate::entities::preferences::Preferences;
@@ -286,9 +289,8 @@ impl View {
                 SettingActions {
                     {reset}
                     SettingControl {
-                        Switch(
+                        ToggleSwitch(
                             checked = value,
-                            size = SwitchSize::Sm,
                             labelled_by = Some(title_ref),
                         )
                     }
@@ -341,9 +343,8 @@ impl View {
                 SettingActions {
                     {reset}
                     SettingControl {
-                        Switch(
+                        ToggleSwitch(
                             checked = value,
-                            size = SwitchSize::Sm,
                             labelled_by = Some(title_ref),
                         )
                     }
@@ -447,15 +448,16 @@ impl View {
                             |p, v| p.terminal_enabled = Some(v),
                             |p| p.terminal_enabled = Preferences::default().terminal_enabled,
                         )}
-                        {move || preferences.with(Preferences::terminal_enabled).then(|| {
-                            let terminal = view
-                                .subform(|p| p.terminal.clone(), |p, v| p.terminal = v)
-                                .view();
-                            view! {
-                                box { {terminal} }
-                            }
-                            .into_view()
-                        })}
+                        Show(when = move || preferences.with(Preferences::terminal_enabled)) {
+                            {{
+                                let terminal = view
+                                    .subform(|p| p.terminal.clone(), |p, v| p.terminal = v)
+                                    .view();
+                                view! {
+                                    box { {terminal} }
+                                }
+                            }}
+                        }
                     }
                 })
             }
@@ -968,6 +970,22 @@ mod tests {
                     "{expected_select} SelectTrigger must match 36px control height, got {height_css}"
                 );
             }
+            let switch_sizes: Vec<(f64, f64)> = a11y_nodes
+                .iter()
+                .filter_map(|(role, _, size)| (*role == Role::Switch).then_some(*size).flatten())
+                .collect();
+            assert!(
+                switch_sizes.len() >= 2,
+                "Appearance page must render Rounded corners and Interface animations ToggleSwitch controls"
+            );
+            for (sw_w, sw_h) in switch_sizes {
+                let width_css = sw_w / f64::from(scale);
+                let height_css = sw_h / f64::from(scale);
+                assert!(
+                    (width_css - 44.0).abs() < 1.0 && (height_css - 24.0).abs() < 1.0,
+                    "Settings ToggleSwitch must lay out at 44x24px alongside 36px controls, got {width_css}x{height_css}"
+                );
+            }
             assert!(
                 a11y_nodes
                     .iter()
@@ -1047,5 +1065,97 @@ mod tests {
                 }
             })
             .expect("headless settings layout test succeeds");
+    }
+
+    #[test]
+    fn terminal_page_subform_stays_mounted_across_nested_preference_edits() {
+        let prefs_slot: Arc<Mutex<Option<RwSignal<Preferences, zgui::reactive::LocalStorage>>>> =
+            Arc::new(Mutex::new(None));
+        let page_slot: Arc<Mutex<Option<RwSignal<Page, zgui::reactive::LocalStorage>>>> =
+            Arc::new(Mutex::new(None));
+
+        let prefs_driver = Arc::clone(&prefs_slot);
+        let page_driver = Arc::clone(&page_slot);
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            let surface = harness
+                .platform()
+                .offscreens()
+                .first()
+                .cloned()
+                .expect("headless surface");
+            surface.set_a11y_listener(true);
+            harness.settle(24);
+
+            let page = page_driver.lock().expect("lock").expect("page sig");
+            page.set(Page::Terminal);
+            flush();
+            harness.settle(24);
+
+            let collect_switch_ids = || -> Vec<zgui::vocab::NodeId> {
+                let mut ids = Vec::new();
+                for update in surface.a11y_log() {
+                    for (id, node) in update.nodes {
+                        if node.role() == Role::Switch && !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    }
+                }
+                ids
+            };
+
+            let before_ids = collect_switch_ids();
+            assert!(
+                before_ids.len() >= 2,
+                "Terminal page must mount enable toggle plus subform toggles, got {}",
+                before_ids.len()
+            );
+
+            // Mutating a nested terminal boolean must NOT tear down & recreate subform Switch nodes!
+            let prefs = prefs_driver.lock().expect("lock").expect("prefs sig");
+            prefs.update(|p| p.terminal.login_shell = !p.terminal.login_shell);
+            flush();
+            harness.settle(16);
+
+            let after_ids = collect_switch_ids();
+            assert_eq!(
+                before_ids, after_ids,
+                "editing nested terminal preferences must preserve mounted subform ToggleSwitch nodes without remounting"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_decorations(Decorations::None)
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let gds = Gds::install(Scope::default());
+                let catalog = crate::shared::i18n::prepare(gds::i18n::Language::English)
+                    .expect("English catalog");
+                gds.i18n().install_catalog(catalog);
+
+                let initial = Preferences {
+                    terminal_enabled: Some(true),
+                    ..Default::default()
+                };
+                let prefs = RwSignal::new_local(initial);
+                let apply_prefs = prefs;
+                let view = View::new(prefs.read_only(), move |next| apply_prefs.set(next));
+
+                *prefs_slot.lock().expect("lock") = Some(prefs);
+                *page_slot.lock().expect("lock") = Some(view.page);
+
+                view.content()
+            })
+            .expect("terminal subform Show stability test succeeds");
     }
 }

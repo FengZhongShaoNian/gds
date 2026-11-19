@@ -5,7 +5,7 @@ pub mod forms;
 pub mod interaction;
 pub mod time;
 pub use feedback::{dialog, notifications, tooltip};
-pub use forms::{field, settings};
+pub use forms::{ToggleSwitch, ToggleSwitchProps, ToggleSwitchSize, field, settings, switch};
 pub(crate) use interaction::shortcut;
 pub use interaction::{actions, keytips, region};
 

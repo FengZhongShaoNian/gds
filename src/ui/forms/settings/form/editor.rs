@@ -9,7 +9,6 @@ use zgui::view::ShowProps;
 use zgui::{component, view};
 use zgui_ui::{
     SelectContentProps, SelectItemProps, SelectProps, SelectTriggerProps, SelectValueProps,
-    SwitchProps, SwitchSize,
 };
 use zgui_ui_primitives::{Binding, Controllable};
 
@@ -19,6 +18,7 @@ use crate::ui::button::IconButtonProps;
 use crate::ui::forms::field::{
     FieldLabelProps, InputFieldProps, SearchChoiceFieldProps, SearchOption, TextareaFieldProps,
 };
+use crate::ui::forms::switch::ToggleSwitchProps;
 use crate::ui::icon::IconName;
 use crate::ui::settings::{
     NumberControlProps, SettingActionsProps, SettingControlProps, SettingDescriptionProps,
@@ -371,9 +371,8 @@ fn render_field_control<T: Model + Serialize + DeserializeOwned>(
                 move |next: bool| apply_json(Value::Bool(next)),
             );
             AnyView::new(view! {
-                Switch(
+                ToggleSwitch(
                     checked = binding,
-                    size = SwitchSize::Sm,
                     disabled = disabled,
                     labelled_by = Some(title_ref),
                 )

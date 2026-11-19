@@ -13,7 +13,7 @@ use gds::{
 use zgui::{
     app::Fonts,
     atlas::{SinkError, TextureFormat, TextureId, TextureSink},
-    geom::{Device, DevicePx, Matrix4, Point, Rect, Size, transformed_bounds},
+    geom::{CssPx, Device, DevicePx, Matrix4, Point, Rect, Size, transformed_bounds},
     platform::{AppHandler, PlatformError, Surface, SurfaceEvent},
     prelude::*,
     reactive::{LocalStorage, Mounted, Signal, flush, install},
@@ -24,7 +24,7 @@ use zgui::{
     runtime::AppError,
     view,
     view::{ScrollBehavior, ScrollTarget},
-    vocab::Role,
+    vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Role, Timestamp},
 };
 use zgui_platform_headless::{Harness, OffscreenSurface};
 
@@ -70,6 +70,7 @@ impl TextureSink for NoopSink {
 
 thread_local! {
     static TAB_NODES: RefCell<HashMap<u64, (NodeRef, NodeRef)>> = RefCell::new(HashMap::new());
+    static HEADING_NODES: RefCell<HashMap<&'static str, NodeRef>> = RefCell::new(HashMap::new());
     static LOCATION_NODES: RefCell<Vec<(LocationTarget, NodeRef)>> = const { RefCell::new(Vec::new()) };
     static LOCATIONS_PROGRESS: RefCell<Option<Signal<f32, LocalStorage>>> = const { RefCell::new(None) };
     static LAST_VECTOR_INKS: RefCell<Vec<Rect<DevicePx, Device>>> = const { RefCell::new(Vec::new()) };
@@ -79,6 +80,20 @@ pub(super) fn record_tab_nodes(id: u64, tab: NodeRef, corner: NodeRef) {
     TAB_NODES.with(|slot| {
         slot.borrow_mut().insert(id, (tab, corner));
     });
+}
+
+pub(super) fn record_heading_node(label: &'static str, node: NodeRef) {
+    HEADING_NODES.with(|slot| {
+        slot.borrow_mut().insert(label, node);
+    });
+}
+
+pub(in crate::pages::workspace) fn heading_node(label: &'static str) -> Option<NodeRef> {
+    HEADING_NODES.with(|slot| slot.borrow().get(label).copied())
+}
+
+pub(in crate::pages::workspace) fn recorded_tab_node(id: u64) -> Option<NodeRef> {
+    TAB_NODES.with(|slot| slot.borrow().get(&id).map(|(tab, _)| *tab))
 }
 
 pub(super) fn record_location_node(target: LocationTarget, node: NodeRef) {
@@ -98,8 +113,9 @@ pub(super) fn record_locations_progress(progress: Signal<f32, LocalStorage>) {
     });
 }
 
-fn clear_recorded_tab_nodes() {
+pub(in crate::pages::workspace) fn clear_recorded_tab_nodes() {
     TAB_NODES.with(|slot| slot.borrow_mut().clear());
+    HEADING_NODES.with(|slot| slot.borrow_mut().clear());
     LOCATION_NODES.with(|slot| slot.borrow_mut().clear());
     LOCATIONS_PROGRESS.with(|slot| *slot.borrow_mut() = None);
     LAST_VECTOR_INKS.with(|slot| slot.borrow_mut().clear());
@@ -810,4 +826,186 @@ fn locations_collapse_mid_transition_hides_scrollbar_and_keeps_full_38px_row_hei
             }
         })
         .expect("headless locations collapse transition harness");
+}
+
+fn has_live_tooltip(surface: &OffscreenSurface) -> bool {
+    let mut nodes = HashMap::new();
+    let mut root = None;
+    for update in surface.a11y_log() {
+        if let Some(tree) = update.tree {
+            root = Some(tree.root);
+        }
+        for (id, node) in update.nodes {
+            nodes.insert(id, node);
+        }
+    }
+    let Some(root_id) = root else {
+        return false;
+    };
+    let mut stack = vec![root_id];
+    let mut seen = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(node) = nodes.get(&id) else {
+            continue;
+        };
+        if node.role() == Role::Tooltip {
+            return true;
+        }
+        for &child in node.children().iter().rev() {
+            stack.push(child);
+        }
+    }
+    false
+}
+
+#[test]
+fn sidebar_heading_keeps_single_dom_node_and_shows_tooltip_only_when_rail_is_collapsed() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let _guard = runtime.enter();
+    let temp = tempfile::tempdir().expect("tempdir");
+    clear_recorded_tab_nodes();
+
+    run_chrome_harness(temp.path(), |harness, browser| {
+        let surface = harness
+            .platform()
+            .offscreens()
+            .first()
+            .cloned()
+            .expect("offscreen surface");
+
+        let heading = heading_node("locations").expect("recorded locations sidebar heading");
+        let scale = heading.scale().max(1.0);
+        let initial_id = heading.get_untracked().expect("bound heading NodeId");
+
+        // 1. Hovering heading while expanded (`220px`) must NOT open a tooltip.
+        let exp_bounds = heading.window_bounds().expect("expanded heading bounds");
+        let exp_pos = Point::new(
+            CssPx((exp_bounds.origin.x.0 + 16.0) / scale),
+            CssPx((exp_bounds.origin.y.0 + exp_bounds.size.height.0 * 0.5) / scale),
+        );
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Moved,
+            event: PointerEvent::mouse(exp_pos),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(4);
+        harness.advance(Duration::from_millis(500));
+        harness.settle(8);
+        assert!(
+            !has_live_tooltip(&surface),
+            "sidebar_heading must suppress its tooltip while the sidebar is expanded"
+        );
+
+        // Move pointer away and click `PanelLeft` toolbar button to collapse sidebar.
+        let toggle_lbl = gds::i18n::text_untracked("sidebar-toggle");
+        let live_buttons = collect_live_buttons(&surface);
+        let toggle_btn = find_button_by_label(&live_buttons, &toggle_lbl)
+            .expect("PanelLeft sidebar-toggle button");
+        let toggle_pos = Point::new(CssPx(toggle_btn.center_x() as f32), CssPx(19.0));
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Moved,
+            event: PointerEvent::mouse(toggle_pos),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Pressed,
+            event: PointerEvent::mouse(toggle_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(toggle_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(16);
+
+        assert!(
+            !browser.0.sidebar.get_untracked(),
+            "clicking PanelLeft must collapse sidebar"
+        );
+        assert_eq!(
+            browser.sidebar_width().get_untracked(),
+            COLLAPSED_SIDEBAR_WIDTH
+        );
+        assert_eq!(
+            heading.get_untracked(),
+            Some(initial_id),
+            "sidebar_heading must keep the exact same NodeId when collapsing"
+        );
+
+        // 2. Hovering heading while collapsed (`58px` rail) MUST reveal its tooltip after 400ms.
+        let col_bounds = heading.window_bounds().expect("collapsed heading bounds");
+        let col_pos = Point::new(
+            CssPx((col_bounds.origin.x.0 + col_bounds.size.width.0 * 0.5) / scale),
+            CssPx((col_bounds.origin.y.0 + col_bounds.size.height.0 * 0.5) / scale),
+        );
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Moved,
+            event: PointerEvent::mouse(col_pos),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(4);
+        harness.advance(Duration::from_millis(500));
+        harness.settle(8);
+        assert!(
+            has_live_tooltip(&surface),
+            "sidebar_heading must reveal its tooltip when hovered on the collapsed rail"
+        );
+
+        // 3. Clicking `PanelLeft` a second time expands the sidebar and closes the heading tooltip.
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Moved,
+            event: PointerEvent::mouse(toggle_pos),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Pressed,
+            event: PointerEvent::mouse(toggle_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(toggle_pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Moved,
+            event: PointerEvent::mouse(Point::new(CssPx(640.0), CssPx(400.0))),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(16);
+
+        assert!(
+            browser.0.sidebar.get_untracked(),
+            "second click on PanelLeft must expand sidebar"
+        );
+        assert_eq!(browser.sidebar_width().get_untracked(), SIDEBAR_WIDTH);
+        harness.advance(Duration::from_millis(250));
+        harness.settle(8);
+        assert!(
+            !has_live_tooltip(&surface),
+            "expanding sidebar must close collapsed-rail heading tooltip"
+        );
+        assert_eq!(
+            heading.get_untracked(),
+            Some(initial_id),
+            "sidebar_heading must keep the exact same NodeId when expanding"
+        );
+    });
 }

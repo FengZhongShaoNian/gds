@@ -130,17 +130,28 @@ const WORKSPACE_CSS: &str = css!(
         flex: none;
     }
 
+    .gds-files-toolbar {
+        display: flex;
+        flex: 1 1 0%;
+        width: 100%;
+        height: 100%;
+        align-items: center;
+        gap: 4px;
+        min-width: 0px;
+    }
+
     .gds-files-toolbar-title {
         display: flex;
         flex: 1 1 0%;
         align-items: center;
         min-width: 0px;
-        height: 32px;
+        height: 100%;
         padding: 0px 8px;
+        box-sizing: border-box;
     }
 
     .gds-files-toolbar-title-text {
-        font-weight: 600;
+        font-weight: 400;
         color: var(--gds-foreground);
         overflow: hidden;
         text-overflow: ellipsis;
@@ -1227,6 +1238,7 @@ impl Browser {
         let key_decision_slot = Rc::clone(&decision_slot);
 
         let keyboard = self.clone();
+        let init_focus_browser = self.clone();
         let mouse = self.clone();
         let main_browser = self.clone();
         let prompt_browser = self.clone();
@@ -1313,6 +1325,47 @@ impl Browser {
                             }
                         });
 
+                        let shortcut_guard: Rc<RefCell<Option<zgui::view::WindowShortcut>>> =
+                            Rc::new(RefCell::new(None));
+                        let shortcut_guard_init = Rc::clone(&shortcut_guard);
+                        let shortcut_guard_fx_slot = Rc::clone(&shortcut_guard);
+                        let shortcut_guard_cleanup = Rc::clone(&shortcut_guard);
+                        let shortcut_fx = RenderEffect::new(move |_| {
+                            if root_focus.get().is_some()
+                                && shortcut_guard_fx_slot.borrow().is_none()
+                            {
+                                *shortcut_guard_fx_slot.borrow_mut() =
+                                    root_focus.window_shortcut();
+                            }
+                        });
+                        on_cleanup_local(move || {
+                            drop(shortcut_fx);
+                            drop(shortcut_guard_cleanup.borrow_mut().take());
+                        });
+
+                        let content_focus = init_focus_browser.0.content_focus;
+                        let init_focus_fx = RenderEffect::new(move |_| {
+                            if content_focus.get().is_some()
+                                && init_focus_browser.pane_untracked() == Pane::Files
+                                && matches!(
+                                    init_focus_browser.0.address_presentation.get_untracked(),
+                                    super::model::AddressPresentation::Breadcrumbs
+                                )
+                                && !gds::ui::keytips::has_active_modal_scope()
+                                && current_host()
+                                    .is_some_and(|host| host.focused().get_untracked().is_none())
+                            {
+                                content_focus.focus();
+                            }
+                        });
+                        on_cleanup_local(move || drop(init_focus_fx));
+
+                        let sync_shortcut = Scoped::new(move || {
+                            if shortcut_guard_init.borrow().is_none() {
+                                *shortcut_guard_init.borrow_mut() = root_focus.window_shortcut();
+                            }
+                        });
+
                         view! {
                             column(
                                 node_ref = root_focus,
@@ -1336,6 +1389,7 @@ impl Browser {
                                 {menu_overlay}
                                 {prompt_dialog}
                             }
+                            {sync_shortcut}
                         }
                     }}
                 }
@@ -1343,12 +1397,30 @@ impl Browser {
         }
     }
 
+    pub(super) fn subpage_toolbar_title(label_key: &'static str) -> AnyView {
+        super::chrome::install_chrome_stylesheets();
+        let text_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_toolbar_title_text_node(label_key, text_ref);
+        AnyView::new(view! {
+            WindowDragArea(class = "gds-files-toolbar-title") {
+                text(node_ref = text_ref, class = "gds-files-toolbar-title-text") {
+                    {move || i18n::text(label_key)}
+                }
+            }
+        })
+    }
+
     fn help_view(&self) -> AnyView {
         let root_ref = self.0.settings_node;
         let back_click = self.clone();
+        let back_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_help_back_node(back_ref);
         let back_button = AnyView::new(view! {
             row(class = "gds-files-menu-controls") {
                 IconButton(
+                    node_ref = back_ref,
                     icon = IconName::ArrowLeft,
                     label = Signal::derive_local(|| i18n::text("page-return")),
                     shortcut = Some(Command::Cancel.shortcut()),
@@ -1357,8 +1429,8 @@ impl Browser {
             }
         });
         let title_controls = AnyView::new(view! {
-            WindowDragArea(class = "gds-files-toolbar-title") {
-                text(class = "gds-files-toolbar-title-text") {{i18n::text("help")}}
+            row(class = "gds-files-toolbar") {
+                {Self::subpage_toolbar_title("help")}
             }
         });
         let help_body = AnyView::new(view! {
@@ -1551,8 +1623,12 @@ impl Browser {
                 Show(when = move || visible.get()) {
                     {{
                         let clk_b = click_browser.clone();
+                        let term_btn_ref = NodeRef::new();
+                        #[cfg(test)]
+                        tests::record_footer_terminal_node(term_btn_ref);
                         view! {
                             IconButton(
+                                node_ref = term_btn_ref,
                                 icon = IconName::Terminal,
                                 label = terminal_label,
                                 toggled = Some(terminal_toggled),
@@ -2200,11 +2276,6 @@ impl Browser {
             }
         });
         on_cleanup_local(move || drop(scroll_fx));
-    }
-
-    fn read_structure<R>(&self, read: impl FnOnce(&super::model::State) -> R) -> R {
-        let _ = self.0.revision.get();
-        read(&self.0.state.borrow())
     }
 
     fn clear_blank_selection(&self) {
@@ -3093,6 +3164,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use gds::app::Gds;
+    use gds::appearance::tokens::{COLLAPSED_SIDEBAR_WIDTH, SIDEBAR_WIDTH};
     use gds::i18n::Language;
     use gds::service::task_manager::{Scope, Supervisor};
     use zgui::app::Fonts;
@@ -3107,7 +3179,10 @@ mod tests {
     };
     use zgui::runtime::AppError;
     use zgui::scene::Scene;
-    use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Role, Timestamp};
+    use zgui::vocab::{
+        KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, PointerAction,
+        PointerButton, PointerEvent, Role, Timestamp,
+    };
     use zgui_platform_headless::{Harness, OffscreenSurface};
 
     use super::{Browser, CONFIRM_PREVIEW_LIMIT, Column, Location, WORKSPACE_CSS};
@@ -3119,6 +3194,9 @@ mod tests {
     thread_local! {
         static ROW_CONTENT_NODES: RefCell<HashMap<usize, NodeRef>> = RefCell::new(HashMap::new());
         static HEADER_RESIZE_NODES: RefCell<HashMap<Column, NodeRef>> = RefCell::new(HashMap::new());
+        static TOOLBAR_TITLE_TEXT_NODES: RefCell<HashMap<&'static str, NodeRef>> = RefCell::new(HashMap::new());
+        static HELP_BACK_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
+        static FOOTER_TERMINAL_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
         static LAST_COLOR_SPRITES: RefCell<Vec<(f32, f32)>> = const { RefCell::new(Vec::new()) };
     }
 
@@ -3134,10 +3212,43 @@ mod tests {
         });
     }
 
+    pub(super) fn record_toolbar_title_text_node(key: &'static str, node: NodeRef) {
+        TOOLBAR_TITLE_TEXT_NODES.with(|slot| {
+            slot.borrow_mut().insert(key, node);
+        });
+    }
+
+    pub(super) fn record_help_back_node(node: NodeRef) {
+        HELP_BACK_NODE.with(|slot| {
+            *slot.borrow_mut() = Some(node);
+        });
+    }
+
+    pub(super) fn record_footer_terminal_node(node: NodeRef) {
+        FOOTER_TERMINAL_NODE.with(|slot| {
+            *slot.borrow_mut() = Some(node);
+        });
+    }
+
     fn clear_row_content_nodes() {
         ROW_CONTENT_NODES.with(|slot| slot.borrow_mut().clear());
         HEADER_RESIZE_NODES.with(|slot| slot.borrow_mut().clear());
+        TOOLBAR_TITLE_TEXT_NODES.with(|slot| slot.borrow_mut().clear());
+        HELP_BACK_NODE.with(|slot| *slot.borrow_mut() = None);
+        FOOTER_TERMINAL_NODE.with(|slot| *slot.borrow_mut() = None);
         LAST_COLOR_SPRITES.with(|slot| slot.borrow_mut().clear());
+    }
+
+    fn toolbar_title_text_node(key: &'static str) -> Option<NodeRef> {
+        TOOLBAR_TITLE_TEXT_NODES.with(|slot| slot.borrow().get(key).copied())
+    }
+
+    fn help_back_node() -> Option<NodeRef> {
+        HELP_BACK_NODE.with(|slot| *slot.borrow())
+    }
+
+    fn footer_terminal_node() -> Option<NodeRef> {
+        FOOTER_TERMINAL_NODE.with(|slot| *slot.borrow())
     }
 
     fn last_color_sprites() -> Vec<(f32, f32)> {
@@ -3928,5 +4039,664 @@ mod tests {
                 browser.view()
             })
             .expect("grid thumbnail and details media layout harness");
+    }
+
+    fn send_ctrl_b(harness: &mut Harness<Box<dyn AppHandler>>) {
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Pressed,
+            event: KeyEvent::character("b"),
+            modifiers: Modifiers::CONTROL,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Released,
+            event: KeyEvent::character("b"),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.pump();
+        zgui::reactive::flush();
+    }
+
+    fn click_node_center(harness: &mut Harness<Box<dyn AppHandler>>, node: NodeRef) {
+        let scale = node.scale().max(1.0);
+        let bounds = node.window_bounds().expect("measured node window_bounds");
+        let cx = (bounds.origin.x.0 + bounds.size.width.0 * 0.5) / scale;
+        let cy = (bounds.origin.y.0 + bounds.size.height.0 * 0.5) / scale;
+        let pos = Point::new(CssPx(cx), CssPx(cy));
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Pressed,
+            event: PointerEvent::mouse(pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Pointer {
+            action: PointerAction::Released,
+            event: PointerEvent::mouse(pos).with_button(PointerButton::Primary),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(8);
+        zgui::reactive::flush();
+    }
+
+    #[test]
+    fn fresh_launch_ctrl_b_toggles_sidebar_repeatedly_across_frame_zero_transitions_and_sidebar_focus()
+     {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        clear_row_content_nodes();
+        super::super::chrome::tests::clear_recorded_tab_nodes();
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let start = home;
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+            assert!(
+                browser.0.sidebar.get_untracked(),
+                "sidebar starts expanded at desktop width"
+            );
+
+            // 1. Frame 0 immediately after mounting `browser.view()`, BEFORE `settle()` / frame callbacks!
+            for (step, expected) in [false, true, false, true].into_iter().enumerate() {
+                send_ctrl_b(&mut harness);
+                assert_eq!(
+                    browser.0.sidebar.get_untracked(),
+                    expected,
+                    "Frame-0 Ctrl+B press #{} expected sidebar == {expected}",
+                    step + 1
+                );
+            }
+
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(8);
+
+            // 2. Mid-transition (`48ms`) repeated `Ctrl+B` presses.
+            for (step, expected) in [false, true, false, true].into_iter().enumerate() {
+                send_ctrl_b(&mut harness);
+                harness.run_for(Duration::from_millis(48), Duration::from_millis(16));
+                zgui::reactive::flush();
+                assert_eq!(
+                    browser.0.sidebar.get_untracked(),
+                    expected,
+                    "Mid-transition (48ms) Ctrl+B press #{} expected sidebar == {expected}",
+                    step + 1
+                );
+            }
+            harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+            harness.settle(4);
+
+            // 3. Full `200ms` settle repeated `Ctrl+B` presses.
+            for (step, expected) in [false, true, false, true].into_iter().enumerate() {
+                send_ctrl_b(&mut harness);
+                harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+                zgui::reactive::flush();
+                harness.settle(4);
+                assert_eq!(
+                    browser.0.sidebar.get_untracked(),
+                    expected,
+                    "Settled (200ms) Ctrl+B press #{} expected sidebar == {expected}",
+                    step + 1
+                );
+                let expected_w = if expected {
+                    SIDEBAR_WIDTH
+                } else {
+                    COLLAPSED_SIDEBAR_WIDTH
+                };
+                assert!(
+                    (browser.sidebar_width().get_untracked() - expected_w).abs() < 0.5,
+                    "expected settled sidebar_width == {expected_w}, got {}",
+                    browser.sidebar_width().get_untracked()
+                );
+            }
+
+            // 4. While a sidebar tab holds focus, and across unrelated revision / selection bumps!
+            let tab_id = browser.read_untracked(|state| state.tab().id);
+            let tab_node = super::super::chrome::tests::recorded_tab_node(tab_id)
+                .expect("recorded active sidebar tab node");
+            let initial_tab_id = tab_node.get_untracked().expect("bound sidebar tab NodeId");
+            browser.changed();
+            browser.update_selection(|_| {});
+            zgui::reactive::flush();
+            harness.settle(4);
+            assert_eq!(
+                tab_node.get_untracked(),
+                Some(initial_tab_id),
+                "unrelated revision/selection bumps must never unmount or recreate sidebar_tab"
+            );
+
+            tab_node.focus();
+            harness.settle(4);
+            for (step, expected) in [false, true, false, true].into_iter().enumerate() {
+                send_ctrl_b(&mut harness);
+                harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+                zgui::reactive::flush();
+                harness.settle(4);
+                assert_eq!(
+                    browser.0.sidebar.get_untracked(),
+                    expected,
+                    "Tab-focused Ctrl+B press #{} expected sidebar == {expected}",
+                    step + 1
+                );
+                assert_eq!(
+                    tab_node.get_untracked(),
+                    Some(initial_tab_id),
+                    "sidebar_tab DOM node must remain stable across collapse/expand"
+                );
+            }
+
+            // 5. While a sidebar heading (`Locations`) holds focus across `is_collapsed_rail`!
+            let heading_node = super::super::chrome::tests::heading_node("locations")
+                .expect("recorded Locations sidebar heading node");
+            let initial_heading_id = heading_node
+                .get_untracked()
+                .expect("bound sidebar heading NodeId");
+            heading_node.focus();
+            harness.settle(4);
+            for (step, expected) in [false, true, false, true].into_iter().enumerate() {
+                send_ctrl_b(&mut harness);
+                harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+                zgui::reactive::flush();
+                harness.settle(4);
+                assert_eq!(
+                    browser.0.sidebar.get_untracked(),
+                    expected,
+                    "Heading-focused Ctrl+B press #{} expected sidebar == {expected}",
+                    step + 1
+                );
+                assert_eq!(
+                    heading_node.get_untracked(),
+                    Some(initial_heading_id),
+                    "sidebar_heading DOM node must remain stable across collapsed-rail tooltip gating"
+                );
+            }
+
+            // 6. Compact window (< 1080px) guards Ctrl+B so `sidebar` preference stays intact.
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(960.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(8);
+            assert!(browser.compact_untracked());
+            send_ctrl_b(&mut harness);
+            assert!(
+                browser.0.sidebar.get_untracked(),
+                "Ctrl+B in compact mode (< 1080px) must not flip underlying sidebar state"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(true);
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::Chinese).expect("Chinese catalog"),
+                );
+                let _prefs =
+                    preferences::Service::install(preferences::Preferences::default(), &scope)
+                        .expect("preferences service");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: start.clone(),
+                        home: start.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("fresh-launch repeated Ctrl+B harness");
+    }
+
+    fn css_rule_body<'a>(sheet: &'a str, selector: &str) -> Option<&'a str> {
+        let start = sheet.find(selector)?;
+        let after_selector = &sheet[start + selector.len()..];
+        let brace_open = after_selector.find('{')?;
+        let rest = &after_selector[brace_open + 1..];
+        let brace_close = rest.find('}')?;
+        Some(&rest[..brace_close])
+    }
+
+    #[test]
+    fn help_subpage_toolbar_title_centers_vertically_with_back_button_and_uses_regular_weight() {
+        let title_box_rule = css_rule_body(WORKSPACE_CSS, ".gds-files-toolbar-title ")
+            .expect(".gds-files-toolbar-title rule");
+        assert!(
+            title_box_rule.contains("height: 100%;") && !title_box_rule.contains("height: 32px;"),
+            "expected .gds-files-toolbar-title to span full 100% toolbar height: {title_box_rule}"
+        );
+        let title_text_rule = css_rule_body(WORKSPACE_CSS, ".gds-files-toolbar-title-text ")
+            .expect(".gds-files-toolbar-title-text rule");
+        assert!(
+            title_text_rule.contains("font-weight: 400;")
+                && !title_text_rule.contains("font-weight: 600;"),
+            "expected .gds-files-toolbar-title-text to use regular font-weight: 400: {title_text_rule}"
+        );
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        clear_row_content_nodes();
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let start = home;
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(16);
+
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+            browser.show_help();
+            zgui::reactive::flush();
+            harness.settle(16);
+
+            let back_node = help_back_node().expect("recorded Help ArrowLeft back button");
+            let title_node = toolbar_title_text_node("help")
+                .expect("recorded Help .gds-files-toolbar-title-text node");
+            let scale = back_node.scale().max(1.0);
+            let back_bounds = back_node
+                .window_bounds()
+                .expect("measured Help ArrowLeft window_bounds");
+            let title_bounds = title_node
+                .window_bounds()
+                .expect("measured Help title text window_bounds");
+
+            let back_mid_y = (back_bounds.origin.y.0 + back_bounds.size.height.0 * 0.5) / scale;
+            let title_mid_y = (title_bounds.origin.y.0 + title_bounds.size.height.0 * 0.5) / scale;
+            assert!(
+                (back_mid_y - title_mid_y).abs() <= 1.0,
+                "expected Help ArrowLeft midline ({back_mid_y:.2}px) and '帮助' title midline ({title_mid_y:.2}px) to match within 1.0px"
+            );
+            assert!(
+                (title_mid_y - 26.0).abs() <= 1.5,
+                "expected '帮助' title to center vertically inside 52px toolbar (~26px, never 16px), got {title_mid_y:.2}px"
+            );
+
+            // Also verify Settings subpage toolbar title shares the exact same 26px midline.
+            browser.show_settings();
+            zgui::reactive::flush();
+            harness.settle(16);
+            let settings_title_node = toolbar_title_text_node("settings")
+                .expect("recorded Settings .gds-files-toolbar-title-text node");
+            let settings_bounds = settings_title_node
+                .window_bounds()
+                .expect("measured Settings title text window_bounds");
+            let settings_mid_y =
+                (settings_bounds.origin.y.0 + settings_bounds.size.height.0 * 0.5) / scale;
+            assert!(
+                (settings_mid_y - 26.0).abs() <= 1.5,
+                "expected '设置' title to center vertically inside 52px toolbar (~26px), got {settings_mid_y:.2}px"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(false);
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::Chinese).expect("Chinese catalog"),
+                );
+                let _prefs =
+                    preferences::Service::install(preferences::Preferences::default(), &scope)
+                        .expect("preferences service");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: start.clone(),
+                        home: start.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("help subpage toolbar title alignment harness");
+    }
+
+    #[test]
+    fn footer_terminal_icon_button_pointer_clicks_open_on_first_click_and_close_on_second_click() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        clear_row_content_nodes();
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let start = home;
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(16);
+
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+            assert!(
+                !browser.0.terminal.get_untracked(),
+                "terminal dock starts closed"
+            );
+
+            let term_btn =
+                footer_terminal_node().expect("recorded footer terminal IconButton NodeRef");
+
+            // 1st click opens terminal dock; 2nd click closes it; 3rd opens; 4th closes!
+            for (click_idx, expected_open) in [true, false, true, false].into_iter().enumerate() {
+                click_node_center(&mut harness, term_btn);
+                assert_eq!(
+                    browser.0.terminal.get_untracked(),
+                    expected_open,
+                    "footer terminal IconButton click #{} expected terminal == {expected_open}",
+                    click_idx + 1
+                );
+            }
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(false);
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::Chinese).expect("Chinese catalog"),
+                );
+                let _prefs =
+                    preferences::Service::install(preferences::Preferences::default(), &scope)
+                        .expect("preferences service");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: start.clone(),
+                        home: start.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("footer terminal button click toggle harness");
+    }
+
+    fn send_key_chord(
+        harness: &mut Harness<Box<dyn AppHandler>>,
+        event: KeyEvent,
+        modifiers: Modifiers,
+    ) {
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Pressed,
+            event: event.clone(),
+            modifiers,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Released,
+            event,
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(6);
+        zgui::reactive::flush();
+    }
+
+    #[test]
+    fn content_focus_single_dispatch_and_open_menu_or_columns_portal_isolates_workspace_shortcuts()
+    {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        std::fs::write(home.join("alpha.txt"), b"a\n").expect("write alpha.txt");
+        std::fs::write(home.join("beta.txt"), b"b\n").expect("write beta.txt");
+        std::fs::write(home.join("gamma.txt"), b"c\n").expect("write gamma.txt");
+        clear_row_content_nodes();
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let start = home;
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(16);
+
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while browser.read_untracked(|state| state.tab().rows.len() < 3) {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for 3 directory rows to load"
+                );
+                harness.advance(Duration::from_millis(25));
+                harness.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            zgui::reactive::flush();
+            harness.settle(8);
+
+            // 1. Single-dispatch verification when `content_focus` holds focus:
+            //    Selecting row 0 and pressing `ArrowDown` ONCE must advance to row 1 (never row 2!).
+            browser.0.content_focus.focus();
+            browser.select_row(0, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(4);
+
+            send_key_chord(
+                &mut harness,
+                KeyEvent::named(NamedKey::ArrowDown, PhysicalKey::Code(KeyCode::ArrowDown)),
+                Modifiers::NONE,
+            );
+            let selected_idx = browser.read_untracked(|state| {
+                let tab = state.tab();
+                let key = tab
+                    .navigation
+                    .view()
+                    .selection
+                    .as_slice()
+                    .first()
+                    .expect("single selected key");
+                tab.backing.position(key).expect("selected row index")
+            });
+            assert_eq!(
+                selected_idx, 1,
+                "single ArrowDown on content_focus must advance selection by 1 row (to index 1, never 2)"
+            );
+
+            // Open a 2nd tab and record a recent location so `Ctrl+W` and `Alt+C` are observable.
+            browser.new_tab(None);
+            browser.update(|state| {
+                state.places.record(Location::from(state.home.as_path()));
+            });
+            zgui::reactive::flush();
+            harness.settle(8);
+            assert_eq!(browser.read_untracked(|state| state.tabs.len()), 2);
+            assert_eq!(browser.read_untracked(|state| state.places.recent.len()), 1);
+
+            // 2. Open menu (`show_app_menu`) isolation — both when portaled menu holds focus
+            //    and when trigger / `root_focus` holds focus!
+            browser.show_app_menu();
+            zgui::reactive::flush();
+            harness.settle(8);
+            assert!(browser.0.menus.is_open());
+
+            for focus_root in [false, true] {
+                if focus_root {
+                    browser.0.root_focus.focus();
+                    harness.settle(4);
+                }
+                send_key_chord(&mut harness, KeyEvent::character("b"), Modifiers::CONTROL);
+                send_key_chord(&mut harness, KeyEvent::character("w"), Modifiers::CONTROL);
+                send_key_chord(&mut harness, KeyEvent::character("c"), Modifiers::ALT);
+                assert!(
+                    browser.0.sidebar.get_untracked(),
+                    "open menu must block Ctrl+B (focus_root={focus_root})"
+                );
+                assert_eq!(
+                    browser.read_untracked(|state| state.tabs.len()),
+                    2,
+                    "open menu must block Ctrl+W (focus_root={focus_root})"
+                );
+                assert_eq!(
+                    browser.read_untracked(|state| state.places.recent.len()),
+                    1,
+                    "open menu must block Alt+C ClearRecent (focus_root={focus_root})"
+                );
+                assert!(
+                    browser.0.menus.is_open(),
+                    "menu stays open across unhandled workspace chords (focus_root={focus_root})"
+                );
+            }
+
+            send_key_chord(
+                &mut harness,
+                KeyEvent::named(NamedKey::Escape, PhysicalKey::Code(KeyCode::Escape)),
+                Modifiers::NONE,
+            );
+            assert!(
+                !browser.0.menus.is_open(),
+                "Escape must close open application menu cleanly"
+            );
+
+            // 3. `Surface::Columns` portaled `Dialog` isolation — both when portaled dialog holds focus
+            //    and when `content_focus` holds focus!
+            browser.configure_columns();
+            zgui::reactive::flush();
+            harness.settle(8);
+            assert!(matches!(
+                browser.0.menus.surface.get_untracked(),
+                super::Surface::Columns { .. }
+            ));
+
+            for focus_content in [false, true] {
+                if focus_content {
+                    browser.0.content_focus.focus();
+                    harness.settle(4);
+                }
+                send_key_chord(&mut harness, KeyEvent::character("b"), Modifiers::CONTROL);
+                send_key_chord(&mut harness, KeyEvent::character("w"), Modifiers::CONTROL);
+                if focus_content {
+                    // When `DialogContent` itself holds focus, `Alt+C` is `DialogActions`'s own Cancel mnemonic;
+                    // when `content_focus` holds focus, `menus.is_open()` must block `Alt+C` (`ClearRecent`).
+                    send_key_chord(&mut harness, KeyEvent::character("c"), Modifiers::ALT);
+                }
+                send_key_chord(&mut harness, KeyEvent::character("m"), Modifiers::ALT);
+                assert!(
+                    browser.0.sidebar.get_untracked(),
+                    "Surface::Columns must block Ctrl+B (focus_content={focus_content})"
+                );
+                assert_eq!(
+                    browser.read_untracked(|state| state.tabs.len()),
+                    2,
+                    "Surface::Columns must block Ctrl+W (focus_content={focus_content})"
+                );
+                assert_eq!(
+                    browser.read_untracked(|state| state.places.recent.len()),
+                    1,
+                    "Surface::Columns must block Alt+C ClearRecent (focus_content={focus_content})"
+                );
+                assert!(
+                    matches!(
+                        browser.0.menus.surface.get_untracked(),
+                        super::Surface::Columns { .. }
+                    ),
+                    "Surface::Columns must not be overwritten by Alt+M (focus_content={focus_content})"
+                );
+            }
+
+            send_key_chord(
+                &mut harness,
+                KeyEvent::named(NamedKey::Escape, PhysicalKey::Code(KeyCode::Escape)),
+                Modifiers::NONE,
+            );
+            assert!(
+                !browser.0.menus.is_open(),
+                "Escape must close Surface::Columns dialog cleanly"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(false);
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::English).expect("English catalog"),
+                );
+                let _prefs =
+                    preferences::Service::install(preferences::Preferences::default(), &scope)
+                        .expect("preferences service");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: start.clone(),
+                        home: start.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("single-dispatch and portal isolation harness");
     }
 }

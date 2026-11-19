@@ -13,7 +13,7 @@ use gds::i18n;
 use gds::ui::button::{ButtonSize, IconButtonProps};
 use gds::ui::capacity::{CapacityBarProps, EXTRA_ROW_HEIGHT};
 use gds::ui::disclosure::DisclosureIconProps;
-use gds::ui::feedback::tooltip::{HintTooltipProps, wrap_tokens};
+use gds::ui::feedback::tooltip::{HintTooltipProps, TOOLTIP_DELAY, TooltipTextProps, wrap_tokens};
 use gds::ui::field::InputFieldProps;
 use gds::ui::frame::WindowDragAreaProps;
 use gds::ui::interaction::{
@@ -40,7 +40,7 @@ use zgui::reactive::{RenderEffect, RwSignal, UnsyncCallback, on_cleanup_local};
 use zgui::view::{Scoped, ScrollBehavior, ScrollTarget, current_host, events, install_stylesheet};
 use zgui::vocab::{Key, Modifiers, NamedKey, PointerButton, Role, SharedString};
 use zgui::{css, view};
-use zgui_ui::{InputProps, SpinnerProps};
+use zgui_ui::{InputProps, SpinnerProps, TooltipContentProps, TooltipProps, TooltipTriggerProps};
 use zgui_ui_primitives::Binding;
 
 use super::keyboard::{SidebarRegion, SidebarRow};
@@ -98,6 +98,7 @@ pub(super) const CHROME_CSS: &str = css!(
         display: flex;
         flex: 1 1 0%;
         width: 100%;
+        height: 100%;
         align-items: center;
         gap: 4px;
         min-width: 0px;
@@ -510,7 +511,7 @@ pub(super) const CHROME_CSS: &str = css!(
     "#
 );
 
-fn install_chrome_stylesheets() {
+pub(super) fn install_chrome_stylesheets() {
     gds::ui::styles::install_ui_stylesheets();
     if current_host().is_some() {
         install_stylesheet(CHROME_SHEET, CHROME_CSS);
@@ -707,7 +708,7 @@ impl Browser {
                                 label = Signal::derive_local(|| i18n::text("sidebar-toggle")),
                                 shortcut = Some(Command::Sidebar.shortcut()),
                                 on:click = move |_| {
-                                    click_b.0.sidebar.update(|open| *open = !*open);
+                                    click_b.toggle_sidebar();
                                 }
                             )
                         }
@@ -726,16 +727,8 @@ impl Browser {
                             }
                         })
                     }
-                    Pane::Settings => AnyView::new(view! {
-                        WindowDragArea(class = "gds-files-toolbar-title") {
-                            text(class = "gds-files-toolbar-title-text") {{move || i18n::text("settings")}}
-                        }
-                    }),
-                    Pane::Help => AnyView::new(view! {
-                        WindowDragArea(class = "gds-files-toolbar-title") {
-                            text(class = "gds-files-toolbar-title-text") {{move || i18n::text("help")}}
-                        }
-                    }),
+                    Pane::Settings => Self::subpage_toolbar_title("settings"),
+                    Pane::Help => AnyView::new(view! { box() }),
                 }}}
             }
         })
@@ -1265,7 +1258,7 @@ impl Browser {
 
         let tabs_region_ref = NodeRef::new();
         let volumes_region_ref = NodeRef::new();
-        let locations_region_ref = NodeRef::new();
+        let locations_region_ref = self.0.locations_region_node;
         keytips::anchor(tabs_region_ref, Command::FocusTabs.shortcut());
         keytips::anchor_when(
             volumes_region_ref,
@@ -1285,7 +1278,7 @@ impl Browser {
                 }
         });
 
-        let content_ref = NodeRef::new();
+        let content_ref = self.0.sidebar_content_node;
         let content_size = content_ref.observe_border_size();
         let available_height = Signal::derive_local(move || {
             let scale = content_ref.scale().max(1.0);
@@ -1423,42 +1416,26 @@ impl Browser {
                             ) {
                                 {{
                                     let rows_b = tabs_b.clone();
-                                    move || {
-                                        let (tabs, active_id, is_files_pane) = rows_b.read(|state| {
-                                            let list = state
+                                    let specs_b = tabs_b.clone();
+                                    let tab_specs = local_memo(move || {
+                                        specs_b.read_structure(|state| {
+                                            state
                                                 .tabs
                                                 .iter()
                                                 .map(|tab| {
                                                     (
                                                         tab.id,
-                                                        tab.navigation.location().clone(),
-                                                        tab.navigation.path().map(Path::to_owned),
                                                         tab.pinned,
+                                                        tab.navigation.path().map(Path::to_owned),
                                                     )
                                                 })
-                                                .collect::<Vec<_>>();
-                                            (list, state.tab().id, rows_b.pane() == Pane::Files)
-                                        });
-                                        let ids: Vec<u64> = tabs.iter().map(|t| t.0).collect();
-                                        let cycle_targets = if is_files_pane {
-                                            compute_tab_cycle_targets(&ids, active_id)
-                                        } else {
-                                            TabCycleTargets::default()
-                                        };
-                                        tabs.into_iter()
-                                            .enumerate()
-                                            .map(|(position, (id, location, local_path, pinned))| {
-                                                rows_b.sidebar_tab(
-                                                    id,
-                                                    position,
-                                                    cycle_targets,
-                                                    location,
-                                                    local_path,
-                                                    pinned,
-                                                    presentation,
-                                                )
-                                            })
-                                            .collect::<Vec<_>>()
+                                                .collect::<Vec<_>>()
+                                        })
+                                    });
+                                    view! {
+                                        for spec in move || tab_specs.get(), key = |spec: &(u64, bool, Option<PathBuf>)| spec.clone() {
+                                            {{rows_b.sidebar_tab(spec.0, spec.1, spec.2, presentation)}}
+                                        }
                                     }
                                 }}
                             }
@@ -1728,35 +1705,42 @@ impl Browser {
                                                 section_curtain_transform(loc_progress.get())
                                             }
                                         ) {
-                                            {{move || {
-                                                let tags_enabled = sections.get().1;
-                                                let home = rows_b.read(|state| state.home.clone());
-                                                LocationTarget::ALL
-                                                    .iter()
-                                                    .copied()
-                                                    .filter(|target| {
-                                                        tags_enabled
-                                                            || !matches!(
+                                            {{
+                                                let home = rows_b.read_untracked(|state| state.home.clone());
+                                                view! {
+                                                    for entry in move || {
+                                                        let tags_enabled = sections.get().1;
+                                                        LocationTarget::ALL
+                                                            .iter()
+                                                            .copied()
+                                                            .enumerate()
+                                                            .filter(|(_, target)| {
+                                                                tags_enabled
+                                                                    || !matches!(
+                                                                        target,
+                                                                        LocationTarget::Collection(Collection::Tags)
+                                                                    )
+                                                            })
+                                                            .collect::<Vec<_>>()
+                                                    }, key = |entry: &(usize, LocationTarget)| entry.0 {
+                                                        {{
+                                                            let target = entry.1;
+                                                            let loc = target.location(&home);
+                                                            let item = rows_b.sidebar_location(
                                                                 target,
-                                                                LocationTarget::Collection(Collection::Tags)
-                                                            )
-                                                    })
-                                                    .map(|target| {
-                                                        let loc = target.location(&home);
-                                                        let item = rows_b.sidebar_location(
-                                                            target,
-                                                            loc.clone(),
-                                                            presentation,
-                                                        );
-                                                        match loc.local_path() {
-                                                            Some(path) => {
-                                                                rows_b.file_drag_target(item, path.to_owned())
+                                                                loc.clone(),
+                                                                presentation,
+                                                            );
+                                                            match loc.local_path() {
+                                                                Some(path) => {
+                                                                    rows_b.file_drag_target(item, path.to_owned())
+                                                                }
+                                                                None => item,
                                                             }
-                                                            None => item,
-                                                        }
-                                                    })
-                                                    .collect::<Vec<_>>()
-                                            }}}
+                                                        }}
+                                                    }
+                                                }
+                                            }}
                                         }
                                     }
                                 }
@@ -1783,69 +1767,76 @@ impl Browser {
         toggle: impl Fn() + 'static,
     ) -> AnyView {
         let toggle = Rc::new(toggle);
-        let toggle_click = Rc::clone(&toggle);
-        let toggle_key = Rc::clone(&toggle);
-        let build_row = move || {
-            let clk = Rc::clone(&toggle_click);
-            let key = Rc::clone(&toggle_key);
-            view! {
-                row(
-                    class = "gds-files-sidebar-heading",
-                    tabindex = Focus::Sequential,
-                    a11y:role = Role::Button,
-                    a11y:label = move || SharedString::from(i18n::text(label)),
-                    a11y:expanded = move || expanded.get(),
-                    style:padding-left = move || {
-                        let inset = presentation
-                            .get()
-                            .interpolate(HEADING_PADDING, COLLAPSED_HEADING_INSET);
-                        Some(format!("{inset:.2}px"))
-                    },
-                    style:padding-right = move || {
-                        let pad = presentation.get().interpolate(HEADING_PADDING, 0.0);
-                        Some(format!("{pad:.2}px"))
-                    },
-                    style:gap = move || {
-                        let gap = presentation.get().interpolate(GROUP_GAP, 0.0);
-                        Some(format!("{gap:.2}px"))
-                    },
-                    on:click = move |_| clk(),
-                    on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
-                        if ev.modifiers == Modifiers::NONE
-                            && (ev.key == Key::Named(NamedKey::Enter)
-                                || ev.key == Key::Named(NamedKey::Space)
-                                || ev.key == Key::character(" "))
-                        {
-                            ev.prevent_default();
-                            ev.stop_propagation();
-                            key();
-                        }
-                    }
-                ) {
-                    DisclosureIcon(expanded = expanded, size = HEADING_ICON_SIZE)
-                    SideBarSectionTitle {{move || i18n::text(label)}}
-                }
-            }
-        };
+        let clk = Rc::clone(&toggle);
+        let key = Rc::clone(&toggle);
+        let heading_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_heading_node(label, heading_ref);
 
         let is_collapsed_rail = Signal::derive_local(move || presentation.get().is_collapsed());
+        let tip_requested = RwSignal::new_local(false);
+        let tip_open = Signal::derive_local(move || tip_requested.get() && is_collapsed_rail.get());
+        let reset_tip_fx = RenderEffect::new(move |_| {
+            if !is_collapsed_rail.get() && tip_requested.get_untracked() {
+                tip_requested.set(false);
+            }
+        });
+        on_cleanup_local(move || drop(reset_tip_fx));
+
         AnyView::new(view! {
             SideBarSectionHeader(
                 class = "gds-files-sidebar-heading-header",
                 style:height = format!("{header_height}px")
             ) {
-                {{move || {
-                    let row_view = build_row();
-                    if is_collapsed_rail.get() {
-                        AnyView::new(view! {
-                            HintTooltip(text = Signal::derive_local(move || i18n::text(label))) {
-                                {row_view}
+                Tooltip(
+                    open = Binding::controlled(tip_open, move |next: bool| {
+                        tip_requested.set(next && is_collapsed_rail.get_untracked());
+                    }),
+                    delay = TOOLTIP_DELAY
+                ) {
+                    TooltipTrigger {
+                        row(
+                            node_ref = heading_ref,
+                            class = "gds-files-sidebar-heading",
+                            tabindex = Focus::Sequential,
+                            a11y:role = Role::Button,
+                            a11y:label = move || SharedString::from(i18n::text(label)),
+                            a11y:expanded = move || expanded.get(),
+                            style:padding-left = move || {
+                                let inset = presentation
+                                    .get()
+                                    .interpolate(HEADING_PADDING, COLLAPSED_HEADING_INSET);
+                                Some(format!("{inset:.2}px"))
+                            },
+                            style:padding-right = move || {
+                                let pad = presentation.get().interpolate(HEADING_PADDING, 0.0);
+                                Some(format!("{pad:.2}px"))
+                            },
+                            style:gap = move || {
+                                let gap = presentation.get().interpolate(GROUP_GAP, 0.0);
+                                Some(format!("{gap:.2}px"))
+                            },
+                            on:click = move |_| clk(),
+                            on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
+                                if ev.modifiers == Modifiers::NONE
+                                    && (ev.key == Key::Named(NamedKey::Enter)
+                                        || ev.key == Key::Named(NamedKey::Space)
+                                        || ev.key == Key::character(" "))
+                                {
+                                    ev.prevent_default();
+                                    ev.stop_propagation();
+                                    key();
+                                }
                             }
-                        })
-                    } else {
-                        AnyView::new(row_view)
+                        ) {
+                            DisclosureIcon(expanded = expanded, size = HEADING_ICON_SIZE)
+                            SideBarSectionTitle {{move || i18n::text(label)}}
+                        }
                     }
-                }}}
+                    TooltipContent(class = "gds-tooltip-content", arrow = false) {
+                        TooltipText(text = Signal::derive_local(move || i18n::text(label)))
+                    }
+                }
             }
         })
     }
@@ -2074,30 +2065,58 @@ impl Browser {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn sidebar_tab(
         &self,
         id: u64,
-        position: usize,
-        cycle_targets: TabCycleTargets,
-        location: Location,
-        local_path: Option<PathBuf>,
         pinned: bool,
+        local_path: Option<PathBuf>,
         presentation: Signal<SidebarPresentation, LocalStorage>,
     ) -> AnyView {
+        let fallback_location = local_path
+            .as_deref()
+            .map_or(Location::Recent, Location::from);
+        let tab_meta = local_memo({
+            let browser = self.clone();
+            move || {
+                browser.read_structure(|state| {
+                    let ids: Vec<u64> = state.tabs.iter().map(|t| t.id).collect();
+                    let active_id = state.tab().id;
+                    let is_files_pane = browser.pane() == Pane::Files;
+                    let cycle_targets = if is_files_pane {
+                        compute_tab_cycle_targets(&ids, active_id)
+                    } else {
+                        TabCycleTargets::default()
+                    };
+                    let (position, location) = state
+                        .tabs
+                        .iter()
+                        .enumerate()
+                        .find(|(_, tab)| tab.id == id)
+                        .map_or_else(
+                            || (0, fallback_location.clone()),
+                            |(pos, tab)| (pos, tab.navigation.location().clone()),
+                        );
+                    (position, cycle_targets, location)
+                })
+            }
+        });
+
+        let icon_sig = Signal::derive_local(move || tab_meta.with(|(_, _, loc)| loc.icon()));
         let title = Signal::derive_local({
             let browser = self.clone();
-            let location = location.clone();
-            move || browser.sidebar_tab_title(&location)
+            move || {
+                let location = tab_meta.with(|(_, _, loc)| loc.clone());
+                browser.sidebar_tab_title(&location)
+            }
         });
         let detail_path = Signal::derive_local({
-            let location = location.clone();
             let local_path = local_path.clone();
             move || {
                 GdsLang::track();
-                local_path
-                    .as_deref()
-                    .map_or_else(|| location.label(), |p| p.display().to_string())
+                local_path.as_deref().map_or_else(
+                    || tab_meta.with(|(_, _, loc)| loc.label()),
+                    |p| p.display().to_string(),
+                )
             }
         });
         let tooltip_text = Signal::derive_local(move || {
@@ -2115,7 +2134,7 @@ impl Browser {
 
         let selected = Signal::derive_local({
             let browser = self.clone();
-            move || browser.read(|state| state.tab().id == id)
+            move || browser.read_structure(|state| state.tab().id == id)
         });
         let cursor_match = Signal::derive_local(move || {
             region_sig.get() == Some(SidebarRegion::Tabs)
@@ -2190,7 +2209,7 @@ impl Browser {
                 }
             ) {
                 Icon(
-                    name = location.icon(),
+                    name = icon_sig,
                     size = SIDEBAR_ICON_SIZE,
                     class = "gds-files-nav-icon"
                 )
@@ -2261,6 +2280,7 @@ impl Browser {
                     })
                 ) {}
                 {{move || {
+                    let (position, cycle_targets, _) = tab_meta.get();
                     let compact_now = presentation.get().is_collapsed();
                     let show_action =
                         pinned || revealing_close.get() || hovered.get();
@@ -2377,4 +2397,4 @@ fn stage_tab_shortcuts(
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

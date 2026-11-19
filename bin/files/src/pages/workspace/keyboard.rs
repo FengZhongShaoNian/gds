@@ -79,11 +79,7 @@ impl Browser {
                     self.select_tab(index);
                 }
             }
-            Command::Sidebar => {
-                let next = !self.0.sidebar.get_untracked();
-                self.0.sidebar.set(next);
-                self.changed();
-            }
+            Command::Sidebar => self.toggle_sidebar(),
             Command::Terminal => self.toggle_terminal(),
             Command::EditLocation => self.start_address_edit(),
             Command::Back => self.history(false),
@@ -338,6 +334,7 @@ impl Browser {
                 event.stop_propagation();
                 return;
             }
+            return;
         }
 
         if self.has_open_inspection_dialog() {
@@ -371,6 +368,10 @@ impl Browser {
                 event.prevent_default();
                 event.stop_propagation();
             }
+            return;
+        }
+
+        if gds::ui::keytips::has_active_modal_scope() {
             return;
         }
 
@@ -555,7 +556,7 @@ impl Browser {
         }
     }
 
-    fn focused_sidebar_region(&self) -> Option<SidebarRegion> {
+    pub(super) fn focused_sidebar_region(&self) -> Option<SidebarRegion> {
         let focused = zgui::view::current_host()
             .and_then(|host| host.focused().try_get_untracked().flatten());
         if focused.is_some_and(|node| self.0.tabs_node.contains(node)) {

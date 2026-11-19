@@ -197,6 +197,8 @@ pub(super) struct Workspace {
     pub tabs_node: NodeRef,
     pub locations_node: NodeRef,
     pub volumes_node: NodeRef,
+    pub sidebar_content_node: NodeRef,
+    pub locations_region_node: NodeRef,
     pub sidebar_region: RwSignal<Option<super::keyboard::SidebarRegion>, LocalStorage>,
     pub sidebar_cursor: RwSignal<Option<super::keyboard::SidebarRow>, LocalStorage>,
     pub sidebar_reveal_volumes: RwSignal<bool, LocalStorage>,
@@ -372,6 +374,8 @@ impl Browser {
             tabs_node: NodeRef::new(),
             locations_node: NodeRef::new(),
             volumes_node: NodeRef::new(),
+            sidebar_content_node: NodeRef::new(),
+            locations_region_node: NodeRef::new(),
             sidebar_region: RwSignal::new_local(None),
             sidebar_cursor: RwSignal::new_local(None),
             sidebar_reveal_volumes: RwSignal::new_local(false),
@@ -523,6 +527,45 @@ impl Browser {
         }
     }
 
+    pub(super) fn sidebar_contains_focus(&self) -> bool {
+        if self.focused_sidebar_region().is_some() {
+            return true;
+        }
+        let Some(focused) = zgui::view::current_host()
+            .and_then(|host| host.focused().try_get_untracked().flatten())
+        else {
+            return false;
+        };
+        [
+            self.0.sidebar_content_node,
+            self.0.locations_region_node,
+            self.0.tabs_node,
+            self.0.volumes_node,
+            self.0.locations_node,
+        ]
+        .into_iter()
+        .any(|node| node.get_untracked() == Some(focused) || node.contains(focused))
+    }
+
+    pub(super) fn toggle_sidebar(&self) {
+        if self.compact_untracked() {
+            return;
+        }
+        let next = !self.0.sidebar.get_untracked();
+        let restore_focus = !next && self.sidebar_contains_focus();
+        self.0.sidebar.set(next);
+        if restore_focus {
+            self.0.sidebar_region.set(None);
+            if self.pane_untracked() == Pane::Files {
+                self.focus_content();
+            } else if self.0.settings_node.is_bound() {
+                self.0.settings_node.focus();
+            } else {
+                self.focus_content();
+            }
+        }
+    }
+
     pub(super) fn toggle_settings(&self) {
         if self.pane_untracked() == Pane::Settings {
             self.back_page();
@@ -552,6 +595,11 @@ impl Browser {
 
     pub(super) fn read<R>(&self, read: impl FnOnce(&State) -> R) -> R {
         self.track();
+        read(&self.0.state.borrow())
+    }
+
+    pub(super) fn read_structure<R>(&self, read: impl FnOnce(&State) -> R) -> R {
+        let _ = self.0.revision.get();
         read(&self.0.state.borrow())
     }
 

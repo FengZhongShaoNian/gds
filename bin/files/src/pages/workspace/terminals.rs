@@ -835,13 +835,7 @@ impl Browser {
             return;
         }
 
-        let is_open = self.0.terminal.get_untracked();
-        if is_open && !self.terminal_focused() {
-            self.focus_active_terminal();
-            return;
-        }
-
-        let next = !is_open;
+        let next = !self.0.terminal.get_untracked();
         self.0.terminal.set(next);
         if next {
             let empty = self.0.terminals.inner.sessions.borrow().is_empty();

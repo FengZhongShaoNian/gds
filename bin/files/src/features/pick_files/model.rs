@@ -35,7 +35,7 @@ impl From<Outcome> for ExitCode {
     }
 }
 
-/// Write-once handle carrying a picker session's [`Outcome`] across the GPUI event loop.
+/// Write-once handle carrying a picker session's [`Outcome`] across the `zgui` event loop.
 #[derive(Clone, Debug, Default)]
 pub struct OutcomeSlot(Arc<OnceLock<Outcome>>);
 

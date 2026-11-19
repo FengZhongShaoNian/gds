@@ -1678,23 +1678,45 @@ impl Browser {
                                         selected.get() && focused
                                     });
 
+                                    let expanded_shortcut_target = Signal::derive_local(move || {
+                                        shortcut_target.get()
+                                            && presentation.get().actions_visible()
+                                    });
+                                    let collapsed_shortcut_target =
+                                        Signal::derive_local(move || {
+                                            shortcut_target.get()
+                                                && presentation.get().is_collapsed()
+                                        });
+
                                     let ctrl_revealed = Signal::derive_local(move || {
                                         let held_ctrl = KeytipRegistry::current().is_some_and(
                                             |reg| reg.held().get() == Some(HeldModifier::Ctrl),
                                         );
                                         held_ctrl && shortcut_target.get()
                                     });
+                                    let expanded_ctrl_revealed = Signal::derive_local(move || {
+                                        ctrl_revealed.get() && presentation.get().actions_visible()
+                                    });
+                                    let collapsed_ctrl_revealed = Signal::derive_local(move || {
+                                        ctrl_revealed.get() && presentation.get().is_collapsed()
+                                    });
 
                                     let close_shortcut =
                                         Shortcut::new(Key::character("w"), Modifiers::CONTROL);
                                     let corner_close_shortcut = close_shortcut.clone();
+                                    let corner_ref = NodeRef::new();
+                                    anchor_when(
+                                        corner_ref,
+                                        corner_close_shortcut,
+                                        collapsed_shortcut_target,
+                                    );
                                     let close_action = AnyView::new(view! {
                                         IconButton(
                                             icon = IconName::Close,
                                             label = i18n::text("files-terminal-end"),
                                             size = zgui_ui::ButtonSize::IconXs,
                                             shortcut = Some(close_shortcut.clone()),
-                                            shortcut_enabled = shortcut_target,
+                                            shortcut_enabled = expanded_shortcut_target,
                                             on:click = move |ev: &mut EventCx<'_, events::Click>| {
                                                 ev.stop_propagation();
                                                 b_close_hover.close_terminal_session(id);
@@ -1705,7 +1727,7 @@ impl Browser {
                                         HoverAction(
                                             status = AnyView::new(view! { box() }),
                                             action = Some(close_action),
-                                            revealed = ctrl_revealed,
+                                            revealed = expanded_ctrl_revealed,
                                         )
                                     });
 
@@ -1751,37 +1773,22 @@ impl Browser {
                                                             ev.stop_propagation();
                                                         }
                                                     },
-                                                )
+                                                ) {
+                                                    CornerAction(
+                                                        revealed = collapsed_ctrl_revealed,
+                                                        button = AnyView::new(view! {
+                                                            CornerButton(
+                                                                node_ref = Some(corner_ref),
+                                                                icon = IconName::Close,
+                                                                label = i18n::text("files-terminal-end"),
+                                                                on:click = move |_| {
+                                                                    b_close_corner.close_terminal_session(id);
+                                                                },
+                                                            )
+                                                        }),
+                                                    ) {}
+                                                }
                                             }
-                                            {move || {
-                                                let b_corner = b_close_corner.clone();
-                                                let corner_key = corner_close_shortcut.clone();
-                                                presentation.get().is_collapsed().then(move || {
-                                                    let corner_ref = NodeRef::new();
-                                                    anchor_when(
-                                                        corner_ref,
-                                                        corner_key,
-                                                        shortcut_target,
-                                                    );
-                                                    let btn = AnyView::new(view! {
-                                                        CornerButton(
-                                                            node_ref = Some(corner_ref),
-                                                            icon = IconName::Close,
-                                                            label = i18n::text("files-terminal-end"),
-                                                            on:click = move |_| {
-                                                                b_corner.close_terminal_session(id);
-                                                            },
-                                                        )
-                                                    });
-                                                    view! {
-                                                        CornerAction(
-                                                            revealed = ctrl_revealed,
-                                                            button = btn,
-                                                        )
-                                                    }
-                                                    .into_view()
-                                                })
-                                            }}
                                         }
                                     })
                                 })

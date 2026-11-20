@@ -114,6 +114,7 @@ struct Flight {
     to: f32,
     start: Option<Timestamp>,
     last_frame: Option<Timestamp>,
+    pre_stepped: bool,
     pending: Option<FrameHandle>,
     in_flight: bool,
     generation: u64,
@@ -122,6 +123,7 @@ struct Flight {
 impl Flight {
     fn stop(&mut self) -> Option<FrameHandle> {
         self.in_flight = false;
+        self.pre_stepped = false;
         self.start = None;
         self.last_frame = None;
         self.pending.take()
@@ -151,9 +153,15 @@ fn arm_frame(
             } else {
                 st.pending = None;
                 st.last_frame = Some(at);
+                let backdate = if st.pre_stepped {
+                    st.pre_stepped = false;
+                    INITIAL_FRAME_STEP * 2
+                } else {
+                    INITIAL_FRAME_STEP
+                };
                 let origin = *st.start.get_or_insert_with(|| {
                     if duration >= MIN_BACKDATE_DURATION {
-                        Timestamp::from_origin(at.since_origin().saturating_sub(INITIAL_FRAME_STEP))
+                        Timestamp::from_origin(at.since_origin().saturating_sub(backdate))
                     } else {
                         at
                     }
@@ -162,6 +170,7 @@ fn arm_frame(
                 if elapsed >= duration || duration.is_zero() {
                     let target_value = st.to;
                     st.in_flight = false;
+                    st.pre_stepped = false;
                     st.start = None;
                     st.last_frame = None;
                     Step::Settle(target_value)
@@ -211,6 +220,7 @@ pub fn use_transition(
         to: initial,
         start: None,
         last_frame: None,
+        pre_stepped: false,
         pending: None,
         in_flight: false,
         generation: 0,
@@ -258,25 +268,34 @@ pub fn use_transition(
             return;
         };
 
-        let (cancelled, generation) = {
+        let duration = Duration::from_millis(duration_ms);
+        let (cancelled, generation, immediate_kick) = {
             let mut st = state_fx.borrow_mut();
+            let was_in_flight = st.in_flight;
             let prev = st.pending.take();
             st.generation = st.generation.wrapping_add(1);
             let generation = st.generation;
             st.from = displayed;
             st.to = goal;
-            st.start = if st.in_flight { st.last_frame } else { None };
+            st.start = if was_in_flight { st.last_frame } else { None };
             st.in_flight = true;
-            (prev, generation)
+            let kick = if !was_in_flight && duration >= MIN_BACKDATE_DURATION {
+                st.pre_stepped = true;
+                let raw_t = (INITIAL_FRAME_STEP.as_secs_f64() / duration.as_secs_f64()) as f32;
+                Some(displayed + (goal - displayed) * ease_out_cubic(raw_t))
+            } else {
+                st.pre_stepped = false;
+                None
+            };
+            (prev, generation, kick)
         };
         drop(cancelled);
-        arm_frame(
-            &clock,
-            &state_fx,
-            current,
-            Duration::from_millis(duration_ms),
-            generation,
-        );
+        if let Some(val) = immediate_kick
+            && (current.get_untracked() - val).abs() > 1e-6
+        {
+            current.set(val);
+        }
+        arm_frame(&clock, &state_fx, current, duration, generation);
     });
 
     on_cleanup_local(move || {

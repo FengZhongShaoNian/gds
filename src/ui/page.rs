@@ -29,7 +29,7 @@ const PAGE_CSS: &str = css!(
     ".gds-content-page {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         height: 100%;
         min-width: 0px;
@@ -45,7 +45,7 @@ const PAGE_CSS: &str = css!(
         min-width: 0px;
     }
     .gds-page-title {
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -74,7 +74,7 @@ const PAGE_CSS: &str = css!(
     .gds-page-content {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
@@ -82,7 +82,7 @@ const PAGE_CSS: &str = css!(
     .gds-page-table-area {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;

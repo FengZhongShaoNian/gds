@@ -119,9 +119,9 @@ const SURFACES_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
+        align-self: stretch;
         min-width: 0;
         flex-shrink: 0;
-        height: 100%;
         box-sizing: border-box;
     }
 
@@ -129,9 +129,9 @@ const SURFACES_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
-        flex: 1 1 0%;
+        align-self: stretch;
+        flex: 1 1 0px;
         min-width: 0;
-        height: 100%;
         padding: 0 12px;
     }
 
@@ -148,9 +148,9 @@ const SURFACES_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
-        flex: 1 1 0%;
+        align-self: stretch;
+        flex: 1 1 0px;
         min-width: 0;
-        height: 100%;
         gap: 4px;
         padding: 0 8px 0 12px;
         cursor: pointer;
@@ -181,7 +181,7 @@ const SURFACES_CSS: &str = css!(
 
     .gds-files-collection-header__button:not([data-align="end"]) .gds-files-collection-header__label,
     .gds-files-collection-header__static:not([data-align="end"]) .gds-files-collection-header__label {
-        flex: 1 1 0%;
+        flex: 1 1 0px;
     }
 
     .gds-files-collection-header__button[data-active="true"] .gds-files-collection-header__label {
@@ -214,10 +214,10 @@ const SURFACES_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
+        align-self: stretch;
         gap: 10px;
         min-width: 0;
         flex-shrink: 0;
-        height: 100%;
         padding: 0 12px;
         overflow: hidden;
         box-sizing: border-box;
@@ -523,7 +523,7 @@ fn name_cell_view(
         }
     });
     AnyView::new(view! {
-        HintTooltip(text = tip) {
+        HintTooltip(text = tip, trigger_class = col_class) {
             {inner}
         }
     })
@@ -559,7 +559,7 @@ fn meta_text_cell(
     });
     match tooltip {
         Some(tip) => AnyView::new(view! {
-            HintTooltip(text = tip) {
+            HintTooltip(text = tip, trigger_class = col_class) {
                 {cell}
             }
         }),

@@ -21,6 +21,8 @@ pub(super) struct Prepared {
     theme: Option<theme::Prepared>,
     font: Option<typography::Preferences>,
     language: Option<gds::i18n::Catalog>,
+    time_format: Option<gds::ui::time::Format>,
+    animations_enabled: Option<bool>,
 }
 
 impl Prepared {
@@ -41,14 +43,24 @@ impl Prepared {
         let language = (preferences.language != previous.language)
             .then(|| i18n::prepare(preferences.language.unwrap_or_else(i18n::Language::detect)))
             .transpose()?;
+        let time_format =
+            (preferences.time_format != previous.time_format).then_some(preferences.time_format);
+        let animations_enabled = (preferences.animations_enabled != previous.animations_enabled)
+            .then(|| preferences.animations_enabled.unwrap_or(true));
         Ok(Self {
             theme,
             font,
             language,
+            time_format,
+            animations_enabled,
         })
     }
 
-    pub(super) fn install(self, preferences: &Preferences) {
+    pub(super) fn appearance_changed(&self) -> bool {
+        self.theme.is_some()
+    }
+
+    pub(super) fn install(self, _preferences: &Preferences) {
         let gds = Gds::current();
         if let Some(theme) = self.theme {
             gds.appearance()
@@ -65,9 +77,11 @@ impl Prepared {
         if let Some(language) = self.language {
             gds.i18n().install_catalog(language);
         }
-        gds::ui::time::apply(preferences.time_format);
-        gds.appearance()
-            .motion()
-            .set_enabled(preferences.animations_enabled.unwrap_or(true));
+        if let Some(time_format) = self.time_format {
+            gds::ui::time::apply(time_format);
+        }
+        if let Some(animations_enabled) = self.animations_enabled {
+            gds.appearance().motion().set_enabled(animations_enabled);
+        }
     }
 }

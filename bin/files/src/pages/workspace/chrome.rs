@@ -250,8 +250,7 @@ pub(super) const CHROME_CSS: &str = css!(
 
     .gds-files-crumb-sep {
         flex: none;
-        color: var(--gds-muted-foreground);
-        opacity: 0.7;
+        color: color-mix(in srgb, var(--gds-muted-foreground) 70%, transparent);
     }
 
     .gds-files-filter-wrap.gds-files-filter-wrap {
@@ -269,12 +268,12 @@ pub(super) const CHROME_CSS: &str = css!(
     .gds-files-sidebar-tabs-section.gds-files-sidebar-tabs-section {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         height: 100%;
         min-width: 0px;
         min-height: 0px;
-        padding: 6px var(--gds-sidebar-padding, 10px) 0px var(--gds-sidebar-padding, 10px);
+        padding: 6px 0px 0px 0px;
         box-sizing: border-box;
         overflow: hidden;
     }
@@ -282,12 +281,12 @@ pub(super) const CHROME_CSS: &str = css!(
     .gds-files-sidebar-volumes-section.gds-files-sidebar-volumes-section {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         height: 100%;
         min-width: 0px;
         min-height: 0px;
-        padding: 0px var(--gds-sidebar-padding, 10px);
+        padding: 0px;
         box-sizing: border-box;
         overflow: hidden;
     }
@@ -299,7 +298,7 @@ pub(super) const CHROME_CSS: &str = css!(
         width: 100%;
         min-width: 0px;
         min-height: 0px;
-        padding: 0px var(--gds-sidebar-padding, 10px) var(--gds-sidebar-padding, 10px) var(--gds-sidebar-padding, 10px);
+        padding: 0px 0px var(--gds-sidebar-padding, 10px) 0px;
         box-sizing: border-box;
         overflow: hidden;
     }
@@ -310,13 +309,25 @@ pub(super) const CHROME_CSS: &str = css!(
         overflow: hidden;
     }
 
-    .gds-files-sidebar-scroll.gds-files-sidebar-scroll {
+    .gds-files-sidebar-region-host.gds-files-sidebar-region-host {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-width: 0px;
         min-height: 0px;
+        overflow: hidden;
+    }
+
+    .gds-files-sidebar-scroll.gds-files-sidebar-scroll {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0px;
+        width: 100%;
+        min-width: 0px;
+        min-height: 0px;
+        padding: 0px var(--gds-sidebar-padding, 10px);
+        box-sizing: border-box;
         overflow-y: auto;
         overflow-x: hidden;
         gap: 4px;
@@ -328,6 +339,8 @@ pub(super) const CHROME_CSS: &str = css!(
         width: 100%;
         min-width: 0px;
         min-height: 0px;
+        padding: 0px var(--gds-sidebar-padding, 10px);
+        box-sizing: border-box;
         overflow-y: auto;
         overflow-x: hidden;
     }
@@ -338,14 +351,21 @@ pub(super) const CHROME_CSS: &str = css!(
         flex: 0 0 auto;
         flex-shrink: 0;
         width: 100%;
-        min-width: 0px;
+        min-width: calc(var(--gds-collapsed-sidebar-width, 58px) - 2 * var(--gds-sidebar-padding, 10px));
         gap: 4px;
     }
 
     .gds-files-tabs-header.gds-files-tabs-header {
         height: 34px;
-        padding-right: var(--gds-files-tabs-header-pad-right, 0px);
+        padding-left: var(--gds-sidebar-padding, 10px);
+        padding-right: calc(var(--gds-sidebar-padding, 10px) + var(--gds-files-tabs-header-pad-right, 0px));
         gap: var(--gds-files-tabs-header-gap, 4px);
+        box-sizing: border-box;
+    }
+
+    .gds-files-sidebar-heading-header.gds-files-sidebar-heading-header {
+        padding: 0px var(--gds-sidebar-padding, 10px);
+        box-sizing: border-box;
     }
 
     .gds-files-tabs-title.gds-files-tabs-title {
@@ -353,12 +373,16 @@ pub(super) const CHROME_CSS: &str = css!(
     }
 
     .gds-files-sidebar-empty {
-        opacity: var(--gds-sidebar-label-opacity, 1);
+        color: color-mix(
+            in srgb,
+            var(--gds-muted-foreground) var(--gds-sidebar-label-pct, 100%),
+            transparent
+        );
     }
 
     .gds-files-sidebar-heading.gds-files-sidebar-heading {
         display: flex;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         height: 28px;
         min-width: 0px;
@@ -379,6 +403,14 @@ pub(super) const CHROME_CSS: &str = css!(
         color: var(--gds-sidebar-foreground);
     }
 
+    .gds-files-sidebar-heading.gds-files-sidebar-heading:hover .gds-sidebar__section-title {
+        color: color-mix(
+            in srgb,
+            var(--gds-sidebar-foreground) var(--gds-sidebar-label-pct, 100%),
+            transparent
+        );
+    }
+
     .gds-files-sidebar-heading.gds-files-sidebar-heading:focus:not(:focus-visible) {
         outline: none;
     }
@@ -395,11 +427,11 @@ pub(super) const CHROME_CSS: &str = css!(
     .gds-files-sidebar-row-wrap.gds-files-sidebar-row-wrap {
         display: flex;
         flex-direction: column;
+        align-items: stretch;
         flex: 0 0 auto;
         flex-shrink: 0;
         width: 100%;
-        max-width: 100%;
-        min-width: 0px;
+        min-width: calc(var(--gds-collapsed-sidebar-width, 58px) - 2 * var(--gds-sidebar-padding, 10px));
         overflow: hidden;
         box-sizing: border-box;
     }
@@ -409,10 +441,10 @@ pub(super) const CHROME_CSS: &str = css!(
     .gds-files-sidebar-row-wrap .gds-menu-host {
         display: flex;
         flex-direction: column;
+        align-items: stretch;
         flex: 0 0 auto;
         flex-shrink: 0;
         width: 100%;
-        max-width: 100%;
         min-width: 0px;
         overflow: hidden;
     }
@@ -481,7 +513,9 @@ pub(super) const CHROME_CSS: &str = css!(
     }
 
     .gds-sidebar:not([data-actions-visible="true"]) .gds-files-tab-action {
-        display: none;
+        opacity: 0;
+        pointer-events: none;
+        visibility: hidden;
     }
 
     .gds-files-volume-item.gds-files-volume-item {
@@ -512,7 +546,23 @@ pub(super) const CHROME_CSS: &str = css!(
         padding-left: var(--gds-nav-item-pad-left, 8px);
         padding-right: var(--gds-nav-item-pad-right, 8px);
         gap: var(--gds-nav-item-gap, 8px);
+        overflow: hidden;
         box-sizing: border-box;
+    }
+
+    .gds-files-volume-row > .gds-nav-item__label {
+        flex: 1 1 0px;
+    }
+
+    .gds-sidebar[data-collapsed="true"] .gds-files-volume-row {
+        justify-content: center;
+        padding-left: 0px;
+        padding-right: 0px;
+        gap: 0px;
+    }
+
+    .gds-sidebar[data-collapsed="true"] .gds-files-volume-row > .gds-nav-item__label {
+        display: none;
     }
 
     .gds-sidebar:not([data-actions-visible="true"]) .gds-files-volume-spinner {
@@ -732,17 +782,26 @@ impl Browser {
         let pane_sig = local_memo(move || pane_b.pane());
         let show_sidebar_toggle =
             Signal::derive_local(move || pane_sig.get() != Pane::Help && !compact.get());
+        let no_drag = self.0.window.as_ref().map(WindowHandle::no_drag_handler);
 
         AnyView::new(view! {
             row(class = "gds-files-toolbar") {
                 Show(when = move || show_sidebar_toggle.get()) {
                     {{
                         let click_b = toggle_b.clone();
+                        let no_drag_btn = no_drag;
                         view! {
                             IconButton(
                                 icon = IconName::PanelLeft,
                                 label = Signal::derive_local(|| i18n::text("sidebar-toggle")),
                                 shortcut = Some(Command::Sidebar.shortcut()),
+                                on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
+                                    if let Some(ref handler) = no_drag_btn {
+                                        handler(ev);
+                                    } else {
+                                        ev.stop_propagation();
+                                    }
+                                },
                                 on:click = move |_| {
                                     click_b.toggle_sidebar();
                                 }
@@ -1398,7 +1457,7 @@ impl Browser {
                         node_ref = tabs_region_ref,
                         style:display = "flex",
                         style:flex-direction = "column",
-                        style:flex = "1 1 0%",
+                        style:flex = "1 1 0px",
                         style:width = "100%",
                         style:height = "100%",
                         style:min-width = "0px",
@@ -1521,71 +1580,67 @@ impl Browser {
                                 }
                             },
                         )}}
-                        Show(when = move || vol_progress.get() > 1e-4) {
-                            {{
-                                let focus_b = focus_b.clone();
-                                let out_b = out_b.clone();
-                                let rows_b = rows_b.clone();
-                                view! {
-                                    SideBarSectionContent(class = "gds-files-sidebar-region-host") {
-                                        scroll(
-                                            node_ref = volumes_node,
-                                            class = "gds-files-sidebar-scroll",
-                                            a11y:label = move || SharedString::from(i18n::text("volumes")),
-                                            style:overflow-y = move || {
-                                                Some(section_overflow_y(vol_progress.get()).to_owned())
-                                            },
-                                            {..region::surface(volumes_node)},
-                                            on:focus_in = move |_| {
-                                                focus_b.sidebar_focus_changed(SidebarRegion::Volumes, true);
-                                            },
-                                            on:focus_out = move |_| {
-                                                if !node_contains_focus(volumes_node) {
-                                                    out_b.sidebar_focus_changed(SidebarRegion::Volumes, false);
-                                                }
-                                            }
-                                        ) {
-                                            column(
-                                                class = "gds-files-sidebar-curtain",
-                                                style:opacity = move || {
-                                                    Some(format!("{:.3}", vol_progress.get().clamp(0.0, 1.0)))
-                                                },
-                                                style:transform = move || {
-                                                    section_curtain_transform(vol_progress.get())
-                                                }
-                                            ) {
-                                                {{move || {
-                                                    let snapshot = rows_b.0.volumes.snapshot();
-                                                    let visible_volumes = snapshot
-                                                        .volumes
-                                                        .iter()
-                                                        .filter(|volume| volume.visible)
-                                                        .collect::<Vec<_>>();
-                                                    if visible_volumes.is_empty() {
-                                                        vec![AnyView::new(view! {
-                                                            text(class = "gds-files-sidebar-empty") {
-                                                                {move || i18n::text("device-none")}
-                                                            }
-                                                        })]
-                                                    } else {
-                                                        visible_volumes
-                                                            .into_iter()
-                                                            .map(|volume| {
-                                                                rows_b.sidebar_volume(
-                                                                    volume,
-                                                                    &snapshot,
-                                                                    active_volume,
-                                                                    compact_capacity,
-                                                                )
-                                                            })
-                                                            .collect::<Vec<_>>()
-                                                    }
-                                                }}}
-                                            }
-                                        }
+                        SideBarSectionContent(
+                            class = "gds-files-sidebar-region-host",
+                            style:display = move || {
+                                (vol_progress.get() <= 1e-4).then(|| "none".to_owned())
+                            }
+                        ) {
+                            scroll(
+                                node_ref = volumes_node,
+                                class = "gds-files-sidebar-scroll",
+                                a11y:label = move || SharedString::from(i18n::text("volumes")),
+                                style:overflow-y = move || {
+                                    Some(section_overflow_y(vol_progress.get()).to_owned())
+                                },
+                                {..region::surface(volumes_node)},
+                                on:focus_in = move |_| {
+                                    focus_b.sidebar_focus_changed(SidebarRegion::Volumes, true);
+                                },
+                                on:focus_out = move |_| {
+                                    if !node_contains_focus(volumes_node) {
+                                        out_b.sidebar_focus_changed(SidebarRegion::Volumes, false);
                                     }
                                 }
-                            }}
+                            ) {
+                                column(
+                                    class = "gds-files-sidebar-curtain",
+                                    style:opacity = move || {
+                                        Some(format!("{:.3}", vol_progress.get().clamp(0.0, 1.0)))
+                                    },
+                                    style:transform = move || {
+                                        section_curtain_transform(vol_progress.get())
+                                    }
+                                ) {
+                                    {{move || {
+                                        let snapshot = rows_b.0.volumes.snapshot();
+                                        let visible_volumes = snapshot
+                                            .volumes
+                                            .iter()
+                                            .filter(|volume| volume.visible)
+                                            .collect::<Vec<_>>();
+                                        if visible_volumes.is_empty() {
+                                            vec![AnyView::new(view! {
+                                                text(class = "gds-files-sidebar-empty") {
+                                                    {move || i18n::text("device-none")}
+                                                }
+                                            })]
+                                        } else {
+                                            visible_volumes
+                                                .into_iter()
+                                                .map(|volume| {
+                                                    rows_b.sidebar_volume(
+                                                        volume,
+                                                        &snapshot,
+                                                        active_volume,
+                                                        compact_capacity,
+                                                    )
+                                                })
+                                                .collect::<Vec<_>>()
+                                        }
+                                    }}}
+                                }
+                            }
                         }
                     }
                     }
@@ -1643,7 +1698,7 @@ impl Browser {
                     node_ref = content_ref,
                     style:display = "flex",
                     style:flex-direction = "column",
-                    style:flex = "1 1 0%",
+                    style:flex = "1 1 0px",
                     style:width = "100%",
                     style:min-width = "0px",
                     style:min-height = move || Some(format!("{:.1}px", workspace_minimum.get())),
@@ -1712,95 +1767,92 @@ impl Browser {
                                 }
                             },
                         )}}
-                        Show(when = move || loc_progress.get() > 1e-4) {
-                            {{
-                                let focus_b = locs_browser.clone();
-                                let out_b = locs_browser.clone();
-                                let rows_b = locs_browser.clone();
-                                view! {
-                                    scroll(
-                                        node_ref = locations_node,
-                                        class = "gds-files-sidebar-locations",
-                                        a11y:label = move || SharedString::from(i18n::text("locations")),
-                                        style:height = move || {
+                        {{
+                            let focus_b = locs_browser.clone();
+                            let out_b = locs_browser.clone();
+                            let rows_b = locs_browser.clone();
+                            let home = rows_b.read_untracked(|state| state.home.clone());
+                            view! {
+                                scroll(
+                                    node_ref = locations_node,
+                                    class = "gds-files-sidebar-locations",
+                                    a11y:label = move || SharedString::from(i18n::text("locations")),
+                                    style:display = move || {
+                                        (loc_progress.get() <= 1e-4).then(|| "none".to_owned())
+                                    },
+                                    style:height = move || {
+                                        let tags_enabled = sections.get().1;
+                                        let count = LocationTarget::ALL
+                                            .iter()
+                                            .filter(|t| {
+                                                tags_enabled
+                                                    || !matches!(
+                                                        t,
+                                                        LocationTarget::Collection(Collection::Tags)
+                                                    )
+                                            })
+                                            .count();
+                                        let full = (count as f32 * (SIDEBAR_ITEM_HEIGHT + ROW_GAP)
+                                            - ROW_GAP)
+                                            .max(0.0);
+                                        Some(format!("{:.2}px", full * loc_progress.get()))
+                                    },
+                                    style:overflow-y = move || {
+                                        Some(section_overflow_y(loc_progress.get()).to_owned())
+                                    },
+                                    {..region::surface(locations_node)},
+                                    on:focus_in = move |_| {
+                                        focus_b.sidebar_focus_changed(SidebarRegion::Locations, true);
+                                    },
+                                    on:focus_out = move |_| {
+                                        if !node_contains_focus(locations_node) {
+                                            out_b.sidebar_focus_changed(SidebarRegion::Locations, false);
+                                        }
+                                    }
+                                ) {
+                                    column(
+                                        class = "gds-files-sidebar-curtain",
+                                        style:opacity = move || {
+                                            Some(format!("{:.3}", loc_progress.get().clamp(0.0, 1.0)))
+                                        },
+                                        style:transform = move || {
+                                            section_curtain_transform(loc_progress.get())
+                                        }
+                                    ) {
+                                        for entry in move || {
                                             let tags_enabled = sections.get().1;
-                                            let count = LocationTarget::ALL
+                                            LocationTarget::ALL
                                                 .iter()
-                                                .filter(|t| {
+                                                .copied()
+                                                .enumerate()
+                                                .filter(|(_, target)| {
                                                     tags_enabled
                                                         || !matches!(
-                                                            t,
+                                                            target,
                                                             LocationTarget::Collection(Collection::Tags)
                                                         )
                                                 })
-                                                .count();
-                                            let full = (count as f32 * (SIDEBAR_ITEM_HEIGHT + ROW_GAP)
-                                                - ROW_GAP)
-                                                .max(0.0);
-                                            Some(format!("{:.2}px", full * loc_progress.get()))
-                                        },
-                                        style:overflow-y = move || {
-                                            Some(section_overflow_y(loc_progress.get()).to_owned())
-                                        },
-                                        {..region::surface(locations_node)},
-                                        on:focus_in = move |_| {
-                                            focus_b.sidebar_focus_changed(SidebarRegion::Locations, true);
-                                        },
-                                        on:focus_out = move |_| {
-                                            if !node_contains_focus(locations_node) {
-                                                out_b.sidebar_focus_changed(SidebarRegion::Locations, false);
-                                            }
-                                        }
-                                    ) {
-                                        column(
-                                            class = "gds-files-sidebar-curtain",
-                                            style:opacity = move || {
-                                                Some(format!("{:.3}", loc_progress.get().clamp(0.0, 1.0)))
-                                            },
-                                            style:transform = move || {
-                                                section_curtain_transform(loc_progress.get())
-                                            }
-                                        ) {
+                                                .collect::<Vec<_>>()
+                                        }, key = |entry: &(usize, LocationTarget)| entry.0 {
                                             {{
-                                                let home = rows_b.read_untracked(|state| state.home.clone());
-                                                view! {
-                                                    for entry in move || {
-                                                        let tags_enabled = sections.get().1;
-                                                        LocationTarget::ALL
-                                                            .iter()
-                                                            .copied()
-                                                            .enumerate()
-                                                            .filter(|(_, target)| {
-                                                                tags_enabled
-                                                                    || !matches!(
-                                                                        target,
-                                                                        LocationTarget::Collection(Collection::Tags)
-                                                                    )
-                                                            })
-                                                            .collect::<Vec<_>>()
-                                                    }, key = |entry: &(usize, LocationTarget)| entry.0 {
-                                                        {{
-                                                            let target = entry.1;
-                                                            let loc = target.location(&home);
-                                                            let item = rows_b.sidebar_location(
-                                                                target,
-                                                                loc.clone(),
-                                                            );
-                                                            match loc.local_path() {
-                                                                Some(path) => {
-                                                                    rows_b.file_drag_target(item, path.to_owned())
-                                                                }
-                                                                None => item,
-                                                            }
-                                                        }}
+                                                let target = entry.1;
+                                                let loc = target.location(&home);
+                                                let item = rows_b.sidebar_location(
+                                                    target,
+                                                    loc.clone(),
+                                                );
+                                                match loc.local_path() {
+                                                    Some(path) => {
+                                                        rows_b.file_drag_target(item, path.to_owned())
                                                     }
+                                                    None => item,
                                                 }
                                             }}
                                         }
                                     }
                                 }
-                            }}
-                        }
+                            }
+                        }}
                     }
                     }
                 }
@@ -2270,20 +2322,24 @@ impl Browser {
                         )
                     })
                 ) {}
-                {{move || {
-                    let (position, cycle_targets, _) = tab_meta.get();
-                    let compact_now = is_collapsed_rail.get();
-                    let show_action =
-                        pinned || revealing_close.get() || hovered.get();
-                    stage_tab_shortcuts(
-                        tab_ref,
-                        id,
-                        position,
-                        cycle_targets,
-                        compact_now,
-                        show_action,
-                    )
-                }}}
+                {{
+                    let tab_shortcuts_key =
+                        local_memo(move || tab_meta.with(|(pos, cycle, _)| (*pos, *cycle)));
+                    let placement = Signal::derive_local(move || {
+                        let compact_now = is_collapsed_rail.get();
+                        let show_action =
+                            pinned || revealing_close.get() || hovered.get();
+                        match (compact_now, show_action) {
+                            (true, true) => HintPlacement::BottomLeadingCorner,
+                            (true, false) => HintPlacement::Corner,
+                            (false, _) => HintPlacement::TrailingBefore(TAB_CLOSE_RESERVE),
+                        }
+                    });
+                    move || {
+                        let (position, cycle_targets) = tab_shortcuts_key.get();
+                        stage_tab_shortcuts(tab_ref, id, position, cycle_targets, placement)
+                    }
+                }}
             }
         });
 
@@ -2361,14 +2417,8 @@ fn stage_tab_shortcuts(
     id: u64,
     position: usize,
     cycle_targets: TabCycleTargets,
-    compact: bool,
-    show_action: bool,
+    placement: Signal<HintPlacement, LocalStorage>,
 ) -> AnyView {
-    let placement = match (compact, show_action) {
-        (true, true) => HintPlacement::BottomLeadingCorner,
-        (true, false) => HintPlacement::Corner,
-        (false, _) => HintPlacement::TrailingBefore(TAB_CLOSE_RESERVE),
-    };
     AnyView::new(Scoped::new(move || {
         let mut shortcuts: Vec<Shortcut> = Vec::with_capacity(3);
         if cycle_targets.previous == Some(id) {
@@ -2381,7 +2431,12 @@ fn stage_tab_shortcuts(
             shortcuts.push(ordinal);
         }
         for shortcut in shortcuts {
-            keytips::stage_shortcut(tab_ref, shortcut, placement, Signal::stored_local(true));
+            keytips::stage_shortcut_dynamic(
+                tab_ref,
+                shortcut,
+                placement,
+                Signal::stored_local(true),
+            );
         }
         view! { box(a11y:hidden = true, style:display = "none") {} }
     }))

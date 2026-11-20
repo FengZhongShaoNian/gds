@@ -145,13 +145,13 @@ pub fn SplitHandle(state: State, #[prop(into, optional)] class: Classes) -> impl
         let tip = Signal::stored_local(tip);
         AnyView::new(view! {
             Tooltip(delay = crate::appearance::tokens::TOOLTIP_DELAY) {
-                TooltipTrigger(class = "gds-split__handle-slot") {{handle_control}}
+                TooltipTrigger(class = "gds-split__trigger") {{handle_control}}
                 TooltipContent {{move || tip.get()}}
             }
         })
     } else {
         AnyView::new(view! {
-            box(class = "gds-split__handle-slot") {{handle_control}}
+            box(class = "gds-split__trigger") {{handle_control}}
         })
     }
 }

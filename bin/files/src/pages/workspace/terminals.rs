@@ -1685,8 +1685,8 @@ impl Browser {
                     ) {
                         box(
                             class = "gds-files-terminal-header__title-wrap",
-                            style:opacity = move || {
-                                Some(format!("{:.3}", presentation.get().label_opacity()))
+                            var:--gds-sidebar-label-pct = move || {
+                                Some(format!("{:.2}%", presentation.get().label_opacity() * 100.0))
                             },
                         ) {
                             SideBarSectionTitle {

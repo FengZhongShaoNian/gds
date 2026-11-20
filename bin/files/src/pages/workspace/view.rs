@@ -163,7 +163,7 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-sidebar-content {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-width: 0px;
         min-height: 0px;
@@ -173,7 +173,7 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-sidebar-region-host {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-width: 0px;
         min-height: 0px;
@@ -380,7 +380,7 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-table-inner {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-height: 0px;
     }
@@ -399,19 +399,19 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex: none;
         align-items: center;
+        align-self: stretch;
         min-width: 0px;
-        height: 100%;
         box-sizing: border-box;
     }
 
     .gds-files-header-button {
         display: flex;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         align-items: center;
+        align-self: stretch;
         justify-content: flex-start;
         gap: 4px;
         min-width: 0px;
-        height: 100%;
         padding: 0px 12px;
         border-width: 0px;
         background-color: transparent;
@@ -448,7 +448,7 @@ const WORKSPACE_CSS: &str = css!(
     }
 
     .gds-files-header-button:not([data-align-end="true"]) .gds-files-header-label {
-        flex: 1 1 0%;
+        flex: 1 1 0px;
     }
 
     .gds-files-header-button[data-active="true"] .gds-files-header-label {
@@ -496,13 +496,13 @@ const WORKSPACE_CSS: &str = css!(
         position: relative;
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         min-height: 0px;
     }
 
     .gds-files-virtual-list {
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-height: 0px;
     }
 
@@ -517,9 +517,7 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-row-wrap:not([data-grid="true"]) {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
-        width: 100%;
-        height: 100%;
+        flex: 1 1 0px;
         min-width: 0px;
         padding: 2px 0px;
         box-sizing: border-box;
@@ -536,10 +534,9 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-row-wrap:not([data-grid="true"]) .gds-files-drag-row-host {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
-        width: 100%;
-        height: 100%;
+        flex: 1 1 0px;
         min-width: 0px;
+        min-height: 0px;
     }
 
     .gds-files-row-wrap[data-grid="true"] > .gds-files-menu-wrap,
@@ -565,15 +562,16 @@ const WORKSPACE_CSS: &str = css!(
     }
 
     .gds-files-row-wrap:not([data-grid="true"]) .gds-files-row-content {
-        flex: 1 1 0%;
-        width: 100%;
-        height: 100%;
+        flex: 1 1 0px;
+        width: auto;
+        height: auto;
         min-height: 36px;
         align-items: center;
     }
 
     .gds-files-row-content > .zui-tooltip__trigger {
-        height: 100%;
+        display: flex;
+        align-self: stretch;
         flex: none;
         min-width: 0px;
     }
@@ -609,7 +607,7 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex: none;
         align-items: center;
-        height: 100%;
+        align-self: stretch;
         gap: 10px;
         padding: 0px 12px;
         min-width: 0px;
@@ -618,7 +616,7 @@ const WORKSPACE_CSS: &str = css!(
 
     .gds-files-row-name-group {
         display: flex;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         align-items: center;
         gap: 6px;
         min-width: 0px;
@@ -646,8 +644,8 @@ const WORKSPACE_CSS: &str = css!(
         display: flex;
         flex: none;
         align-items: center;
+        align-self: stretch;
         justify-content: flex-start;
-        height: 100%;
         min-width: 0px;
         padding: 0px 12px;
         font-size: 12px;
@@ -761,7 +759,7 @@ const WORKSPACE_CSS: &str = css!(
     }
 
     .gds-files-grid-scroll {
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         min-height: 0px;
         overflow-y: auto;
@@ -869,7 +867,7 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-directory-surface {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         min-height: 0px;
     }
@@ -877,7 +875,7 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-drop-background {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         min-height: 0px;
     }
@@ -1691,12 +1689,13 @@ impl Browser {
                 "files-terminal-show"
             })
         });
+        let terminal_enabled = local_memo({
+            let browser = self.clone();
+            move || browser.0.preferences.state().with(|p| p.terminal_enabled())
+        });
         let visible = Signal::derive_local({
             let browser = self.clone();
-            move || {
-                browser.read(|state| state.picker.is_none())
-                    && browser.0.preferences.state().with(|p| p.terminal_enabled())
-            }
+            move || browser.read(|state| state.picker.is_none()) && terminal_enabled.get()
         });
 
         AnyView::new(view! {
@@ -1764,7 +1763,11 @@ impl Browser {
     }
 
     fn details_available(&self) -> bool {
-        self.read(|state| {
+        self.details_available_structure()
+    }
+
+    fn details_available_structure(&self) -> bool {
+        self.read_structure(|state| {
             let tab = state.tab();
             match tab.contents {
                 Contents::Directory | Contents::Places(_) => true,
@@ -2962,7 +2965,10 @@ impl Browser {
                 #[cfg(test)]
                 tests::record_row_cell_node(index, Column::Name, name_cell_ref);
                 let mut name = Some(AnyView::new(view! {
-                    HintTooltip(text = label_tooltip) {
+                    HintTooltip(
+                        text = label_tooltip,
+                        trigger_class = Self::column_width_class(Column::Name),
+                    ) {
                         row(
                             node_ref = name_cell_ref,
                             class = "gds-files-name-cell gds-files-col-name"
@@ -3090,56 +3096,75 @@ impl Browser {
         if let Some(actions) = self.special_page_actions() {
             return actions;
         }
-        let grid = self.read(|state| state.tab().mode == ViewMode::Grid);
-        let favorite =
-            self.read(|state| state.places.is_favorite(state.tab().navigation.location()));
-        let hidden = self.0.preferences.state().with(|p| p.files.show_hidden);
-        let details = self.0.details.get();
-        let details_button = self.details_available().then(|| {
-            self.control(
-                IconName::Info,
-                "details-toggle",
-                Browser::toggle_details,
-                Some(Command::Details),
-                Some(Signal::stored_local(details)),
-            )
-        });
-
-        AnyView::new(view! {
-            row(class = "gds-files-page-action-strip") {
-                {{self.control(
-                    if grid { IconName::List } else { IconName::LayoutGrid },
-                    "view-toggle",
-                    Browser::toggle_view,
-                    Some(Command::ViewMode),
-                    None,
-                )}}
-                {{self.control(
-                    IconName::Star,
-                    "favorite-toggle",
-                    Browser::favorite,
-                    Some(Command::Favorite),
-                    Some(Signal::stored_local(favorite)),
-                )}}
-                {{self.column_menu()}}
-                {{self.control(
-                    IconName::Eye,
-                    "show-hidden",
-                    |browser| browser.edit_preferences(|preferences| {
-                        preferences.files.show_hidden = !preferences.files.show_hidden;
-                    }),
-                    Some(Command::Hidden),
-                    Some(Signal::stored_local(hidden)),
-                )}}
-                {details_button}
-                {{self.control(
-                    IconName::RefreshCw,
-                    "refresh",
-                    Browser::refresh,
-                    Some(Command::Refresh),
-                    None,
-                )}}
+        let browser = self.clone();
+        let layout = local_memo({
+            let browser = self.clone();
+            move || {
+                let grid = browser.read_structure(|state| state.tab().mode == ViewMode::Grid);
+                let details_avail = browser.details_available_structure();
+                (grid, details_avail)
             }
+        });
+        AnyView::new(view! {
+            {{move || {
+                let (grid, details_avail) = layout.get();
+                let _z = enter_non_reactive_zone();
+                let fav_b = browser.clone();
+                let favorite = Signal::derive_local(move || {
+                    fav_b.read_structure(|state| {
+                        state.places.is_favorite(state.tab().navigation.location())
+                    })
+                });
+                let prefs = browser.0.preferences.state();
+                let hidden = Signal::derive_local(move || prefs.with(|p| p.files.show_hidden));
+                let details: Signal<bool, LocalStorage> = browser.0.details.into();
+                let details_button = details_avail.then(|| {
+                    browser.control(
+                        IconName::Info,
+                        "details-toggle",
+                        Browser::toggle_details,
+                        Some(Command::Details),
+                        Some(details),
+                    )
+                });
+
+                view! {
+                    row(class = "gds-files-page-action-strip") {
+                        {{browser.control(
+                            if grid { IconName::List } else { IconName::LayoutGrid },
+                            "view-toggle",
+                            Browser::toggle_view,
+                            Some(Command::ViewMode),
+                            None,
+                        )}}
+                        {{browser.control(
+                            IconName::Star,
+                            "favorite-toggle",
+                            Browser::favorite,
+                            Some(Command::Favorite),
+                            Some(favorite),
+                        )}}
+                        {{browser.column_menu()}}
+                        {{browser.control(
+                            IconName::Eye,
+                            "show-hidden",
+                            |b| b.edit_preferences(|preferences| {
+                                preferences.files.show_hidden = !preferences.files.show_hidden;
+                            }),
+                            Some(Command::Hidden),
+                            Some(hidden),
+                        )}}
+                        {details_button}
+                        {{browser.control(
+                            IconName::RefreshCw,
+                            "refresh",
+                            Browser::refresh,
+                            Some(Command::Refresh),
+                            None,
+                        )}}
+                    }
+                }
+            }}}
         })
     }
 

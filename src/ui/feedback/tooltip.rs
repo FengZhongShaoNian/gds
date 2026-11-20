@@ -134,12 +134,13 @@ pub fn TooltipText(#[prop(into)] text: Signal<String, LocalStorage>) -> impl Int
 #[component]
 pub fn HintTooltip(
     #[prop(into)] text: Signal<String, LocalStorage>,
+    #[prop(into, optional)] trigger_class: Classes,
     children: Children,
 ) -> impl IntoView {
     install_tooltip_stylesheet();
     view! {
         Tooltip(delay = TOOLTIP_DELAY) {
-            TooltipTrigger {{children.into_view_once()}}
+            TooltipTrigger(class = trigger_class) {{children.into_view_once()}}
             TooltipContent(class = "gds-tooltip-content", arrow = false) {
                 TooltipText(text = text)
             }

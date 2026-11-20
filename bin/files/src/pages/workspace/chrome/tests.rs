@@ -763,8 +763,8 @@ fn locations_collapse_mid_transition_hides_scrollbar_and_keeps_full_38px_row_hei
         flush();
         harness.settle(4);
         assert!(
-            loc_progress.get_untracked() <= 1e-4 && !locations_node.is_bound(),
-            "expected collapsed Locations section to unmount at loc_progress == 0"
+            loc_progress.get_untracked() <= 1e-4 && locations_node.bounds().is_none(),
+            "expected collapsed Locations section to hide from layout at loc_progress == 0"
         );
 
         browser.edit_preferences(|p| {

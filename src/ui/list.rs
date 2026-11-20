@@ -20,7 +20,7 @@ const LIST_CSS: &str = css!(
         position: relative;
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-width: 0px;
         min-height: 0px;
@@ -45,7 +45,7 @@ const LIST_CSS: &str = css!(
     }
     .gds-list-surface__scroll.gds-list-surface__scroll {
         display: block;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-width: 0px;
         min-height: 0px;

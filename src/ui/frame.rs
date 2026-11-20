@@ -83,7 +83,7 @@ const FRAME_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         align-self: stretch;
     }
@@ -129,9 +129,9 @@ const FRAME_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
-        height: 100%;
+        align-self: stretch;
         padding: 0px var(--gds-sidebar-padding, 10px);
         gap: 4px;
         background-color: var(--gds-content-bg, var(--gds-content));
@@ -141,17 +141,16 @@ const FRAME_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
-        height: 100%;
+        align-self: stretch;
         overflow: hidden;
     }
     .gds-workspace-frame {
         position: relative;
         display: flex;
         flex-direction: row;
-        flex: 1 1 0%;
-        width: 100%;
+        flex: 1 1 0px;
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
@@ -162,7 +161,7 @@ const FRAME_CSS: &str = css!(
     .gds-workspace-frame__sidebar {
         display: flex;
         flex-direction: column;
-        height: 100%;
+        align-self: stretch;
         min-width: 0px;
         min-height: 0px;
         flex-shrink: 0;
@@ -173,8 +172,8 @@ const FRAME_CSS: &str = css!(
     .gds-workspace-frame__content {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
-        height: 100%;
+        flex: 1 1 0px;
+        align-self: stretch;
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
@@ -213,9 +212,9 @@ const FRAME_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
-        height: 100%;
+        align-self: stretch;
         padding: 0px 18px;
         gap: 8px;
         box-sizing: border-box;
@@ -226,7 +225,7 @@ const FRAME_CSS: &str = css!(
         display: flex;
         flex-direction: row;
         align-items: center;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         gap: 8px;
         overflow: hidden;

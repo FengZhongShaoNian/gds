@@ -62,7 +62,7 @@ const SIDEBAR_CSS: &str = css!(
     }
     .gds-sidebar__content {
         display: block;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-width: 0px;
         min-height: 0px;
@@ -72,7 +72,7 @@ const SIDEBAR_CSS: &str = css!(
     .gds-sidebar__content--static {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-width: 0px;
         min-height: 0px;
@@ -103,7 +103,7 @@ const SIDEBAR_CSS: &str = css!(
         gap: 4px;
     }
     .gds-sidebar__section-title {
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -111,8 +111,11 @@ const SIDEBAR_CSS: &str = css!(
         padding: 0px var(--gds-sidebar-section-padding, 6px);
         font-size: var(--gds-font-size-xs, 12px);
         font-weight: 400;
-        color: var(--gds-muted-foreground);
-        opacity: var(--gds-sidebar-label-opacity, 1);
+        color: color-mix(
+            in srgb,
+            var(--gds-muted-foreground) var(--gds-sidebar-label-pct, 100%),
+            transparent
+        );
     }
     .gds-sidebar:not([data-actions-visible=\"true\"]) .gds-sidebar__section-title {
         pointer-events: none;
@@ -127,7 +130,7 @@ const SIDEBAR_CSS: &str = css!(
     }
     .gds-sidebar__section-content--scrollable {
         display: block;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         width: 100%;
         min-width: 0px;
         min-height: 0px;
@@ -198,6 +201,12 @@ pub fn SideBar(
             },
             var:--gds-sidebar-label-opacity = move || {
                 Some(format!("{:.3}", effective_presentation.get().label_opacity()))
+            },
+            var:--gds-sidebar-label-pct = move || {
+                Some(format!("{:.2}%", effective_presentation.get().label_opacity() * 100.0))
+            },
+            var:--gds-sidebar-selected-details-pct = move || {
+                Some(format!("{:.2}%", effective_presentation.get().label_opacity() * 85.0))
             },
             var:--gds-sidebar-actions-opacity = move || {
                 Some(format!("{:.3}", effective_presentation.get().actions_opacity()))

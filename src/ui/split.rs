@@ -30,7 +30,7 @@ const SPLIT_CSS: &str = css!(
     .gds-split__leading {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
+        flex: 1 1 0px;
         min-width: 0px;
         min-height: 0px;
         overflow: hidden;
@@ -50,6 +50,13 @@ const SPLIT_CSS: &str = css!(
         width: 100%;
         height: 1px;
         flex-shrink: 0;
+    }
+    .gds-split__trigger.gds-split__trigger {
+        position: absolute;
+        inset: 0px;
+        display: block;
+        width: 100%;
+        height: 1px;
     }
     .gds-split__divider-bg {
         position: absolute;
@@ -193,7 +200,9 @@ pub fn VerticalSplit(
                     let bg = divider_background.clone();
                     view! {
                         box(class = "gds-split__handle-slot") {
-                            box(class = "gds-split__passive-line", a11y:hidden = true) {}
+                            Show(when = move || !resizable.get()) {
+                                box(class = "gds-split__passive-line", a11y:hidden = true) {}
+                            }
                             {bg.map(|render_bg| AnyView::new(view! {
                                 box(class = "gds-split__divider-bg", a11y:hidden = true) {
                                     {render_bg.view()}

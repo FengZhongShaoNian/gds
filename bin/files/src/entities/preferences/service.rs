@@ -140,11 +140,14 @@ impl Service {
             .send(preferences.clone())
             .map_err(|_| Error::Closed)?;
         drop(queue);
+        let appearance_changed = prepared.appearance_changed();
         prepared.install(&preferences);
-        Gds::current()
-            .appearance()
-            .theme()
-            .configure_hot_reload(preferences.appearance.clone());
+        if appearance_changed {
+            Gds::current()
+                .appearance()
+                .theme()
+                .configure_hot_reload(preferences.appearance.clone());
+        }
         if self
             .0
             .current

@@ -184,7 +184,7 @@ pub struct StagedHint {
     pub id: u64,
     pub target: NodeRef,
     pub shortcut: Shortcut,
-    pub placement: HintPlacement,
+    pub placement: Signal<HintPlacement, LocalStorage>,
     pub enabled: Signal<bool, LocalStorage>,
     pub dialog_scope: Option<u64>,
     pub badge_ref: NodeRef,
@@ -283,6 +283,17 @@ impl KeytipRegistry {
         placement: HintPlacement,
         enabled: Signal<bool, LocalStorage>,
     ) {
+        self.stage_dynamic(target, shortcut, Signal::stored_local(placement), enabled);
+    }
+
+    /// Stages a [`Shortcut`] on `target` using reactive `placement` until the calling reactive scope cleans up.
+    pub fn stage_dynamic(
+        self,
+        target: NodeRef,
+        shortcut: Shortcut,
+        placement: Signal<HintPlacement, LocalStorage>,
+        enabled: Signal<bool, LocalStorage>,
+    ) {
         let id = self.next_hint_id.get_untracked();
         self.next_hint_id.set(id.saturating_add(1));
         let dialog_scope = DialogScopeId::current().map(|s| s.0);
@@ -324,6 +335,18 @@ pub fn stage_shortcut(
 ) {
     if let Some(registry) = KeytipRegistry::current() {
         registry.stage(target, shortcut.into(), placement, enabled);
+    }
+}
+
+/// Stages a [`Shortcut`] on `target` with reactive [`HintPlacement`] and `enabled` guard.
+pub fn stage_shortcut_dynamic(
+    target: NodeRef,
+    shortcut: impl Into<Shortcut>,
+    placement: Signal<HintPlacement, LocalStorage>,
+    enabled: Signal<bool, LocalStorage>,
+) {
+    if let Some(registry) = KeytipRegistry::current() {
+        registry.stage_dynamic(target, shortcut.into(), placement, enabled);
     }
 }
 
@@ -993,6 +1016,7 @@ fn sample_keytips(
             .filter(|sz| sz.width.0 > 1.0 && sz.height.0 > 1.0)
             .unwrap_or_else(|| estimated_badge_size(&label));
 
+        let placement = entry.placement.get();
         if let Some((toast_ref, toast_rect)) = toast_occlusion {
             let is_toast_hint = entry.target == toast_ref
                 || entry
@@ -1006,7 +1030,7 @@ fn sample_keytips(
                 let slot = LabelSlot {
                     anchor,
                     size: badge_size,
-                    placement: entry.placement,
+                    placement,
                 };
                 let badge_occluded = candidates(slot, content).first().is_some_and(|origin| {
                     rects_intersect(Rect::new(*origin, badge_size), toast_rect)
@@ -1020,7 +1044,7 @@ fn sample_keytips(
         candidates_list.push((
             entry.id,
             entry.badge_ref,
-            entry.placement,
+            placement,
             label,
             anchor,
             badge_size,

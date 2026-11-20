@@ -68,9 +68,16 @@ const NAVIGATION_CSS: &str = css!(
         border: none;
         border-radius: var(--gds-radius-control, 6px);
         user-select: none;
+        --gds-nav-label-ink: var(--gds-foreground);
         transition:
             background-color var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1)),
             color var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
+    }
+    .gds-sidebar .gds-nav-item {
+        --gds-nav-label-ink: var(--gds-sidebar-foreground);
+    }
+    .gds-nav-item[data-selected=\"true\"] {
+        --gds-nav-label-ink: var(--gds-selection-foreground);
     }
     .gds-nav-item[data-compact=\"true\"] {
         min-height: 32px;
@@ -103,9 +110,7 @@ const NAVIGATION_CSS: &str = css!(
     .gds-nav-item__content {
         display: flex;
         flex-direction: column;
-        flex: 1 1 0%;
-        width: 100%;
-        max-width: 100%;
+        flex: 1 1 0px;
         min-width: 0px;
         overflow: hidden;
         padding: 4px 0px;
@@ -117,8 +122,6 @@ const NAVIGATION_CSS: &str = css!(
         flex-direction: row;
         align-items: center;
         flex: 0 0 auto;
-        width: 100%;
-        max-width: 100%;
         min-width: 0px;
         height: 18px;
         min-height: 18px;
@@ -131,7 +134,6 @@ const NAVIGATION_CSS: &str = css!(
         display: block;
         flex: 0 0 auto;
         min-width: 0px;
-        max-width: 100%;
         height: 18px;
         min-height: 18px;
         overflow: hidden;
@@ -139,17 +141,19 @@ const NAVIGATION_CSS: &str = css!(
         white-space: nowrap;
         font-size: var(--gds-font-size-small, 14px);
         line-height: 18px;
-        opacity: var(--gds-sidebar-label-opacity, 1);
+        color: color-mix(
+            in srgb,
+            var(--gds-nav-label-ink, var(--gds-foreground)) var(--gds-sidebar-label-pct, 100%),
+            transparent
+        );
     }
     .gds-nav-item > .gds-nav-item__label,
     .gds-nav-item__header > .gds-nav-item__label {
-        flex: 1 1 0%;
+        flex: 1 1 0px;
     }
     .gds-nav-item__details {
         display: block;
         flex: 0 0 auto;
-        width: 100%;
-        max-width: 100%;
         min-width: 0px;
         height: 16px;
         min-height: 16px;
@@ -158,13 +162,19 @@ const NAVIGATION_CSS: &str = css!(
         text-overflow: ellipsis;
         white-space: nowrap;
         font-size: var(--gds-font-size-xs, 12px);
-        color: var(--gds-muted-foreground);
-        opacity: var(--gds-sidebar-label-opacity, 1);
+        color: color-mix(
+            in srgb,
+            var(--gds-muted-foreground) var(--gds-sidebar-label-pct, 100%),
+            transparent
+        );
         box-sizing: border-box;
     }
     .gds-nav-item[data-selected=\"true\"] .gds-nav-item__details {
-        color: inherit;
-        opacity: var(--gds-sidebar-label-opacity, 0.85);
+        color: color-mix(
+            in srgb,
+            var(--gds-selection-foreground) var(--gds-sidebar-selected-details-pct, 85%),
+            transparent
+        );
     }
     .gds-nav-item__actions {
         position: absolute;
@@ -321,6 +331,24 @@ pub fn NavItem(
                     Some(format!(
                         "{:.3}",
                         effective_presentation.get().label_opacity()
+                    ))
+                },
+            )
+            .custom_property(
+                CustomPropertyName::new("gds-sidebar-label-pct"),
+                move || {
+                    Some(format!(
+                        "{:.2}%",
+                        effective_presentation.get().label_opacity() * 100.0
+                    ))
+                },
+            )
+            .custom_property(
+                CustomPropertyName::new("gds-sidebar-selected-details-pct"),
+                move || {
+                    Some(format!(
+                        "{:.2}%",
+                        effective_presentation.get().label_opacity() * 85.0
                     ))
                 },
             )

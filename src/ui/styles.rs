@@ -58,7 +58,7 @@ const STATIC_BASE_CSS: &str = r#"
 .gds-content-container {
     display: flex;
     flex-direction: column;
-    flex: 1 1 0%;
+    flex: 1 1 0px;
     min-width: 0;
     min-height: 0;
     padding: var(--gds-content-padding, 12px);
@@ -82,7 +82,7 @@ const STATIC_BASE_CSS: &str = r#"
 .gds-frame-content {
     display: flex;
     flex-direction: column;
-    flex: 1 1 0%;
+    flex: 1 1 0px;
     min-width: 0;
     min-height: 0;
     background: transparent;

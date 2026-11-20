@@ -61,6 +61,14 @@ impl Action {
 
 impl Browser {
     fn special_actions(&self) -> Option<Vec<Action>> {
+        if self.read_structure(|state| {
+            matches!(
+                state.tab().navigation.location(),
+                Location::Directory(_) | Location::Volume { .. }
+            )
+        }) {
+            return None;
+        }
         let (
             tab_id,
             location,

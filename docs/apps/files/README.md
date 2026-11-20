@@ -43,6 +43,7 @@ Every browsable target has a canonical URI and participates in per-tab back/forw
 - [File Picker CLI & Portal Protocol](picker.md)
 - [SFTP & SMB Network Locations](network.md)
 - [Volumes & Sidebar](devices-and-sidebar.md)
+- [Sidebar expansion frame times on GPUI-fast and zgui](sidebar-frame-times.md)
 - [File Tags & URI Schemes](tags.md)
 - [Desktop VM E2E & Unit Testing](testing.md)
 - [Files Roadmap (Built-in Archives, Remote Move & Search)](../../roadmap/files.md)

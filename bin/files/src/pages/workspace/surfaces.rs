@@ -1071,14 +1071,17 @@ impl Browser {
     }
 
     pub(super) fn collection_columns(&self) -> Option<Vec<(&'static str, f32)>> {
-        let viewport = self.table_viewport_width().max(240.0);
-        let compact = self.compact();
+        let dimensions = || (self.table_viewport_width().max(240.0), self.compact());
 
         self.read(|state| {
             let tab = state.tab();
             match &tab.contents {
-                Contents::Places(_) => Some(location_table_columns(viewport, compact)),
+                Contents::Places(_) => {
+                    let (viewport, compact) = dimensions();
+                    Some(location_table_columns(viewport, compact))
+                }
                 Contents::Trash(_) => {
+                    let (viewport, compact) = dimensions();
                     let orig_min = if compact { 170.0 } else { 240.0 };
                     let deleted_w = if compact { 140.0 } else { 160.0 };
                     let size_w = if compact { 96.0 } else { 120.0 };
@@ -1094,6 +1097,7 @@ impl Browser {
                     ])
                 }
                 Contents::Tags { .. } => {
+                    let (viewport, compact) = dimensions();
                     // Pure tag catalogues never show file metadata columns (testing.md:73).
                     let has_files = tab.rows.iter().any(|row| matches!(row, Row::File(_)));
                     if has_files {
@@ -1103,6 +1107,7 @@ impl Browser {
                     }
                 }
                 Contents::Remote { .. } => {
+                    let (viewport, compact) = dimensions();
                     let modified_w = if compact { 140.0 } else { 170.0 };
                     let type_w = if compact { 100.0 } else { 120.0 };
                     let size_w = if compact { 90.0 } else { 110.0 };
@@ -1115,6 +1120,7 @@ impl Browser {
                     ])
                 }
                 Contents::Volumes => {
+                    let (viewport, compact) = dimensions();
                     let format_w = if compact { 90.0 } else { 110.0 };
                     let space_w = if compact { 170.0 } else { 220.0 };
                     let mount_w = if compact { 160.0 } else { 210.0 };

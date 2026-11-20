@@ -1476,6 +1476,12 @@ impl Browser {
 
         let workspace_col = NodeRef::new();
         let workspace_size = workspace_col.observe_border_size();
+        let window_scale = self.0.window.as_ref().map(|window| window.scale());
+        let workspace_width = Signal::derive_local(move || {
+            let size = workspace_size.get()?;
+            let scale = window_scale.map_or_else(|| workspace_col.scale(), |scale| scale.get());
+            Some(size.width.0 / scale)
+        });
         let resize_browser = self.clone();
         let term_size_fx = RenderEffect::new(move |_| {
             if let Some(sz) = workspace_size.get() {
@@ -1567,7 +1573,7 @@ impl Browser {
                     Pane::Files => {
                         let pres_initial = sidebar_pres.get_untracked();
                         let files_sidebar = sidebar_browser.sidebar(pres_initial);
-                        let files_content = content_browser.file_content();
+                        let files_content = content_browser.file_content(workspace_width);
                         let term_b = terminal_browser.clone();
                         AnyView::new(view! {
                             WorkspaceFrame(
@@ -1698,12 +1704,14 @@ impl Browser {
         })
     }
 
-    fn file_content(&self) -> AnyView {
+    fn file_content(&self, workspace_width: Signal<Option<f32>, LocalStorage>) -> AnyView {
         let browser = self.clone();
-        AnyView::new(Scoped::new(move || browser.file_content_scoped()))
+        AnyView::new(Scoped::new(move || {
+            browser.file_content_scoped(workspace_width)
+        }))
     }
 
-    fn file_content_scoped(&self) -> AnyView {
+    fn file_content_scoped(&self, workspace_width: Signal<Option<f32>, LocalStorage>) -> AnyView {
         let title_browser = self.clone();
         let content_browser = self.clone();
         let details_browser = self.clone();
@@ -1714,18 +1722,6 @@ impl Browser {
         let search_ime_browser = self.clone();
 
         let content_ref = self.0.content_focus;
-        let width_sig = self.0.content_width;
-        let size_obs = content_ref.observe_border_size();
-        let size_fx = RenderEffect::new(move |_| {
-            if let Some(sz) = size_obs.get() {
-                let s = content_ref.scale().max(1.0);
-                let width = sz.width.0 / s;
-                if width.is_finite() && width > 0.0 {
-                    width_sig.set(width);
-                }
-            }
-        });
-        on_cleanup_local(move || drop(size_fx));
 
         let region_attrs =
             surface_with_shortcut(content_ref, Some(Command::FocusContent.shortcut()));
@@ -1784,6 +1780,30 @@ impl Browser {
             let browser = self.clone();
             move || !browser.compact() && details_progress.get() > 0.001
         });
+
+        let details_width = Signal::derive_local(move || {
+            if details_mounted.get() {
+                DETAILS_WIDTH * details_progress.get()
+            } else {
+                0.0
+            }
+        });
+
+        let content_width = self.0.content_width;
+        let sidebar_width = self.sidebar_width();
+        // Use the same pane widths as layout so column and grid bindings settle before layout.
+        let size_fx = RenderEffect::new(move |_| {
+            if let Some(total) = workspace_width
+                .get()
+                .filter(|width| width.is_finite() && *width > 0.0)
+            {
+                let width = (total - sidebar_width.get() - details_width.get()).max(1.0);
+                if width != content_width.get_untracked() {
+                    content_width.set(width);
+                }
+            }
+        });
+        on_cleanup_local(move || drop(size_fx));
 
         let filter_node = self.0.filter_node;
         let filter_sig = self.0.filter;
@@ -1901,7 +1921,7 @@ impl Browser {
                             box(
                                 class = "gds-files-details-host",
                                 style:width = move || {
-                                    Some(format!("{:.1}px", (DETAILS_WIDTH * details_progress.get()).max(0.0)))
+                                    Some(format!("{:.1}px", details_width.get()))
                                 }
                             ) {
                                 box(class = "gds-files-details-pane") {
@@ -3251,6 +3271,17 @@ mod tests {
         FOOTER_TERMINAL_NODE.with(|slot| *slot.borrow())
     }
 
+    fn assert_content_width_matches_layout(browser: &Browser) {
+        let node = browser.0.content_focus;
+        let bounds = node.bounds().expect("file content has completed layout");
+        let measured = bounds.size.width.0;
+        let expected = browser.0.content_width.get_untracked() * node.scale();
+        assert!(
+            (measured - expected).abs() <= 1.0,
+            "file content width was {measured} device pixels, expected {expected}"
+        );
+    }
+
     fn last_color_sprites() -> Vec<(f32, f32)> {
         LAST_COLOR_SPRITES.with(|slot| slot.borrow().clone())
     }
@@ -3981,6 +4012,7 @@ mod tests {
                 .expect("measured bounds for .gds-files-details__thumb-wrap");
             let details_w = details_bounds.size.width.0 / scale;
             let details_h = details_bounds.size.height.0 / scale;
+            assert_content_width_matches_layout(&browser);
             assert!(
                 details_w > 240.0 && (details_h - 168.0).abs() < 0.5,
                 "expected Details media box to span full width (> 240px) x 168px (never 144x144px), got {details_w:.1}x{details_h:.1}"
@@ -4124,6 +4156,7 @@ mod tests {
             for (step, expected) in [false, true, false, true].into_iter().enumerate() {
                 send_ctrl_b(&mut harness);
                 harness.run_for(Duration::from_millis(48), Duration::from_millis(16));
+                assert_content_width_matches_layout(&browser);
                 zgui::reactive::flush();
                 assert_eq!(
                     browser.0.sidebar.get_untracked(),
@@ -4227,11 +4260,19 @@ mod tests {
             )));
             harness.settle(8);
             assert!(browser.compact_untracked());
+            assert_content_width_matches_layout(&browser);
             send_ctrl_b(&mut harness);
             assert!(
                 browser.0.sidebar.get_untracked(),
                 "Ctrl+B in compact mode (< 1080px) must not flip underlying sidebar state"
             );
+
+            harness.deliver_to_first(SurfaceEvent::ScaleFactorChanged {
+                scale_factor: 1.25,
+                size: Size::new(DevicePx(960.0), DevicePx(800.0)),
+            });
+            harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+            assert_content_width_matches_layout(&browser);
 
             harness.shut_down();
             Ok(())

@@ -40,7 +40,9 @@ use zgui::reactive::{
     on_cleanup_local,
 };
 use zgui::view::time::{FrameHandle, Timers};
-use zgui::view::{Scoped, current_host, events, focus_is_text_entry, install_stylesheet};
+use zgui::view::{
+    CustomPropertyName, Scoped, current_host, events, focus_is_text_entry, install_stylesheet,
+};
 use zgui::vocab::{PointerButton, Role, SharedString, Timestamp};
 use zgui::{css, view};
 use zgui_ui::{ButtonProps, ButtonVariant, SpinnerProps, VirtualListProps, Virtualize};
@@ -399,6 +401,7 @@ const WORKSPACE_CSS: &str = css!(
         align-items: center;
         min-width: 0px;
         height: 100%;
+        box-sizing: border-box;
     }
 
     .gds-files-header-button {
@@ -683,6 +686,78 @@ const WORKSPACE_CSS: &str = css!(
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+
+    .gds-files-col-name.gds-files-col-name {
+        flex: none;
+        width: var(--gds-files-col-name);
+        min-width: var(--gds-files-col-name);
+        max-width: var(--gds-files-col-name);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-modified.gds-files-col-modified {
+        flex: none;
+        width: var(--gds-files-col-modified);
+        min-width: var(--gds-files-col-modified);
+        max-width: var(--gds-files-col-modified);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-accessed.gds-files-col-accessed {
+        flex: none;
+        width: var(--gds-files-col-accessed);
+        min-width: var(--gds-files-col-accessed);
+        max-width: var(--gds-files-col-accessed);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-type.gds-files-col-type {
+        flex: none;
+        width: var(--gds-files-col-type);
+        min-width: var(--gds-files-col-type);
+        max-width: var(--gds-files-col-type);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-size.gds-files-col-size {
+        flex: none;
+        width: var(--gds-files-col-size);
+        min-width: var(--gds-files-col-size);
+        max-width: var(--gds-files-col-size);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-owner.gds-files-col-owner {
+        flex: none;
+        width: var(--gds-files-col-owner);
+        min-width: var(--gds-files-col-owner);
+        max-width: var(--gds-files-col-owner);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-group.gds-files-col-group {
+        flex: none;
+        width: var(--gds-files-col-group);
+        min-width: var(--gds-files-col-group);
+        max-width: var(--gds-files-col-group);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-detailed-type.gds-files-col-detailed-type {
+        flex: none;
+        width: var(--gds-files-col-detailed-type);
+        min-width: var(--gds-files-col-detailed-type);
+        max-width: var(--gds-files-col-detailed-type);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-permissions.gds-files-col-permissions {
+        flex: none;
+        width: var(--gds-files-col-permissions);
+        min-width: var(--gds-files-col-permissions);
+        max-width: var(--gds-files-col-permissions);
+        box-sizing: border-box;
     }
 
     .gds-files-grid-scroll {
@@ -1162,7 +1237,7 @@ enum FileBody {
 #[derive(Clone, PartialEq)]
 enum HeaderStructure {
     Collection {
-        columns: Vec<(&'static str, f32)>,
+        columns: Vec<&'static str>,
         sortable: Vec<Column>,
         sort: crate::entities::file::sorting::Sort,
         lang: Option<gds::i18n::Language>,
@@ -2025,6 +2100,71 @@ impl Browser {
         })
     }
 
+    const fn column_width_class(column: Column) -> &'static str {
+        match column {
+            Column::Name => "gds-files-col-name",
+            Column::Modified => "gds-files-col-modified",
+            Column::Accessed => "gds-files-col-accessed",
+            Column::Type => "gds-files-col-type",
+            Column::Size => "gds-files-col-size",
+            Column::Owner => "gds-files-col-owner",
+            Column::Group => "gds-files-col-group",
+            Column::DetailedType => "gds-files-col-detailed-type",
+            Column::Permissions => "gds-files-col-permissions",
+        }
+    }
+
+    const fn column_custom_property(column: Column) -> &'static str {
+        match column {
+            Column::Name => "gds-files-col-name",
+            Column::Modified => "gds-files-col-modified",
+            Column::Accessed => "gds-files-col-accessed",
+            Column::Type => "gds-files-col-type",
+            Column::Size => "gds-files-col-size",
+            Column::Owner => "gds-files-col-owner",
+            Column::Group => "gds-files-col-group",
+            Column::DetailedType => "gds-files-col-detailed-type",
+            Column::Permissions => "gds-files-col-permissions",
+        }
+    }
+
+    const fn collection_column_custom_property(index: usize) -> &'static str {
+        match index {
+            0 => "gds-files-col-0",
+            1 => "gds-files-col-1",
+            2 => "gds-files-col-2",
+            3 => "gds-files-col-3",
+            _ => "gds-files-col-4",
+        }
+    }
+
+    fn table_column_attrs(&self) -> Attrs {
+        let mut attrs = Attrs::new();
+        for column in Column::ALL {
+            let browser = self.clone();
+            let width = local_memo(move || browser.column_width(column));
+            attrs = attrs.custom_property(
+                CustomPropertyName::new(Self::column_custom_property(column)),
+                move || Some(format!("{:.2}px", width.get())),
+            );
+        }
+        let collection_browser = self.clone();
+        let collection_columns = local_memo(move || collection_browser.collection_columns());
+        for index in 0..super::surfaces::COLLECTION_MAX_COLUMNS {
+            let width = local_memo(move || {
+                collection_columns.with(|cols| {
+                    cols.as_ref()
+                        .and_then(|items| items.get(index).map(|(_, w)| *w))
+                })
+            });
+            attrs = attrs.custom_property(
+                CustomPropertyName::new(Self::collection_column_custom_property(index)),
+                move || width.get().map(|w| format!("{w:.2}px")),
+            );
+        }
+        attrs
+    }
+
     fn column_min_width(column: Column) -> f32 {
         match column {
             Column::Name => NAME_MIN_WIDTH,
@@ -2039,7 +2179,7 @@ impl Browser {
         }
     }
 
-    fn table_viewport_width_untracked(&self) -> f32 {
+    pub(super) fn table_viewport_width_untracked(&self) -> f32 {
         (self.0.content_width.get_untracked() - TABLE_INSET * 2.0)
             .floor()
             .max(1.0)
@@ -2120,7 +2260,6 @@ impl Browser {
     }
 
     fn column_header(&self, column: Column) -> AnyView {
-        let width_browser = self.clone();
         let sort_browser = self.clone();
         let resize_drag = self.clone();
         let resize_cancel = self.clone();
@@ -2132,9 +2271,13 @@ impl Browser {
         let align_end = column == Column::Size;
 
         let drag_state: RwSignal<Option<(f32, f32)>, LocalStorage> = RwSignal::new_local(None);
+        let header_cell_ref = NodeRef::new();
         let resize_ref = NodeRef::new();
         #[cfg(test)]
-        tests::record_header_resize_node(column, resize_ref);
+        {
+            tests::record_header_cell_node(column, header_cell_ref);
+            tests::record_header_resize_node(column, resize_ref);
+        }
         let window = try_use_window();
 
         let sort_indicator = sortable.then(|| {
@@ -2172,8 +2315,8 @@ impl Browser {
 
         AnyView::new(view! {
             row(
-                class = "gds-files-header-cell",
-                style:width = move || Some(format!("{:.1}px", width_browser.column_width(column)))
+                node_ref = header_cell_ref,
+                class = format!("gds-files-header-cell {}", Self::column_width_class(column))
             ) {
                 control(
                     class = "gds-files-header-button",
@@ -2350,7 +2493,7 @@ impl Browser {
                             | Contents::Volumes
                     )
                 });
-                if is_collection && let Some(columns) = browser.collection_columns() {
+                if is_collection && let Some(columns) = browser.collection_column_ids() {
                     let sortable = browser.sortable_columns_untracked();
                     let sort = browser.read_structure(|state| state.tab().sort);
                     HeaderStructure::Collection {
@@ -2381,6 +2524,7 @@ impl Browser {
         });
 
         let focus_visible = self.0.list_focus_visible;
+        let table_col_attrs = self.table_column_attrs();
         let target = AnyView::new(view! {
             ListSurface(
                 scroll_ref = list_node,
@@ -2391,7 +2535,7 @@ impl Browser {
                 on_blank_press = blank_press,
                 class = "gds-files-list-surface"
             ) {
-                PageTableArea(class = "gds-files-table-area") {
+                PageTableArea(class = "gds-files-table-area", {..table_col_attrs}) {
                     scroll(
                         node_ref = viewport,
                         class = "gds-files-table-x",
@@ -2406,7 +2550,7 @@ impl Browser {
                     ) {
                         column(
                             class = "gds-files-table-inner",
-                            style:min-width = move || Some(format!("{:.1}px", table_browser.table_width()))
+                            style:min-width = move || Some(format!("{:.2}px", table_browser.table_width()))
                         ) {
                             {{move || {
                                 let structure = header_structure.get();
@@ -2777,70 +2921,69 @@ impl Browser {
 
         // Table row (`ViewMode::List` and collection tables)
         let selected_binding = Binding::controlled(selected_sig, |_| {});
-        let cells: Vec<AnyView> = if let Some(collection_cells) =
-            self.collection_cells(&row, selected_binding)
-        {
-            collection_cells
-        } else {
-            let name_width_browser = self.clone();
-            let label_tooltip = wrap_tokens(&label);
-            let a11y_value = SharedString::from(label.clone());
-            let select_label = self.clone();
-            let open_label = self.clone();
-            let label_view = AnyView::new(view! {
-                row(class = "gds-files-row-name-group") {
-                    text(
-                        class = "gds-files-row-name-text",
-                        a11y:role = Role::Label,
-                        a11y:value = a11y_value,
-                        a11y:selected = move || selected_sig.get(),
-                        {..desc_attrs},
-                        on:click = move |ev: &mut EventCx<'_, events::Click>| {
-                            ev.stop_propagation();
-                            select_label.select_row(index, ev.modifiers);
-                            select_label.focus_content();
-                        },
-                        on:double_click = move |ev: &mut EventCx<'_, events::DoubleClick>| {
-                            ev.stop_propagation();
-                            open_label.open_row(index, false);
+        let cells: Vec<AnyView> =
+            if let Some(collection_cells) = self.collection_cells(&row, selected_binding) {
+                collection_cells
+            } else {
+                let label_tooltip = wrap_tokens(&label);
+                let a11y_value = SharedString::from(label.clone());
+                let select_label = self.clone();
+                let open_label = self.clone();
+                let label_view = AnyView::new(view! {
+                    row(class = "gds-files-row-name-group") {
+                        text(
+                            class = "gds-files-row-name-text",
+                            a11y:role = Role::Label,
+                            a11y:value = a11y_value,
+                            a11y:selected = move || selected_sig.get(),
+                            {..desc_attrs},
+                            on:click = move |ev: &mut EventCx<'_, events::Click>| {
+                                ev.stop_propagation();
+                                select_label.select_row(index, ev.modifiers);
+                                select_label.focus_content();
+                            },
+                            on:double_click = move |ev: &mut EventCx<'_, events::DoubleClick>| {
+                                ev.stop_propagation();
+                                open_label.open_row(index, false);
+                            }
+                        ) {{label}}
+                        Show(when = move || is_cut.get()) {
+                            Icon(
+                                name = IconName::Scissors,
+                                size = 12.0,
+                                class = "gds-files-cut-icon"
+                            )
                         }
-                    ) {{label}}
-                    Show(when = move || is_cut.get()) {
-                        Icon(
-                            name = IconName::Scissors,
-                            size = 12.0,
-                            class = "gds-files-cut-icon"
-                        )
                     }
-                }
-            });
+                });
 
-            let row_artwork = self.row_artwork_with_selection(&row, 18.0, selection_progress);
-            let mut name = Some(AnyView::new(view! {
-                HintTooltip(text = label_tooltip) {
-                    row(
-                        class = "gds-files-name-cell",
-                        style:width = move || {
-                            Some(format!("{:.1}px", name_width_browser.column_width(Column::Name)))
+                let row_artwork = self.row_artwork_with_selection(&row, 18.0, selection_progress);
+                let name_cell_ref = NodeRef::new();
+                #[cfg(test)]
+                tests::record_row_cell_node(index, Column::Name, name_cell_ref);
+                let mut name = Some(AnyView::new(view! {
+                    HintTooltip(text = label_tooltip) {
+                        row(
+                            node_ref = name_cell_ref,
+                            class = "gds-files-name-cell gds-files-col-name"
+                        ) {
+                            {row_artwork}
+                            {label_view}
                         }
-                    ) {
-                        {row_artwork}
-                        {label_view}
                     }
-                }
-            }));
-            columns
-                .columns()
-                .iter()
-                .map(|column| {
-                    if *column == Column::Name {
-                        name.take().unwrap_or_else(|| AnyView::new(view! { box() }))
-                    } else {
-                        self.cell(&row, *column)
-                    }
-                })
-                .collect()
-        };
+                }));
+                columns
+                    .columns()
+                    .iter()
+                    .map(|column| {
+                        if *column == Column::Name {
+                            name.take().unwrap_or_else(|| AnyView::new(view! { box() }))
+                        } else {
+                            self.cell(index, &row, *column)
+                        }
+                    })
+                    .collect()
+            };
 
         let row_content_ref = NodeRef::new();
         #[cfg(test)]
@@ -2873,13 +3016,14 @@ impl Browser {
         self.row_menu(dragged, index)
     }
 
-    fn cell(&self, row: &Row, column: Column) -> AnyView {
+    fn cell(&self, index: usize, row: &Row, column: Column) -> AnyView {
+        #[cfg(not(test))]
+        let _ = index;
         let current_owner = matches!(
             (row, column),
             (Row::File(entry), Column::Owner) if EntryPresentation::owner(entry).current
         );
         let align_end = column == Column::Size;
-        let width_browser = self.clone();
 
         let text_cell = |value: String| {
             let hint = wrap_tokens(&value);
@@ -2925,12 +3069,16 @@ impl Browser {
             _ => text_cell(String::new()),
         };
 
+        let cell_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_row_cell_node(index, column, cell_ref);
+
         AnyView::new(view! {
             box(
-                class = "gds-files-meta-cell",
+                node_ref = cell_ref,
+                class = format!("gds-files-meta-cell {}", Self::column_width_class(column)),
                 attr:data-current-owner = current_owner.then(|| "true".to_owned()),
-                attr:data-align-end = align_end.then(|| "true".to_owned()),
-                style:width = move || Some(format!("{:.1}px", width_browser.column_width(column)))
+                attr:data-align-end = align_end.then(|| "true".to_owned())
             ) {{content}}
         })
     }
@@ -3176,7 +3324,7 @@ impl Browser {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::cell::RefCell;
     use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
@@ -3213,6 +3361,10 @@ mod tests {
 
     thread_local! {
         static ROW_CONTENT_NODES: RefCell<HashMap<usize, NodeRef>> = RefCell::new(HashMap::new());
+        static HEADER_CELL_NODES: RefCell<HashMap<Column, NodeRef>> = RefCell::new(HashMap::new());
+        static ROW_CELL_NODES: RefCell<HashMap<(usize, Column), NodeRef>> = RefCell::new(HashMap::new());
+        static COLLECTION_HEADER_CELL_NODES: RefCell<HashMap<usize, NodeRef>> = RefCell::new(HashMap::new());
+        static COLLECTION_ROW_CELL_NODES: RefCell<HashMap<usize, NodeRef>> = RefCell::new(HashMap::new());
         static HEADER_RESIZE_NODES: RefCell<HashMap<Column, NodeRef>> = RefCell::new(HashMap::new());
         static TOOLBAR_TITLE_TEXT_NODES: RefCell<HashMap<&'static str, NodeRef>> = RefCell::new(HashMap::new());
         static HELP_BACK_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
@@ -3222,6 +3374,36 @@ mod tests {
 
     pub(super) fn record_row_content_node(index: usize, node: NodeRef) {
         ROW_CONTENT_NODES.with(|slot| {
+            slot.borrow_mut().insert(index, node);
+        });
+    }
+
+    pub(super) fn record_header_cell_node(column: Column, node: NodeRef) {
+        HEADER_CELL_NODES.with(|slot| {
+            slot.borrow_mut().insert(column, node);
+        });
+    }
+
+    pub(super) fn record_row_cell_node(index: usize, column: Column, node: NodeRef) {
+        ROW_CELL_NODES.with(|slot| {
+            slot.borrow_mut().insert((index, column), node);
+        });
+    }
+
+    pub(in crate::pages::workspace) fn record_collection_header_cell_node(
+        index: usize,
+        node: NodeRef,
+    ) {
+        COLLECTION_HEADER_CELL_NODES.with(|slot| {
+            slot.borrow_mut().insert(index, node);
+        });
+    }
+
+    pub(in crate::pages::workspace) fn record_collection_row_cell_node(
+        index: usize,
+        node: NodeRef,
+    ) {
+        COLLECTION_ROW_CELL_NODES.with(|slot| {
             slot.borrow_mut().insert(index, node);
         });
     }
@@ -3252,6 +3434,10 @@ mod tests {
 
     fn clear_row_content_nodes() {
         ROW_CONTENT_NODES.with(|slot| slot.borrow_mut().clear());
+        HEADER_CELL_NODES.with(|slot| slot.borrow_mut().clear());
+        ROW_CELL_NODES.with(|slot| slot.borrow_mut().clear());
+        COLLECTION_HEADER_CELL_NODES.with(|slot| slot.borrow_mut().clear());
+        COLLECTION_ROW_CELL_NODES.with(|slot| slot.borrow_mut().clear());
         HEADER_RESIZE_NODES.with(|slot| slot.borrow_mut().clear());
         TOOLBAR_TITLE_TEXT_NODES.with(|slot| slot.borrow_mut().clear());
         HELP_BACK_NODE.with(|slot| *slot.borrow_mut() = None);
@@ -3290,8 +3476,88 @@ mod tests {
         ROW_CONTENT_NODES.with(|slot| slot.borrow().get(&index).copied())
     }
 
+    fn header_cell_node(column: Column) -> Option<NodeRef> {
+        HEADER_CELL_NODES.with(|slot| slot.borrow().get(&column).copied())
+    }
+
+    fn row_cell_node(index: usize, column: Column) -> Option<NodeRef> {
+        ROW_CELL_NODES.with(|slot| slot.borrow().get(&(index, column)).copied())
+    }
+
+    fn collection_header_cell_node(index: usize) -> Option<NodeRef> {
+        COLLECTION_HEADER_CELL_NODES.with(|slot| slot.borrow().get(&index).copied())
+    }
+
+    fn collection_row_cell_node(index: usize) -> Option<NodeRef> {
+        COLLECTION_ROW_CELL_NODES.with(|slot| slot.borrow().get(&index).copied())
+    }
+
     fn header_resize_node(column: Column) -> Option<NodeRef> {
         HEADER_RESIZE_NODES.with(|slot| slot.borrow().get(&column).copied())
+    }
+
+    fn assert_directory_header_and_row_cell_parity(browser: &Browser, row_indices: &[usize]) {
+        let visible_columns =
+            browser.read_untracked(|state| state.tab().columns.columns().to_vec());
+        for column in visible_columns {
+            let expected_w = browser.column_width_untracked(column);
+            let header_node = header_cell_node(column)
+                .unwrap_or_else(|| panic!("recorded header cell node for {column:?}"));
+            let scale = header_node.scale().max(1.0);
+            let header_bounds = header_node
+                .window_bounds()
+                .unwrap_or_else(|| panic!("measured header cell bounds for {column:?}"));
+            let header_x = header_bounds.origin.x.0 / scale;
+            let header_w = header_bounds.size.width.0 / scale;
+            assert!(
+                (header_bounds.size.width.0 - expected_w * scale).abs() <= 1.0,
+                "expected {column:?} header cell width ~= {expected_w:.2}px, got {header_w:.2}px"
+            );
+            for &row_idx in row_indices {
+                let cell_node = row_cell_node(row_idx, column)
+                    .unwrap_or_else(|| panic!("recorded row {row_idx} cell node for {column:?}"));
+                let cell_bounds = cell_node
+                    .window_bounds()
+                    .unwrap_or_else(|| panic!("measured row {row_idx} cell bounds for {column:?}"));
+                let cell_x = cell_bounds.origin.x.0 / scale;
+                let cell_w = cell_bounds.size.width.0 / scale;
+                assert!(
+                    (header_w - cell_w).abs() == 0.0 && (header_x - cell_x).abs() == 0.0,
+                    "expected exact 0.0px header/row parity for {column:?} on row {row_idx}: header=({header_x:.2}, {header_w:.2}) vs row=({cell_x:.2}, {cell_w:.2})"
+                );
+            }
+        }
+    }
+
+    fn assert_collection_header_and_row_cell_parity(browser: &Browser) {
+        let columns = browser
+            .collection_columns_untracked()
+            .expect("active collection table columns");
+        for (idx, (label_id, expected_w)) in columns.into_iter().enumerate() {
+            let header_node = collection_header_cell_node(idx)
+                .unwrap_or_else(|| panic!("recorded collection header cell {idx} ({label_id})"));
+            let row_node = collection_row_cell_node(idx)
+                .unwrap_or_else(|| panic!("recorded collection row cell {idx} ({label_id})"));
+            let scale = header_node.scale().max(1.0);
+            let header_bounds = header_node
+                .window_bounds()
+                .unwrap_or_else(|| panic!("measured collection header cell {idx} ({label_id})"));
+            let row_bounds = row_node
+                .window_bounds()
+                .unwrap_or_else(|| panic!("measured collection row cell {idx} ({label_id})"));
+            let header_x = header_bounds.origin.x.0 / scale;
+            let header_w = header_bounds.size.width.0 / scale;
+            let row_x = row_bounds.origin.x.0 / scale;
+            let row_w = row_bounds.size.width.0 / scale;
+            assert!(
+                (header_bounds.size.width.0 - expected_w * scale).abs() <= 1.0,
+                "expected collection col {idx} ({label_id}) width ~= {expected_w:.2}px, got {header_w:.2}px"
+            );
+            assert!(
+                (header_w - row_w).abs() == 0.0 && (header_x - row_x).abs() == 0.0,
+                "expected exact 0.0px collection header/row parity for col {idx} ({label_id}): header=({header_x:.2}, {header_w:.2}) vs row=({row_x:.2}, {row_w:.2})"
+            );
+        }
     }
 
     #[derive(Default)]
@@ -3540,9 +3806,21 @@ mod tests {
                 (file_w - viewport_w).abs() < 1.0,
                 "expected .gds-files-row-content width ({file_w}) to span full table viewport ({viewport_w})"
             );
+            assert_directory_header_and_row_cell_parity(&browser, &[0, 1]);
+
+            // Enable all 9 configurable columns and verify 0.0px header/row width parity across every column.
+            browser.update(|state| {
+                for column in Column::ALL {
+                    state.tab_mut().columns.show(column);
+                }
+            });
+            zgui::reactive::flush();
+            harness.settle(8);
+            assert_directory_header_and_row_cell_parity(&browser, &[0, 1]);
 
             // Also verify collection rows (`Row::Place` on `Recent`, which mount directly under
-            // `.gds-files-menu-wrap` without `.gds-files-drag-row-host`) measure `height == 36.0`.
+            // `.gds-files-menu-wrap` without `.gds-files-drag-row-host`) measure `height == 36.0`
+            // and keep 0.0px live header/row parity across window resizes without rebuilding DOM nodes.
             clear_row_content_nodes();
             browser.update(|state| {
                 state
@@ -3561,6 +3839,30 @@ mod tests {
             assert!(
                 (place_h - 36.0).abs() < 0.5,
                 "expected Row::Place .gds-files-row-content height == 36.0px on Recent, got {place_h}"
+            );
+            assert_collection_header_and_row_cell_parity(&browser);
+            let initial_col_header_0 = collection_header_cell_node(0)
+                .and_then(|n| n.get_untracked())
+                .expect("bound collection header cell 0");
+            let initial_col_row_0 = collection_row_cell_node(0)
+                .and_then(|n| n.get_untracked())
+                .expect("bound collection row cell 0");
+
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(960.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(12);
+            assert_collection_header_and_row_cell_parity(&browser);
+            assert_eq!(
+                collection_header_cell_node(0).and_then(|n| n.get_untracked()),
+                Some(initial_col_header_0),
+                "collection header cell DOM node must remain stable across window resize"
+            );
+            assert_eq!(
+                collection_row_cell_node(0).and_then(|n| n.get_untracked()),
+                Some(initial_col_row_0),
+                "collection row cell DOM node must remain stable across window resize"
             );
 
             harness.shut_down();
@@ -3641,6 +3943,10 @@ mod tests {
             harness.settle(8);
 
             let initial = browser.column_width_untracked(Column::Name);
+            let initial_name_cell_0 = row_cell_node(0, Column::Name)
+                .and_then(|n| n.get_untracked())
+                .expect("bound row 0 Column::Name cell NodeId");
+            assert_directory_header_and_row_cell_parity(&browser, &[0, 1]);
             let resize_node = header_resize_node(Column::Name)
                 .expect("recorded .gds-files-header-resize for Column::Name");
             let initial_node_id = resize_node
@@ -3687,6 +3993,12 @@ mod tests {
                     latest_resize, initial_node_id,
                     "header resize DOM node must not be destroyed/recreated during column drag"
                 );
+                assert_eq!(
+                    row_cell_node(0, Column::Name).and_then(|n| n.get_untracked()),
+                    Some(initial_name_cell_0),
+                    "row cell DOM node must remain stable during column resize drag"
+                );
+                assert_directory_header_and_row_cell_parity(&browser, &[0, 1]);
             }
 
             let up_pos = Point::new(CssPx(start_x + 180.0), CssPx(start_y + 12.0));
@@ -3753,6 +4065,7 @@ mod tests {
                 "PointerCancel must restore pre-drag width ({:.1})",
                 initial + 180.0
             );
+            assert_directory_header_and_row_cell_parity(&browser, &[0, 1]);
 
             // 2. Also verify workspace file context menu at 16px font size renders full height (> 360px)
             // without premature clipping!
@@ -4117,7 +4430,8 @@ mod tests {
      {
         let temp = tempfile::tempdir().expect("tempdir");
         let home = temp.path().join("home");
-        std::fs::create_dir_all(&home).expect("create home");
+        std::fs::create_dir_all(home.join("Desktop")).expect("create Desktop");
+        std::fs::write(home.join("notes.txt"), b"hello\n").expect("create notes.txt");
         clear_row_content_nodes();
         super::super::chrome::tests::clear_recorded_tab_nodes();
 
@@ -4151,12 +4465,24 @@ mod tests {
                 DevicePx(800.0),
             )));
             harness.settle(8);
+            let load_deadline = Instant::now() + Duration::from_secs(3);
+            while browser.read_untracked(|state| state.tab().rows.len() < 2) {
+                assert!(
+                    Instant::now() < load_deadline,
+                    "timed out waiting for directory rows before Ctrl+B transition"
+                );
+                harness.advance(Duration::from_millis(25));
+                harness.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            harness.settle(8);
 
             // 2. Mid-transition (`48ms`) repeated `Ctrl+B` presses.
             for (step, expected) in [false, true, false, true].into_iter().enumerate() {
                 send_ctrl_b(&mut harness);
                 harness.run_for(Duration::from_millis(48), Duration::from_millis(16));
                 assert_content_width_matches_layout(&browser);
+                assert_directory_header_and_row_cell_parity(&browser, &[0, 1]);
                 zgui::reactive::flush();
                 assert_eq!(
                     browser.0.sidebar.get_untracked(),
@@ -4273,6 +4599,7 @@ mod tests {
             });
             harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
             assert_content_width_matches_layout(&browser);
+            assert_directory_header_and_row_cell_parity(&browser, &[0, 1]);
 
             harness.shut_down();
             Ok(())

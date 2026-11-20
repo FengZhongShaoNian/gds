@@ -72,6 +72,7 @@ thread_local! {
     static TAB_NODES: RefCell<HashMap<u64, (NodeRef, NodeRef)>> = RefCell::new(HashMap::new());
     static HEADING_NODES: RefCell<HashMap<&'static str, NodeRef>> = RefCell::new(HashMap::new());
     static LOCATION_NODES: RefCell<Vec<(LocationTarget, NodeRef)>> = const { RefCell::new(Vec::new()) };
+    static VOLUME_ICON_NODES: RefCell<Vec<(volumes::VolumeId, NodeRef)>> = const { RefCell::new(Vec::new()) };
     static LOCATIONS_PROGRESS: RefCell<Option<Signal<f32, LocalStorage>>> = const { RefCell::new(None) };
     static LAST_VECTOR_INKS: RefCell<Vec<Rect<DevicePx, Device>>> = const { RefCell::new(Vec::new()) };
 }
@@ -107,6 +108,17 @@ pub(super) fn record_location_node(target: LocationTarget, node: NodeRef) {
     });
 }
 
+pub(super) fn record_volume_icon_node(id: volumes::VolumeId, node: NodeRef) {
+    VOLUME_ICON_NODES.with(|slot| {
+        let mut items = slot.borrow_mut();
+        if let Some((_, existing)) = items.iter_mut().find(|(v, _)| *v == id) {
+            *existing = node;
+        } else {
+            items.push((id, node));
+        }
+    });
+}
+
 pub(super) fn record_locations_progress(progress: Signal<f32, LocalStorage>) {
     LOCATIONS_PROGRESS.with(|slot| {
         *slot.borrow_mut() = Some(progress);
@@ -117,6 +129,7 @@ pub(in crate::pages::workspace) fn clear_recorded_tab_nodes() {
     TAB_NODES.with(|slot| slot.borrow_mut().clear());
     HEADING_NODES.with(|slot| slot.borrow_mut().clear());
     LOCATION_NODES.with(|slot| slot.borrow_mut().clear());
+    VOLUME_ICON_NODES.with(|slot| slot.borrow_mut().clear());
     LOCATIONS_PROGRESS.with(|slot| *slot.borrow_mut() = None);
     LAST_VECTOR_INKS.with(|slot| slot.borrow_mut().clear());
 }
@@ -127,6 +140,15 @@ fn recorded_tab_nodes(id: u64) -> Option<(NodeRef, NodeRef)> {
 
 fn recorded_location_nodes() -> Vec<(LocationTarget, NodeRef)> {
     LOCATION_NODES.with(|slot| slot.borrow().clone())
+}
+
+fn recorded_volume_icon_node(id: &volumes::VolumeId) -> Option<NodeRef> {
+    VOLUME_ICON_NODES.with(|slot| {
+        slot.borrow()
+            .iter()
+            .find(|(vid, _)| vid == id)
+            .map(|(_, node)| *node)
+    })
 }
 
 fn recorded_locations_progress() -> Option<Signal<f32, LocalStorage>> {
@@ -1008,4 +1030,185 @@ fn sidebar_heading_keeps_single_dom_node_and_shows_tooltip_only_when_rail_is_col
             "sidebar_heading must keep the exact same NodeId when expanding"
         );
     });
+}
+
+#[test]
+fn sidebar_volume_rows_eliminate_duplicate_insets_and_center_icons_at_29px_when_collapsed() {
+    let supervisor = Supervisor::new(false).expect("tokio supervisor");
+    let bg_scope = supervisor.scope();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let home = temp.path().join("home");
+    let mounted_dir = temp.path().join("mnt-usb");
+    std::fs::create_dir_all(&home).expect("create home");
+    std::fs::create_dir_all(&mounted_dir).expect("create mnt-usb");
+    clear_recorded_tab_nodes();
+
+    let mounted_id = volumes::VolumeId {
+        stable: Some("UUID-MOUNTED".to_owned()),
+        attachment: "usb-1".to_owned(),
+    };
+    let unmounted_id = volumes::VolumeId {
+        stable: Some("UUID-UNMOUNTED".to_owned()),
+        attachment: "usb-2".to_owned(),
+    };
+    let snapshot = volumes::Snapshot {
+        drives: vec![volumes::Drive {
+            id: "drive-usb".to_owned(),
+            name: "Flash Drive".to_owned(),
+            kind: volumes::DeviceKind::Usb,
+            can_power_off: true,
+            can_eject: false,
+            sibling_id: None,
+        }],
+        volumes: vec![
+            volumes::Volume {
+                id: mounted_id.clone(),
+                object: "/org/freedesktop/UDisks2/block_devices/sdb1".to_owned(),
+                drive: Some("drive-usb".to_owned()),
+                name: "Portable".to_owned(),
+                size: 64 * 1024 * 1024 * 1024,
+                label: "Portable".to_owned(),
+                filesystem: "ext4".to_owned(),
+                read_only: false,
+                locked: false,
+                mountable: true,
+                system_mount: false,
+                mount_points: vec![mounted_dir],
+                visible: true,
+            },
+            volumes::Volume {
+                id: unmounted_id.clone(),
+                object: "/org/freedesktop/UDisks2/block_devices/sdb2".to_owned(),
+                drive: Some("drive-usb".to_owned()),
+                name: "Archive".to_owned(),
+                size: 128 * 1024 * 1024 * 1024,
+                label: "Archive".to_owned(),
+                filesystem: "btrfs".to_owned(),
+                read_only: false,
+                locked: false,
+                mountable: true,
+                system_mount: false,
+                mount_points: Vec::new(),
+                visible: true,
+            },
+        ],
+    };
+
+    let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+    let slot_for_view = Rc::clone(&browser_slot);
+    let start = home;
+
+    let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+        let mut harness = Harness::new(handler);
+        harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+            DevicePx(1280.0),
+            DevicePx(800.0),
+        )));
+        harness.settle(16);
+
+        let browser = browser_slot.borrow().clone().expect("browser constructed");
+        let mounted_icon =
+            recorded_volume_icon_node(&mounted_id).expect("mounted volume icon node");
+        let unmounted_icon =
+            recorded_volume_icon_node(&unmounted_id).expect("unmounted volume icon node");
+        let scale = mounted_icon.scale().max(1.0);
+        let mounted_node_id = mounted_icon.get_untracked().expect("mounted icon NodeId");
+        let unmounted_node_id = unmounted_icon
+            .get_untracked()
+            .expect("unmounted icon NodeId");
+
+        // Expanded (222px): 10px section padding + 8px row pad-left = 18px left edge (center 27px),
+        // matching tabs and locations without any duplicate 26px volume-row inset.
+        let exp_mounted = mounted_icon.window_bounds().expect("expanded mounted icon");
+        let exp_unmounted = unmounted_icon
+            .window_bounds()
+            .expect("expanded unmounted icon");
+        assert!(
+            (exp_mounted.origin.x.0 / scale - 18.0).abs() <= 0.5,
+            "expected expanded mounted volume icon x == 18.0px (never 26.0px), got {:.2}",
+            exp_mounted.origin.x.0 / scale
+        );
+        assert!(
+            (exp_unmounted.origin.x.0 / scale - 18.0).abs() <= 0.5,
+            "expected expanded unmounted volume icon x == 18.0px (never 26.0px), got {:.2}",
+            exp_unmounted.origin.x.0 / scale
+        );
+
+        // Collapse sidebar and verify mid-transition (48ms) smooth interpolation + settled 29px rail center.
+        browser.toggle_sidebar();
+        flush();
+        harness.run_for(Duration::from_millis(48), Duration::from_millis(16));
+        flush();
+        harness.settle(2);
+        let mid_bounds = mounted_icon
+            .window_bounds()
+            .expect("mid-collapse mounted icon");
+        let mid_x = mid_bounds.origin.x.0 / scale;
+        assert!(
+            mid_x > 18.05 && mid_x < 19.95,
+            "expected volume icon x to interpolate smoothly between 18px and 20px mid-collapse, got {mid_x:.2}"
+        );
+
+        harness.run_for(Duration::from_millis(200), Duration::from_millis(16));
+        flush();
+        harness.settle(4);
+        let rail_center = COLLAPSED_SIDEBAR_WIDTH * 0.5;
+        let col_mounted = mounted_icon
+            .window_bounds()
+            .expect("collapsed mounted icon");
+        let col_unmounted = unmounted_icon
+            .window_bounds()
+            .expect("collapsed unmounted icon");
+        let col_mounted_cx = (col_mounted.origin.x.0 + col_mounted.size.width.0 * 0.5) / scale;
+        let col_unmounted_cx =
+            (col_unmounted.origin.x.0 + col_unmounted.size.width.0 * 0.5) / scale;
+        assert!(
+            (col_mounted_cx - rail_center).abs() <= 0.5,
+            "expected collapsed mounted volume icon centered at x={rail_center} (never 39px), got {col_mounted_cx:.2}"
+        );
+        assert!(
+            (col_unmounted_cx - rail_center).abs() <= 0.5,
+            "expected collapsed unmounted volume icon centered at x={rail_center} (never 39px), got {col_unmounted_cx:.2}"
+        );
+        assert_eq!(mounted_icon.get_untracked(), Some(mounted_node_id));
+        assert_eq!(unmounted_icon.get_untracked(), Some(unmounted_node_id));
+
+        harness.shut_down();
+        Ok(())
+    };
+
+    zgui::app()
+        .with_fonts(Fonts::shipped_only())
+        .with_renderer(Box::new(noop_renderer))
+        .with_size(1280.0, 800.0)
+        .run_on(driver, move || {
+            let scope = bg_scope.clone();
+            let app = Gds::install(scope.clone());
+            app.appearance().motion().set_enabled(true);
+            let _ = app.appearance().install_window_sheet();
+            app.i18n()
+                .install_catalog(i18n::prepare(Language::English).expect("English catalog"));
+            let mut initial_prefs = preferences::Preferences::default();
+            initial_prefs.files.sidebar.show_volumes = true;
+            initial_prefs.files.sidebar.volumes_collapsed = false;
+            let _prefs =
+                preferences::Service::install(initial_prefs, &scope).expect("preferences service");
+            let browser = Browser::new(
+                LaunchOptions {
+                    places: Ok(Places::default()),
+                    start: start.clone(),
+                    home: start.clone(),
+                    picker: None,
+                },
+                volumes::Service::with_snapshot(scope, snapshot.clone()),
+                Rc::new(|_| {}),
+            );
+            *slot_for_view.borrow_mut() = Some(browser.clone());
+            view! {
+                row(style:width = "100%", style:height = "100%") {
+                    {browser.sidebar(SidebarPresentation::default())}
+                }
+            }
+        })
+        .expect("headless volume sidebar inset harness");
 }

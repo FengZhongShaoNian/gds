@@ -39,6 +39,17 @@ use super::{
 };
 
 const SURFACES_SHEET: &str = "gds-files-workspace-surfaces";
+pub(super) const COLLECTION_MAX_COLUMNS: usize = 5;
+
+const fn collection_column_class(index: usize) -> &'static str {
+    match index {
+        0 => "gds-files-col-0",
+        1 => "gds-files-col-1",
+        2 => "gds-files-col-2",
+        3 => "gds-files-col-3",
+        _ => "gds-files-col-4",
+    }
+}
 
 const SURFACES_CSS: &str = css!(
     r#"
@@ -111,6 +122,7 @@ const SURFACES_CSS: &str = css!(
         min-width: 0;
         flex-shrink: 0;
         height: 100%;
+        box-sizing: border-box;
     }
 
     .gds-files-collection-header__static {
@@ -208,6 +220,47 @@ const SURFACES_CSS: &str = css!(
         height: 100%;
         padding: 0 12px;
         overflow: hidden;
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-0.gds-files-col-0 {
+        flex: none;
+        width: var(--gds-files-col-0);
+        min-width: var(--gds-files-col-0);
+        max-width: var(--gds-files-col-0);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-1.gds-files-col-1 {
+        flex: none;
+        width: var(--gds-files-col-1);
+        min-width: var(--gds-files-col-1);
+        max-width: var(--gds-files-col-1);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-2.gds-files-col-2 {
+        flex: none;
+        width: var(--gds-files-col-2);
+        min-width: var(--gds-files-col-2);
+        max-width: var(--gds-files-col-2);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-3.gds-files-col-3 {
+        flex: none;
+        width: var(--gds-files-col-3);
+        min-width: var(--gds-files-col-3);
+        max-width: var(--gds-files-col-3);
+        box-sizing: border-box;
+    }
+
+    .gds-files-col-4.gds-files-col-4 {
+        flex: none;
+        width: var(--gds-files-col-4);
+        min-width: var(--gds-files-col-4);
+        max-width: var(--gds-files-col-4);
+        box-sizing: border-box;
     }
 
     .gds-files-collection-cell > * {
@@ -453,27 +506,22 @@ fn name_cell_view(
     tooltip: Option<String>,
     _hidden: bool,
     selected: Signal<bool, LocalStorage>,
-    width: Option<f32>,
+    col_class: &'static str,
 ) -> AnyView {
     let tip = tooltip.unwrap_or_else(|| wrap_tokens(&label));
     let name_label = collection_name_label(label, selected);
-    let inner = match width {
-        Some(w) => AnyView::new(view! {
-            row(
-                class = "gds-files-collection-cell",
-                style:width = format!("{w:.1}px"),
-            ) {
-                {artwork}
-                {name_label}
-            }
-        }),
-        None => AnyView::new(view! {
-            row(class = "gds-files-collection-cell") {
-                {artwork}
-                {name_label}
-            }
-        }),
-    };
+    let cell_ref = NodeRef::new();
+    #[cfg(test)]
+    super::view::tests::record_collection_row_cell_node(0, cell_ref);
+    let inner = AnyView::new(view! {
+        row(
+            node_ref = cell_ref,
+            class = format!("gds-files-collection-cell {col_class}"),
+        ) {
+            {artwork}
+            {name_label}
+        }
+    });
     AnyView::new(view! {
         HintTooltip(text = tip) {
             {inner}
@@ -486,7 +534,7 @@ fn meta_text_cell(
     right_aligned: bool,
     emphasis: bool,
     tooltip: Option<String>,
-    width: Option<f32>,
+    col_index: usize,
 ) -> AnyView {
     let label = view! {
         text(
@@ -496,25 +544,19 @@ fn meta_text_cell(
         ) {{text}}
     };
     let align_attr = right_aligned.then(|| "end".to_owned());
-    let cell = match width {
-        Some(w) => AnyView::new(view! {
-            row(
-                class = "gds-files-collection-cell gds-files-collection-cell--meta",
-                attr:data-align = align_attr,
-                style:width = format!("{w:.1}px"),
-            ) {
-                {label}
-            }
-        }),
-        None => AnyView::new(view! {
-            row(
-                class = "gds-files-collection-cell gds-files-collection-cell--meta",
-                attr:data-align = align_attr,
-            ) {
-                {label}
-            }
-        }),
-    };
+    let col_class = collection_column_class(col_index);
+    let cell_ref = NodeRef::new();
+    #[cfg(test)]
+    super::view::tests::record_collection_row_cell_node(col_index, cell_ref);
+    let cell = AnyView::new(view! {
+        row(
+            node_ref = cell_ref,
+            class = format!("gds-files-collection-cell gds-files-collection-cell--meta {col_class}"),
+            attr:data-align = align_attr,
+        ) {
+            {label}
+        }
+    });
     match tooltip {
         Some(tip) => AnyView::new(view! {
             HintTooltip(text = tip) {
@@ -525,23 +567,20 @@ fn meta_text_cell(
     }
 }
 
-fn timestamp_cell(value: Option<SystemTime>, width: Option<f32>) -> AnyView {
+fn timestamp_cell(value: Option<SystemTime>, col_index: usize) -> AnyView {
     let ts_view = view! { {Timestamp::new(value)} };
-    match width {
-        Some(w) => AnyView::new(view! {
-            row(
-                class = "gds-files-collection-cell gds-files-collection-cell--meta",
-                style:width = format!("{w:.1}px"),
-            ) {
-                {ts_view}
-            }
-        }),
-        None => AnyView::new(view! {
-            row(class = "gds-files-collection-cell gds-files-collection-cell--meta") {
-                {ts_view}
-            }
-        }),
-    }
+    let col_class = collection_column_class(col_index);
+    let cell_ref = NodeRef::new();
+    #[cfg(test)]
+    super::view::tests::record_collection_row_cell_node(col_index, cell_ref);
+    AnyView::new(view! {
+        row(
+            node_ref = cell_ref,
+            class = format!("gds-files-collection-cell gds-files-collection-cell--meta {col_class}"),
+        ) {
+            {ts_view}
+        }
+    })
 }
 
 fn category_icon_name(category: Option<ContentCategory>) -> IconName {
@@ -679,7 +718,7 @@ fn volume_capacity_cell(
     browser: &Browser,
     volume: &volumes::Volume,
     selected: Signal<bool, LocalStorage>,
-    width: f32,
+    col_index: usize,
 ) -> AnyView {
     let state = browser.0.volumes.capacity(&volume.id);
     let (label, fraction, unavailable) = match state {
@@ -709,8 +748,16 @@ fn volume_capacity_cell(
         }
     };
 
+    let col_class = collection_column_class(col_index);
+    let cell_ref = NodeRef::new();
+    #[cfg(test)]
+    super::view::tests::record_collection_row_cell_node(col_index, cell_ref);
+
     AnyView::new(view! {
-        row(class = "gds-files-collection-cell", style:width = format!("{width:.1}px")) {
+        row(
+            node_ref = cell_ref,
+            class = format!("gds-files-collection-cell {col_class}"),
+        ) {
             CapacityBar(
                 label = label,
                 fraction = fraction,
@@ -721,7 +768,11 @@ fn volume_capacity_cell(
     })
 }
 
-fn volume_mount_point_cell(browser: &Browser, volume: &volumes::Volume, width: f32) -> AnyView {
+fn volume_mount_point_cell(
+    browser: &Browser,
+    volume: &volumes::Volume,
+    col_index: usize,
+) -> AnyView {
     let busy = browser.device_is_busy(&volume.id);
     let action_button = if volume.mountable && volume.mount_points.is_empty() {
         let b = browser.clone();
@@ -846,10 +897,15 @@ fn volume_mount_point_cell(browser: &Browser, volume: &volumes::Volume, width: f
         }
     };
 
+    let col_class = collection_column_class(col_index);
+    let cell_ref = NodeRef::new();
+    #[cfg(test)]
+    super::view::tests::record_collection_row_cell_node(col_index, cell_ref);
+
     AnyView::new(view! {
         row(
-            class = "gds-files-collection-cell gds-files-collection-cell--split",
-            style:width = format!("{width:.1}px"),
+            node_ref = cell_ref,
+            class = format!("gds-files-collection-cell gds-files-collection-cell--split {col_class}"),
         ) {
             {lead_view}
             {action_button}
@@ -1070,68 +1126,34 @@ impl Browser {
         })
     }
 
-    pub(super) fn collection_columns(&self) -> Option<Vec<(&'static str, f32)>> {
-        let dimensions = || (self.table_viewport_width().max(240.0), self.compact());
-
-        self.read(|state| {
+    pub(super) fn collection_column_ids(&self) -> Option<Vec<&'static str>> {
+        self.read_structure(|state| {
             let tab = state.tab();
             match &tab.contents {
                 Contents::Places(_) => {
-                    let (viewport, compact) = dimensions();
-                    Some(location_table_columns(viewport, compact))
+                    Some(vec!["name", "modified", "type", "size", "place-location"])
                 }
-                Contents::Trash(_) => {
-                    let (viewport, compact) = dimensions();
-                    let orig_min = if compact { 170.0 } else { 240.0 };
-                    let deleted_w = if compact { 140.0 } else { 160.0 };
-                    let size_w = if compact { 96.0 } else { 120.0 };
-                    let fixed = deleted_w + size_w;
-                    let remaining = (viewport - fixed).max(200.0 + orig_min);
-                    let name_w = (remaining * 0.46).max(200.0);
-                    let orig_w = (viewport - fixed - name_w).max(orig_min);
-                    Some(vec![
-                        ("name", name_w),
-                        ("recycle-original-location", orig_w),
-                        ("recycle-deleted-at", deleted_w),
-                        ("size", size_w),
-                    ])
-                }
+                Contents::Trash(_) => Some(vec![
+                    "name",
+                    "recycle-original-location",
+                    "recycle-deleted-at",
+                    "size",
+                ]),
                 Contents::Tags { .. } => {
-                    let (viewport, compact) = dimensions();
-                    // Pure tag catalogues never show file metadata columns (testing.md:73).
                     let has_files = tab.rows.iter().any(|row| matches!(row, Row::File(_)));
                     if has_files {
-                        Some(location_table_columns(viewport, compact))
+                        Some(vec!["name", "modified", "type", "size", "place-location"])
                     } else {
-                        Some(vec![("name", viewport)])
+                        Some(vec!["name"])
                     }
                 }
-                Contents::Remote { .. } => {
-                    let (viewport, compact) = dimensions();
-                    let modified_w = if compact { 140.0 } else { 170.0 };
-                    let type_w = if compact { 100.0 } else { 120.0 };
-                    let size_w = if compact { 90.0 } else { 110.0 };
-                    let name_w = (viewport - modified_w - type_w - size_w).max(200.0);
-                    Some(vec![
-                        ("name", name_w),
-                        ("modified", modified_w),
-                        ("type", type_w),
-                        ("size", size_w),
-                    ])
-                }
-                Contents::Volumes => {
-                    let (viewport, compact) = dimensions();
-                    let format_w = if compact { 90.0 } else { 110.0 };
-                    let space_w = if compact { 170.0 } else { 220.0 };
-                    let mount_w = if compact { 160.0 } else { 210.0 };
-                    let name_w = (viewport - format_w - space_w - mount_w).max(180.0);
-                    Some(vec![
-                        ("name", name_w),
-                        ("volume-format", format_w),
-                        ("volume-space", space_w),
-                        ("volume-default-mount", mount_w),
-                    ])
-                }
+                Contents::Remote { .. } => Some(vec!["name", "modified", "type", "size"]),
+                Contents::Volumes => Some(vec![
+                    "name",
+                    "volume-format",
+                    "volume-space",
+                    "volume-default-mount",
+                ]),
                 Contents::Directory
                 | Contents::LoadingCollection
                 | Contents::Unavailable(_)
@@ -1140,20 +1162,113 @@ impl Browser {
         })
     }
 
+    pub(super) fn collection_columns(&self) -> Option<Vec<(&'static str, f32)>> {
+        self.collection_columns_with(true)
+    }
+
+    #[cfg(test)]
+    pub(super) fn collection_columns_untracked(&self) -> Option<Vec<(&'static str, f32)>> {
+        self.collection_columns_with(false)
+    }
+
+    fn collection_columns_with(&self, tracked: bool) -> Option<Vec<(&'static str, f32)>> {
+        let dimensions = || {
+            if tracked {
+                (self.table_viewport_width().max(240.0), self.compact())
+            } else {
+                (
+                    self.table_viewport_width_untracked().max(240.0),
+                    self.compact_untracked(),
+                )
+            }
+        };
+        if tracked {
+            let _ = self.0.revision.get();
+        }
+        let state = self.0.state.borrow();
+        let tab = state.tab();
+        match &tab.contents {
+            Contents::Places(_) => {
+                let (viewport, compact) = dimensions();
+                Some(location_table_columns(viewport, compact))
+            }
+            Contents::Trash(_) => {
+                let (viewport, compact) = dimensions();
+                let orig_min = if compact { 170.0 } else { 240.0 };
+                let deleted_w = if compact { 140.0 } else { 160.0 };
+                let size_w = if compact { 96.0 } else { 120.0 };
+                let fixed = deleted_w + size_w;
+                let remaining = (viewport - fixed).max(200.0 + orig_min);
+                let name_w = (remaining * 0.46).max(200.0);
+                let orig_w = (viewport - fixed - name_w).max(orig_min);
+                Some(vec![
+                    ("name", name_w),
+                    ("recycle-original-location", orig_w),
+                    ("recycle-deleted-at", deleted_w),
+                    ("size", size_w),
+                ])
+            }
+            Contents::Tags { .. } => {
+                let (viewport, compact) = dimensions();
+                // Pure tag catalogues never show file metadata columns (testing.md:73).
+                let has_files = tab.rows.iter().any(|row| matches!(row, Row::File(_)));
+                if has_files {
+                    Some(location_table_columns(viewport, compact))
+                } else {
+                    Some(vec![("name", viewport)])
+                }
+            }
+            Contents::Remote { .. } => {
+                let (viewport, compact) = dimensions();
+                let modified_w = if compact { 140.0 } else { 170.0 };
+                let type_w = if compact { 100.0 } else { 120.0 };
+                let size_w = if compact { 90.0 } else { 110.0 };
+                let name_w = (viewport - modified_w - type_w - size_w).max(200.0);
+                Some(vec![
+                    ("name", name_w),
+                    ("modified", modified_w),
+                    ("type", type_w),
+                    ("size", size_w),
+                ])
+            }
+            Contents::Volumes => {
+                let (viewport, compact) = dimensions();
+                let format_w = if compact { 90.0 } else { 110.0 };
+                let space_w = if compact { 170.0 } else { 220.0 };
+                let mount_w = if compact { 160.0 } else { 210.0 };
+                let name_w = (viewport - format_w - space_w - mount_w).max(180.0);
+                Some(vec![
+                    ("name", name_w),
+                    ("volume-format", format_w),
+                    ("volume-space", space_w),
+                    ("volume-default-mount", mount_w),
+                ])
+            }
+            Contents::Directory
+            | Contents::LoadingCollection
+            | Contents::Unavailable(_)
+            | Contents::Network { .. } => None,
+        }
+    }
+
     pub(super) fn collection_header(&self) -> Option<AnyView> {
         install_surfaces_stylesheet();
-        let columns = self.collection_columns()?;
+        let columns = self.collection_column_ids()?;
         let sortable = self.sortable_columns();
         let sort = self.read(|state| state.tab().sort);
 
         let cells: Vec<AnyView> = columns
             .into_iter()
             .enumerate()
-            .map(|(idx, (label_id, width))| {
+            .map(|(idx, label_id)| {
                 let is_name_col = idx == 0;
                 let is_right_aligned = label_id == "size";
                 let label = i18n::text(label_id);
                 let column = Column::from_id(label_id).filter(|col| sortable.contains(col));
+                let col_class = collection_column_class(idx);
+                let header_cell_ref = NodeRef::new();
+                #[cfg(test)]
+                super::view::tests::record_collection_header_cell_node(idx, header_cell_ref);
 
                 if let Some(col) = column {
                     let active = sort.key == col;
@@ -1187,8 +1302,8 @@ impl Browser {
                     });
                     AnyView::new(view! {
                         row(
-                            class = "gds-files-collection-header__cell",
-                            style:width = format!("{width:.1}px"),
+                            node_ref = header_cell_ref,
+                            class = format!("gds-files-collection-header__cell {col_class}"),
                         ) {
                             control(
                                 class = "gds-files-collection-header__button",
@@ -1217,8 +1332,8 @@ impl Browser {
                 } else {
                     AnyView::new(view! {
                         row(
-                            class = "gds-files-collection-header__cell",
-                            style:width = format!("{width:.1}px"),
+                            node_ref = header_cell_ref,
+                            class = format!("gds-files-collection-header__cell {col_class}"),
                         ) {
                             row(
                                 class = "gds-files-collection-header__static",
@@ -1246,9 +1361,7 @@ impl Browser {
         selected: Binding<bool>,
     ) -> Option<Vec<AnyView>> {
         install_surfaces_stylesheet();
-        let columns = self.collection_columns()?;
-        let col_widths: Vec<f32> = columns.iter().map(|(_, w)| *w).collect();
-        let width_at = |idx: usize| col_widths.get(idx).copied();
+        let col_count = self.collection_column_ids()?.len();
         let sel_bool = Signal::derive_local(move || selected.get().unwrap_or(false));
 
         match row {
@@ -1267,26 +1380,14 @@ impl Browser {
                     Some(address.clone()),
                     entry.is_hidden,
                     sel_bool,
-                    width_at(0),
+                    collection_column_class(0),
                 );
                 Some(vec![
                     name_cell,
-                    timestamp_cell(entry.modified, width_at(1)),
-                    meta_text_cell(
-                        EntryPresentation::type_label(entry),
-                        false,
-                        false,
-                        None,
-                        width_at(2),
-                    ),
-                    meta_text_cell(
-                        EntryPresentation::size_label(entry),
-                        true,
-                        false,
-                        None,
-                        width_at(3),
-                    ),
-                    meta_text_cell(address.clone(), false, false, Some(address), width_at(4)),
+                    timestamp_cell(entry.modified, 1),
+                    meta_text_cell(EntryPresentation::type_label(entry), false, false, None, 2),
+                    meta_text_cell(EntryPresentation::size_label(entry), true, false, None, 3),
+                    meta_text_cell(address.clone(), false, false, Some(address), 4),
                 ])
             }
             Row::Place(location) => {
@@ -1342,14 +1443,14 @@ impl Browser {
                     Some(address.clone()),
                     hidden,
                     sel_bool,
-                    width_at(0),
+                    collection_column_class(0),
                 );
                 Some(vec![
                     name_cell,
-                    timestamp_cell(modified, width_at(1)),
-                    meta_text_cell(kind_label, false, false, None, width_at(2)),
-                    meta_text_cell(size_label, true, false, None, width_at(3)),
-                    meta_text_cell(address.clone(), false, false, Some(address), width_at(4)),
+                    timestamp_cell(modified, 1),
+                    meta_text_cell(kind_label, false, false, None, 2),
+                    meta_text_cell(size_label, true, false, None, 3),
+                    meta_text_cell(address.clone(), false, false, Some(address), 4),
                 ])
             }
             Row::Trash(entry) => {
@@ -1362,7 +1463,7 @@ impl Browser {
                     Some(wrap_tokens(&name)),
                     false,
                     sel_bool,
-                    width_at(0),
+                    collection_column_class(0),
                 );
 
                 let full_original = entry.original_path.display().to_string();
@@ -1376,15 +1477,9 @@ impl Browser {
 
                 Some(vec![
                     name_cell,
-                    meta_text_cell(
-                        full_original.clone(),
-                        false,
-                        false,
-                        Some(full_original),
-                        width_at(1),
-                    ),
-                    timestamp_cell(entry.deleted_at, width_at(2)),
-                    meta_text_cell(size_label, true, false, None, width_at(3)),
+                    meta_text_cell(full_original.clone(), false, false, Some(full_original), 1),
+                    timestamp_cell(entry.deleted_at, 2),
+                    meta_text_cell(size_label, true, false, None, 3),
                 ])
             }
             Row::Tag(tag) => {
@@ -1395,10 +1490,16 @@ impl Browser {
                 } else {
                     wrap_tokens(&leaf)
                 };
-                let name_cell =
-                    name_cell_view(artwork, leaf, Some(tip), false, sel_bool, width_at(0));
+                let name_cell = name_cell_view(
+                    artwork,
+                    leaf,
+                    Some(tip),
+                    false,
+                    sel_bool,
+                    collection_column_class(0),
+                );
 
-                if col_widths.len() <= 1 {
+                if col_count <= 1 {
                     Some(vec![name_cell])
                 } else {
                     let tag_address = TagAddress::new(tag).map_or_else(
@@ -1407,16 +1508,10 @@ impl Browser {
                     );
                     Some(vec![
                         name_cell,
-                        timestamp_cell(None, width_at(1)),
-                        meta_text_cell(i18n::text("tags-title"), false, false, None, width_at(2)),
-                        meta_text_cell(UNKNOWN_VALUE.to_owned(), true, false, None, width_at(3)),
-                        meta_text_cell(
-                            tag_address.clone(),
-                            false,
-                            false,
-                            Some(tag_address),
-                            width_at(4),
-                        ),
+                        timestamp_cell(None, 1),
+                        meta_text_cell(i18n::text("tags-title"), false, false, None, 2),
+                        meta_text_cell(UNKNOWN_VALUE.to_owned(), true, false, None, 3),
+                        meta_text_cell(tag_address.clone(), false, false, Some(tag_address), 4),
                     ])
                 }
             }
@@ -1429,7 +1524,7 @@ impl Browser {
                     Some(wrap_tokens(&entry.name)),
                     entry.name.starts_with('.'),
                     sel_bool,
-                    width_at(0),
+                    collection_column_class(0),
                 );
 
                 let size_text = if entry.kind == remote::EntryKind::Directory {
@@ -1442,15 +1537,9 @@ impl Browser {
 
                 Some(vec![
                     name_cell,
-                    timestamp_cell(entry.modified, width_at(1)),
-                    meta_text_cell(
-                        remote_entry_type_label(entry),
-                        false,
-                        false,
-                        None,
-                        width_at(2),
-                    ),
-                    meta_text_cell(size_text, true, false, None, width_at(3)),
+                    timestamp_cell(entry.modified, 1),
+                    meta_text_cell(remote_entry_type_label(entry), false, false, None, 2),
+                    meta_text_cell(size_text, true, false, None, 3),
                 ])
             }
             Row::Volume(volume) => {
@@ -1471,24 +1560,20 @@ impl Browser {
                     }
                     .into_view()
                 });
-                let name_cell = match width_at(0) {
-                    Some(w) => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell", style:width = format!("{w:.1}px")) {
-                            {artwork}
-                            {name_label}
-                            {busy_spinner}
-                            {system_badge}
-                        }
-                    }),
-                    None => AnyView::new(view! {
-                        row(class = "gds-files-collection-cell") {
-                            {artwork}
-                            {name_label}
-                            {busy_spinner}
-                            {system_badge}
-                        }
-                    }),
-                };
+                let name_cell_ref = NodeRef::new();
+                #[cfg(test)]
+                super::view::tests::record_collection_row_cell_node(0, name_cell_ref);
+                let name_cell = AnyView::new(view! {
+                    row(
+                        node_ref = name_cell_ref,
+                        class = format!("gds-files-collection-cell {}", collection_column_class(0)),
+                    ) {
+                        {artwork}
+                        {name_label}
+                        {busy_spinner}
+                        {system_badge}
+                    }
+                });
 
                 let (format_text, format_emphasis) = if volume.filesystem.is_empty() {
                     (UNKNOWN_VALUE.to_owned(), false)
@@ -1496,14 +1581,11 @@ impl Browser {
                     (volume.filesystem.clone(), true)
                 };
 
-                let space_w = width_at(2).unwrap_or(200.0);
-                let mount_w = width_at(3).unwrap_or(180.0);
-
                 Some(vec![
                     name_cell,
-                    meta_text_cell(format_text, false, format_emphasis, None, width_at(1)),
-                    volume_capacity_cell(self, volume, sel_bool, space_w),
-                    volume_mount_point_cell(self, volume, mount_w),
+                    meta_text_cell(format_text, false, format_emphasis, None, 1),
+                    volume_capacity_cell(self, volume, sel_bool, 2),
+                    volume_mount_point_cell(self, volume, 3),
                 ])
             }
         }

@@ -39,6 +39,7 @@ impl SidebarContext {
 }
 
 const SIDEBAR_SHEET: &str = "gds-ui-sidebar";
+const NAV_ITEM_GAP: f32 = 8.0;
 
 const SIDEBAR_CSS: &str = css!(
     ".gds-sidebar {
@@ -111,6 +112,10 @@ const SIDEBAR_CSS: &str = css!(
         font-size: var(--gds-font-size-xs, 12px);
         font-weight: 400;
         color: var(--gds-muted-foreground);
+        opacity: var(--gds-sidebar-label-opacity, 1);
+    }
+    .gds-sidebar:not([data-actions-visible=\"true\"]) .gds-sidebar__section-title {
+        pointer-events: none;
     }
     .gds-sidebar__section-content {
         display: flex;
@@ -180,12 +185,42 @@ pub fn SideBar(
         presentation: effective_presentation,
     });
 
+    let collapsed_icon_inset =
+        (collapsed_width - 2.0 * tokens::SIDEBAR_PADDING - tokens::SIDEBAR_ICON_SIZE).max(0.0)
+            * 0.5;
     let label = label.unwrap_or_else(|| "Sidebar".to_owned());
     view! {
         column(
             class = "gds-sidebar",
             style:width = move || Some(format!("{:.2}px", effective_presentation.get().width())),
+            var:--gds-sidebar-progress = move || {
+                Some(format!("{:.4}", effective_presentation.get().progress()))
+            },
+            var:--gds-sidebar-label-opacity = move || {
+                Some(format!("{:.3}", effective_presentation.get().label_opacity()))
+            },
+            var:--gds-sidebar-actions-opacity = move || {
+                Some(format!("{:.3}", effective_presentation.get().actions_opacity()))
+            },
+            var:--gds-nav-item-pad-left = move || {
+                let inset = effective_presentation
+                    .get()
+                    .interpolate(NAV_ITEM_GAP, collapsed_icon_inset);
+                Some(format!("{inset:.2}px"))
+            },
+            var:--gds-nav-item-pad-right = move || {
+                let pad = effective_presentation.get().interpolate(NAV_ITEM_GAP, 0.0);
+                Some(format!("{pad:.2}px"))
+            },
+            var:--gds-nav-item-gap = move || {
+                let gap = effective_presentation.get().interpolate(NAV_ITEM_GAP, 0.0);
+                Some(format!("{gap:.2}px"))
+            },
             attr:data-collapsed = move || effective_presentation.get().collapsed().then(|| "true".to_owned()),
+            attr:data-expanded = move || (!effective_presentation.get().collapsed()).then(|| "true".to_owned()),
+            attr:data-actions-visible = move || {
+                effective_presentation.get().actions_visible().then(|| "true".to_owned())
+            },
             a11y:role = Role::Complementary,
             a11y:label = label,
             class = class,

@@ -1,4 +1,5 @@
 use zgui::prelude::*;
+use zgui::view::CustomPropertyName;
 use zgui::{component, view};
 
 use super::NavItemContext;
@@ -10,21 +11,18 @@ pub fn NavItemHeader(
     children: Children,
 ) -> impl IntoView {
     super::install_navigation_stylesheets();
-    let ctx = NavItemContext::current();
+    let reserve_attrs = NavItemContext::current()
+        .filter(|c| c.trailing_reserve > 0.0)
+        .map_or_else(Attrs::new, |c| {
+            Attrs::new().custom_property(
+                CustomPropertyName::new("gds-nav-header-reserve"),
+                format!("{:.2}px", c.trailing_reserve),
+            )
+        });
     view! {
         row(
             class = "gds-nav-item__header",
-            style:gap = move || {
-                ctx.map(|c| format!("{:.2}px", c.presentation.get().interpolate(8.0, 0.0)))
-            },
-            style:padding-right = move || {
-                ctx.filter(|c| c.trailing_reserve > 0.0).map(|c| {
-                    format!(
-                        "{:.2}px",
-                        c.presentation.get().interpolate(c.trailing_reserve, 0.0)
-                    )
-                })
-            },
+            {..reserve_attrs},
             class = class,
             {..attrs}
         ) {

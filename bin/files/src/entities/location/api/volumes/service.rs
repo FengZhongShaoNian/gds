@@ -122,6 +122,20 @@ impl Service {
         service
     }
 
+    #[cfg(test)]
+    pub fn with_snapshot(tasks: Scope, snapshot: Snapshot) -> Self {
+        Self(Rc::new(State {
+            observation: RefCell::new(Observed {
+                discovery: Discovery::Ready(snapshot),
+                started: Instant::now(),
+            }),
+            revision: RwSignal::new_local(0),
+            busy: Arc::new(Mutex::new(HashMap::new())),
+            usage: RefCell::new(super::usage::UsageCache::default()),
+            tasks,
+        }))
+    }
+
     fn changed(&self) {
         self.0
             .revision

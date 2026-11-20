@@ -93,24 +93,11 @@ pub fn CornerAction(
     button: AnyView,
 ) -> impl IntoView {
     super::install_navigation_stylesheets();
-    let pres = super::NavItemContext::current().map(|ctx| ctx.presentation);
     let no_drag = zgui::prelude::try_use_window().map(|w| w.no_drag_handler());
     view! {
         box(
             class = "gds-corner-action",
-            attr:data-revealed = move || {
-                let allowed = pres.is_none_or(|p| p.get().is_collapsed());
-                (allowed && revealed.get()).then(|| "true".to_owned())
-            },
-            style:visibility = move || {
-                pres.map(|p| {
-                    if p.get().is_collapsed() {
-                        "visible".to_owned()
-                    } else {
-                        "hidden".to_owned()
-                    }
-                })
-            },
+            attr:data-revealed = move || revealed.get().then(|| "true".to_owned()),
             on:pointer_down = move |ev: &mut zgui::view::EventCx<'_, zgui::view::events::PointerDown>| {
                 ev.stop_propagation();
                 if let Some(ref handler) = no_drag {

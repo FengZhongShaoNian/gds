@@ -342,6 +342,20 @@ pub(super) const CHROME_CSS: &str = css!(
         gap: 4px;
     }
 
+    .gds-files-tabs-header.gds-files-tabs-header {
+        height: 34px;
+        padding-right: var(--gds-files-tabs-header-pad-right, 0px);
+        gap: var(--gds-files-tabs-header-gap, 4px);
+    }
+
+    .gds-files-tabs-title.gds-files-tabs-title {
+        padding: 0px var(--gds-files-tabs-title-pad-x, 6px);
+    }
+
+    .gds-files-sidebar-empty {
+        opacity: var(--gds-sidebar-label-opacity, 1);
+    }
+
     .gds-files-sidebar-heading.gds-files-sidebar-heading {
         display: flex;
         flex: 1 1 0%;
@@ -349,6 +363,9 @@ pub(super) const CHROME_CSS: &str = css!(
         height: 28px;
         min-width: 0px;
         align-items: center;
+        padding-left: var(--gds-files-heading-pad-left, 8px);
+        padding-right: var(--gds-files-heading-pad-right, 8px);
+        gap: var(--gds-files-heading-gap, 6px);
         border-radius: var(--gds-radius-control, 6px);
         cursor: pointer;
         color: var(--gds-muted-foreground);
@@ -434,6 +451,11 @@ pub(super) const CHROME_CSS: &str = css!(
         box-sizing: border-box;
     }
 
+    .gds-files-tab-item .gds-nav-item__header,
+    .gds-files-tab-item .gds-nav-item__details {
+        padding-right: var(--gds-files-tab-reserve, 40px);
+    }
+
     .gds-files-tab-action {
         position: absolute;
         right: 6px;
@@ -452,15 +474,21 @@ pub(super) const CHROME_CSS: &str = css!(
         pointer-events: auto;
     }
 
+    .gds-sidebar[data-collapsed="true"] .gds-files-tab-action,
     .gds-nav-item[data-collapsed="true"] .gds-files-tab-action {
         opacity: 0;
         pointer-events: none;
+    }
+
+    .gds-sidebar:not([data-actions-visible="true"]) .gds-files-tab-action {
+        display: none;
     }
 
     .gds-files-volume-item.gds-files-volume-item {
         flex: 0 0 auto;
         flex-shrink: 0;
         padding: 6px 0px;
+        gap: 0px;
         min-height: 38px;
         box-sizing: border-box;
     }
@@ -481,12 +509,20 @@ pub(super) const CHROME_CSS: &str = css!(
         width: 100%;
         min-width: 0px;
         height: 20px;
+        padding-left: var(--gds-nav-item-pad-left, 8px);
+        padding-right: var(--gds-nav-item-pad-right, 8px);
+        gap: var(--gds-nav-item-gap, 8px);
         box-sizing: border-box;
+    }
+
+    .gds-sidebar:not([data-actions-visible="true"]) .gds-files-volume-spinner {
+        display: none;
     }
 
     .gds-files-volume-details {
         width: 100%;
         min-width: 0px;
+        padding: 0px var(--gds-files-volume-details-pad-x, 8px);
         overflow: hidden;
         box-sizing: border-box;
     }
@@ -1211,6 +1247,10 @@ impl Browser {
     fn sidebar_scoped(&self) -> AnyView {
         install_chrome_stylesheets();
         let presentation = self.sidebar_presentation();
+        let is_collapsed_rail = local_memo(move || presentation.get().is_collapsed());
+        let actions_visible = local_memo(move || presentation.get().actions_visible());
+        let compact_capacity =
+            local_memo(move || presentation.get().width() < COMPACT_CAPACITY_THRESHOLD);
         let browser = self.clone();
 
         let sections = local_memo({
@@ -1367,26 +1407,8 @@ impl Browser {
                     SideBarSection(
                         class = "gds-files-sidebar-tabs-section"
                     ) {
-                        SideBarSectionHeader(
-                            style:height = format!("{SECTION_HEADER_HEIGHT}px"),
-                            style:padding-right = move || {
-                                Some(format!(
-                                    "{:.2}px",
-                                    presentation.get().interpolate(0.0, COLLAPSED_ACTION_INSET)
-                                ))
-                            },
-                            style:gap = move || {
-                                Some(format!("{:.2}px", presentation.get().interpolate(4.0, 0.0)))
-                            }
-                        ) {
-                            SideBarSectionTitle(
-                                style:padding = move || {
-                                    let pad = presentation
-                                        .get()
-                                        .interpolate(SIDEBAR_SECTION_PADDING, 0.0);
-                                    Some(format!("0px {pad:.2}px"))
-                                }
-                            ) {
+                        SideBarSectionHeader(class = "gds-files-tabs-header") {
+                            SideBarSectionTitle(class = "gds-files-tabs-title") {
                                 {move || i18n::text("tabs")}
                             }
                             IconButton(
@@ -1434,7 +1456,7 @@ impl Browser {
                                     });
                                     view! {
                                         for spec in move || tab_specs.get(), key = |spec: &(u64, bool, Option<PathBuf>)| spec.clone() {
-                                            {{rows_b.sidebar_tab(spec.0, spec.1, spec.2, presentation)}}
+                                            {{rows_b.sidebar_tab(spec.0, spec.1, spec.2, is_collapsed_rail, actions_visible)}}
                                         }
                                     }
                                 }}
@@ -1484,7 +1506,7 @@ impl Browser {
                             "volumes",
                             SECTION_HEADER_HEIGHT,
                             vol_expanded,
-                            presentation,
+                            is_collapsed_rail,
                             move || {
                                 let focused = toggle_b.0.sidebar_region.get_untracked()
                                     == Some(SidebarRegion::Volumes)
@@ -1541,12 +1563,9 @@ impl Browser {
                                                         .collect::<Vec<_>>();
                                                     if visible_volumes.is_empty() {
                                                         vec![AnyView::new(view! {
-                                                            text(
-                                                                class = "gds-files-sidebar-empty",
-                                                                style:opacity = move || {
-                                                                    Some(format!("{:.3}", presentation.get().label_opacity()))
-                                                                }
-                                                            ) {{move || i18n::text("device-none")}}
+                                                            text(class = "gds-files-sidebar-empty") {
+                                                                {move || i18n::text("device-none")}
+                                                            }
                                                         })]
                                                     } else {
                                                         visible_volumes
@@ -1556,7 +1575,7 @@ impl Browser {
                                                                     volume,
                                                                     &snapshot,
                                                                     active_volume,
-                                                                    presentation,
+                                                                    compact_capacity,
                                                                 )
                                                             })
                                                             .collect::<Vec<_>>()
@@ -1581,6 +1600,43 @@ impl Browser {
         AnyView::new(view! {
             SideBar(
                 presentation = presentation,
+                class = "gds-files-sidebar",
+                var:--gds-files-tabs-header-pad-right = move || {
+                    Some(format!(
+                        "{:.2}px",
+                        presentation.get().interpolate(0.0, COLLAPSED_ACTION_INSET)
+                    ))
+                },
+                var:--gds-files-tabs-header-gap = move || {
+                    Some(format!("{:.2}px", presentation.get().interpolate(4.0, 0.0)))
+                },
+                var:--gds-files-tabs-title-pad-x = move || {
+                    Some(format!(
+                        "{:.2}px",
+                        presentation.get().interpolate(SIDEBAR_SECTION_PADDING, 0.0)
+                    ))
+                },
+                var:--gds-files-heading-pad-left = move || {
+                    Some(format!(
+                        "{:.2}px",
+                        presentation.get().interpolate(HEADING_PADDING, COLLAPSED_HEADING_INSET)
+                    ))
+                },
+                var:--gds-files-heading-pad-right = move || {
+                    Some(format!("{:.2}px", presentation.get().interpolate(HEADING_PADDING, 0.0)))
+                },
+                var:--gds-files-heading-gap = move || {
+                    Some(format!("{:.2}px", presentation.get().interpolate(GROUP_GAP, 0.0)))
+                },
+                var:--gds-files-tab-reserve = move || {
+                    Some(format!(
+                        "{:.2}px",
+                        presentation.get().interpolate(ICON_BUTTON_SIZE + ITEM_GAP, 0.0)
+                    ))
+                },
+                var:--gds-files-volume-details-pad-x = move || {
+                    Some(format!("{:.2}px", presentation.get().interpolate(ITEM_GAP, 2.0)))
+                },
                 a11y:label = move || SharedString::from(i18n::text("locations"))
             ) {
                 column(
@@ -1638,7 +1694,7 @@ impl Browser {
                             "locations",
                             LOCATION_HEADER_HEIGHT,
                             loc_expanded,
-                            presentation,
+                            is_collapsed_rail,
                             {
                                 let toggle_b = locs_browser.clone();
                                 move || {
@@ -1729,7 +1785,6 @@ impl Browser {
                                                             let item = rows_b.sidebar_location(
                                                                 target,
                                                                 loc.clone(),
-                                                                presentation,
                                                             );
                                                             match loc.local_path() {
                                                                 Some(path) => {
@@ -1763,7 +1818,7 @@ impl Browser {
         label: &'static str,
         header_height: f32,
         expanded: Signal<bool, LocalStorage>,
-        presentation: Signal<SidebarPresentation, LocalStorage>,
+        is_collapsed_rail: Signal<bool, LocalStorage>,
         toggle: impl Fn() + 'static,
     ) -> AnyView {
         let toggle = Rc::new(toggle);
@@ -1773,7 +1828,6 @@ impl Browser {
         #[cfg(test)]
         tests::record_heading_node(label, heading_ref);
 
-        let is_collapsed_rail = Signal::derive_local(move || presentation.get().is_collapsed());
         let tip_requested = RwSignal::new_local(false);
         let tip_open = Signal::derive_local(move || tip_requested.get() && is_collapsed_rail.get());
         let reset_tip_fx = RenderEffect::new(move |_| {
@@ -1802,20 +1856,6 @@ impl Browser {
                             a11y:role = Role::Button,
                             a11y:label = move || SharedString::from(i18n::text(label)),
                             a11y:expanded = move || expanded.get(),
-                            style:padding-left = move || {
-                                let inset = presentation
-                                    .get()
-                                    .interpolate(HEADING_PADDING, COLLAPSED_HEADING_INSET);
-                                Some(format!("{inset:.2}px"))
-                            },
-                            style:padding-right = move || {
-                                let pad = presentation.get().interpolate(HEADING_PADDING, 0.0);
-                                Some(format!("{pad:.2}px"))
-                            },
-                            style:gap = move || {
-                                let gap = presentation.get().interpolate(GROUP_GAP, 0.0);
-                                Some(format!("{gap:.2}px"))
-                            },
                             on:click = move |_| clk(),
                             on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
                                 if ev.modifiers == Modifiers::NONE
@@ -1846,7 +1886,7 @@ impl Browser {
         volume: &volumes::Volume,
         snapshot: &volumes::Snapshot,
         active: Signal<Option<volumes::VolumeId>, LocalStorage>,
-        presentation: Signal<SidebarPresentation, LocalStorage>,
+        compact_bar: Signal<bool, LocalStorage>,
     ) -> AnyView {
         let icon = if volume.locked {
             IconName::Lock
@@ -1897,11 +1937,6 @@ impl Browser {
             ));
         }
 
-        let compact_bar =
-            Signal::derive_local(move || presentation.get().width() < COMPACT_CAPACITY_THRESHOLD);
-        let collapsed_icon_inset =
-            (COLLAPSED_SIDEBAR_WIDTH - 2.0 * SIDEBAR_PADDING - SIDEBAR_ICON_SIZE) * 0.5;
-
         let details = if volume.mount_points.is_empty() {
             AnyView::new(view! {
                 box(class = "gds-files-volume-unmounted-slot") {
@@ -1941,11 +1976,13 @@ impl Browser {
         let name = volume.name.clone();
         let a11y_label = volume.name.clone();
         let tooltip_text = wrap_tokens(&hint.join("\n"));
+        let volume_icon_ref = NodeRef::new();
+        #[cfg(test)]
+        tests::record_volume_icon_node(volume.id.clone(), volume_icon_ref);
 
         let item = AnyView::new(view! {
             NavItem(
                 selected = selected,
-                presentation = presentation,
                 class = "gds-files-volume-item",
                 attr:data-cursor = move || cursor_match.get().then(|| "true".to_owned()),
                 a11y:label = a11y_label,
@@ -1955,37 +1992,19 @@ impl Browser {
                 }
             ) {
                 column(class = "gds-files-volume-col") {
-                    row(
-                        class = "gds-files-volume-row",
-                        style:padding-left = move || {
-                            let inset = presentation
-                                .get()
-                                .interpolate(ITEM_GAP, collapsed_icon_inset);
-                            Some(format!("{inset:.2}px"))
-                        },
-                        style:padding-right = move || {
-                            let pad = presentation.get().interpolate(ITEM_GAP, 0.0);
-                            Some(format!("{pad:.2}px"))
-                        },
-                        style:gap = move || {
-                            let gap = presentation.get().interpolate(ITEM_GAP, 0.0);
-                            Some(format!("{gap:.2}px"))
-                        }
-                    ) {
-                        Icon(name = icon, size = SIDEBAR_ICON_SIZE, class = "gds-files-nav-icon")
+                    row(class = "gds-files-volume-row") {
+                        Icon(
+                            node_ref = volume_icon_ref,
+                            name = icon,
+                            size = SIDEBAR_ICON_SIZE,
+                            class = "gds-files-nav-icon"
+                        )
                         NavItemLabel {{name}}
-                        {{move || {
-                            (volume_busy && presentation.get().actions_visible())
-                                .then(|| AnyView::new(view! { Spinner(class = "gds-files-volume-spinner") }))
-                        }}}
+                        {volume_busy.then(|| AnyView::new(view! {
+                            Spinner(class = "gds-files-volume-spinner")
+                        }))}
                     }
-                    box(
-                        class = "gds-files-volume-details",
-                        style:padding = move || {
-                            let pad = presentation.get().interpolate(ITEM_GAP, 2.0);
-                            Some(format!("0px {pad:.2}px"))
-                        }
-                    ) {
+                    box(class = "gds-files-volume-details") {
                         {details}
                     }
                 }
@@ -2003,12 +2022,7 @@ impl Browser {
         })
     }
 
-    fn sidebar_location(
-        &self,
-        target: LocationTarget,
-        location: Location,
-        presentation: Signal<SidebarPresentation, LocalStorage>,
-    ) -> AnyView {
+    fn sidebar_location(&self, target: LocationTarget, location: Location) -> AnyView {
         let label = Signal::derive_local(move || i18n::text(target.label_id()));
         let icon = target.icon();
         let cursor = self.0.sidebar_cursor;
@@ -2043,7 +2057,6 @@ impl Browser {
                 NavItem(
                     node_ref = loc_ref,
                     selected = selected,
-                    presentation = presentation,
                     tooltip = label,
                     class = "gds-files-location-item",
                     attr:data-cursor = move || cursor_match.get().then(|| "true".to_owned()),
@@ -2070,7 +2083,8 @@ impl Browser {
         id: u64,
         pinned: bool,
         local_path: Option<PathBuf>,
-        presentation: Signal<SidebarPresentation, LocalStorage>,
+        is_collapsed_rail: Signal<bool, LocalStorage>,
+        actions_visible: Signal<bool, LocalStorage>,
     ) -> AnyView {
         let fallback_location = local_path
             .as_deref()
@@ -2148,11 +2162,10 @@ impl Browser {
         });
 
         let expanded_action_revealed = Signal::derive_local(move || {
-            (pinned || revealing_close.get() || hovered.get())
-                && presentation.get().actions_visible()
+            (pinned || revealing_close.get() || hovered.get()) && actions_visible.get()
         });
         let collapsed_action_revealed = Signal::derive_local(move || {
-            (pinned || revealing_close.get() || hovered.get()) && presentation.get().is_collapsed()
+            (pinned || revealing_close.get() || hovered.get()) && is_collapsed_rail.get()
         });
 
         let action_icon = if pinned {
@@ -2167,9 +2180,9 @@ impl Browser {
         };
         let close_shortcut = (!pinned).then(|| Command::CloseTab.shortcut());
         let expanded_close_shortcut_enabled =
-            Signal::derive_local(move || selected.get() && presentation.get().actions_visible());
+            Signal::derive_local(move || selected.get() && actions_visible.get());
         let collapsed_close_shortcut_enabled =
-            Signal::derive_local(move || selected.get() && presentation.get().is_collapsed());
+            Signal::derive_local(move || selected.get() && is_collapsed_rail.get());
 
         let tab_ref = NodeRef::new();
         let corner_ref = NodeRef::new();
@@ -2193,7 +2206,6 @@ impl Browser {
             NavItem(
                 node_ref = tab_ref,
                 selected = selected,
-                presentation = presentation,
                 on_middle_click = on_middle,
                 class = "gds-files-tab-item",
                 attr:data-cursor = move || cursor_match.get().then(|| "true".to_owned()),
@@ -2214,37 +2226,16 @@ impl Browser {
                     class = "gds-files-nav-icon"
                 )
                 NavItemContent {
-                    NavItemHeader(
-                        style:padding-right = move || {
-                            let reserve = presentation
-                                .get()
-                                .interpolate(ICON_BUTTON_SIZE + ITEM_GAP, 0.0);
-                            Some(format!("{reserve:.2}px"))
-                        }
-                    ) {
+                    NavItemHeader {
                         NavItemLabel {{move || title.get()}}
                     }
-                    NavItemDetails(
-                        style:padding-right = move || {
-                            let reserve = presentation
-                                .get()
-                                .interpolate(ICON_BUTTON_SIZE + ITEM_GAP, 0.0);
-                            Some(format!("{reserve:.2}px"))
-                        }
-                    ) {
+                    NavItemDetails {
                         {move || detail_path.get()}
                     }
                 }
                 box(
                     class = "gds-files-tab-action",
                     attr:data-revealed = move || expanded_action_revealed.get().then(|| "true".to_owned()),
-                    style:display = move || {
-                        Some(if presentation.get().actions_visible() {
-                            "flex".to_owned()
-                        } else {
-                            "none".to_owned()
-                        })
-                    },
                     on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
                         ev.stop_propagation();
                         if let Some(ref handler) = no_drag_exp {
@@ -2281,7 +2272,7 @@ impl Browser {
                 ) {}
                 {{move || {
                     let (position, cycle_targets, _) = tab_meta.get();
-                    let compact_now = presentation.get().is_collapsed();
+                    let compact_now = is_collapsed_rail.get();
                     let show_action =
                         pinned || revealing_close.get() || hovered.get();
                     stage_tab_shortcuts(

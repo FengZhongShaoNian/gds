@@ -117,9 +117,9 @@ const STATIC_BASE_CSS: &str = r#"
     flex-direction: row;
     align-items: center;
     flex-shrink: 0;
-    gap: 8px;
+    gap: var(--gds-nav-item-gap, 8px);
     min-height: var(--gds-sidebar-item-height, 38px);
-    padding: 0 8px;
+    padding: 0 var(--gds-nav-item-pad-right, 8px) 0 var(--gds-nav-item-pad-left, 8px);
     border: none;
     border-radius: var(--gds-radius-control, 6px);
     color: inherit;
@@ -189,8 +189,10 @@ const STATIC_BASE_CSS: &str = r#"
     opacity: 0;
 }
 
+.gds-sidebar[data-collapsed="true"] .gds-nav-item .gds-hover-slot,
+.gds-sidebar[data-collapsed="true"] .gds-nav-item .gds-hover-slot .gds-hover-slot__action,
 .gds-nav-item[data-collapsed="true"] .gds-hover-slot,
-.gds-nav-item[data-collapsed="true"] .gds-hover-slot__action {
+.gds-nav-item[data-collapsed="true"] .gds-hover-slot .gds-hover-slot__action {
     opacity: 0;
     pointer-events: none;
 }
@@ -201,18 +203,30 @@ const STATIC_BASE_CSS: &str = r#"
     right: 1px;
     opacity: 0;
     pointer-events: none;
+    visibility: hidden;
 }
 
-.gds-corner-action[data-revealed="true"],
+.gds-sidebar[data-collapsed="true"] .gds-corner-action,
+.gds-nav-item[data-collapsed="true"] .gds-corner-action {
+    visibility: visible;
+}
+
+.gds-sidebar[data-collapsed="true"] .gds-corner-action[data-revealed="true"],
+.gds-sidebar[data-collapsed="true"] .gds-nav-item:hover .gds-corner-action,
+.gds-sidebar[data-collapsed="true"] .gds-nav-item:focus-within .gds-corner-action,
+.gds-nav-item[data-collapsed="true"] .gds-corner-action[data-revealed="true"],
 .gds-nav-item[data-collapsed="true"]:hover .gds-corner-action,
 .gds-nav-item[data-collapsed="true"]:focus-within .gds-corner-action {
     opacity: 1;
     pointer-events: auto;
+    visibility: visible;
 }
 
+.gds-sidebar[data-expanded="true"] .gds-corner-action,
 .gds-nav-item[data-expanded="true"] .gds-corner-action {
     opacity: 0;
     pointer-events: none;
+    visibility: hidden;
 }
 
 .gds-pinned-icon {

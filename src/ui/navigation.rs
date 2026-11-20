@@ -24,6 +24,7 @@ use std::rc::Rc;
 
 use zgui::prelude::*;
 use zgui::reactive::{LocalStorage, UnsyncCallback, provide_local_context, use_local_context};
+use zgui::view::{AttrName, CustomPropertyName};
 use zgui::vocab::PointerButton;
 use zgui::{component, css, view};
 
@@ -38,7 +39,6 @@ const ITEM_GAP: f32 = 8.0;
 
 #[derive(Clone, Copy)]
 pub(crate) struct NavItemContext {
-    pub(crate) presentation: Signal<SidebarPresentation, LocalStorage>,
     pub(crate) trailing_reserve: f32,
 }
 
@@ -60,6 +60,9 @@ const NAVIGATION_CSS: &str = css!(
         max-width: 100%;
         min-width: 0px;
         min-height: var(--gds-sidebar-item-height, 38px);
+        padding-left: var(--gds-nav-item-pad-left, 8px);
+        padding-right: var(--gds-nav-item-pad-right, 8px);
+        gap: var(--gds-nav-item-gap, 8px);
         box-sizing: border-box;
         overflow: hidden;
         border: none;
@@ -120,7 +123,8 @@ const NAVIGATION_CSS: &str = css!(
         height: 18px;
         min-height: 18px;
         overflow: hidden;
-        gap: 8px;
+        gap: var(--gds-nav-item-gap, 8px);
+        padding-right: calc(var(--gds-nav-header-reserve, 0px) * var(--gds-sidebar-progress, 1));
         box-sizing: border-box;
     }
     .gds-nav-item__label {
@@ -135,6 +139,7 @@ const NAVIGATION_CSS: &str = css!(
         white-space: nowrap;
         font-size: var(--gds-font-size-small, 14px);
         line-height: 18px;
+        opacity: var(--gds-sidebar-label-opacity, 1);
     }
     .gds-nav-item > .gds-nav-item__label,
     .gds-nav-item__header > .gds-nav-item__label {
@@ -154,10 +159,12 @@ const NAVIGATION_CSS: &str = css!(
         white-space: nowrap;
         font-size: var(--gds-font-size-xs, 12px);
         color: var(--gds-muted-foreground);
+        opacity: var(--gds-sidebar-label-opacity, 1);
+        box-sizing: border-box;
     }
     .gds-nav-item[data-selected=\"true\"] .gds-nav-item__details {
         color: inherit;
-        opacity: 0.85;
+        opacity: var(--gds-sidebar-label-opacity, 0.85);
     }
     .gds-nav-item__actions {
         position: absolute;
@@ -169,6 +176,14 @@ const NAVIGATION_CSS: &str = css!(
         flex-shrink: 0;
         gap: 2px;
         z-index: 1;
+        opacity: var(--gds-sidebar-actions-opacity, 1);
+        pointer-events: auto;
+        visibility: visible;
+    }
+    .gds-sidebar:not([data-actions-visible=\"true\"]) .gds-nav-item__actions,
+    .gds-nav-item[data-actions-visible=\"false\"] .gds-nav-item__actions {
+        pointer-events: none;
+        visibility: hidden;
     }
     .gds-hover-slot__status {
         display: flex;
@@ -195,8 +210,10 @@ const NAVIGATION_CSS: &str = css!(
     .gds-nav-item:not([data-collapsed=\"true\"]):hover .gds-hover-slot:not([data-has-action=\"true\"]) .gds-hover-slot__status {
         opacity: 1;
     }
+    .gds-sidebar[data-collapsed=\"true\"] .gds-nav-item .gds-hover-slot,
+    .gds-sidebar[data-collapsed=\"true\"] .gds-nav-item .gds-hover-slot .gds-hover-slot__action,
     .gds-nav-item[data-collapsed=\"true\"] .gds-hover-slot,
-    .gds-nav-item[data-collapsed=\"true\"] .gds-hover-slot__action {
+    .gds-nav-item[data-collapsed=\"true\"] .gds-hover-slot .gds-hover-slot__action {
         opacity: 0;
         pointer-events: none;
     }
@@ -206,18 +223,29 @@ const NAVIGATION_CSS: &str = css!(
         right: 1px;
         opacity: 0;
         pointer-events: none;
+        visibility: hidden;
         z-index: 2;
         transition: opacity var(--gds-motion-fast, 100ms) var(--gds-motion-ease-out, cubic-bezier(0, 0, 0.2, 1));
     }
-    .gds-corner-action[data-revealed=\"true\"],
+    .gds-sidebar[data-collapsed=\"true\"] .gds-corner-action,
+    .gds-nav-item[data-collapsed=\"true\"] .gds-corner-action {
+        visibility: visible;
+    }
+    .gds-sidebar[data-collapsed=\"true\"] .gds-corner-action[data-revealed=\"true\"],
+    .gds-sidebar[data-collapsed=\"true\"] .gds-nav-item:hover .gds-corner-action,
+    .gds-sidebar[data-collapsed=\"true\"] .gds-nav-item:focus-within .gds-corner-action,
+    .gds-nav-item[data-collapsed=\"true\"] .gds-corner-action[data-revealed=\"true\"],
     .gds-nav-item[data-collapsed=\"true\"]:hover .gds-corner-action,
     .gds-nav-item[data-collapsed=\"true\"]:focus-within .gds-corner-action {
         opacity: 1;
         pointer-events: auto;
+        visibility: visible;
     }
+    .gds-sidebar[data-expanded=\"true\"] .gds-corner-action,
     .gds-nav-item[data-expanded=\"true\"] .gds-corner-action {
         opacity: 0;
         pointer-events: none;
+        visibility: hidden;
     }
     .gds-corner-button {
         width: 16px;
@@ -266,21 +294,85 @@ pub fn NavItem(
 ) -> impl IntoView {
     install_navigation_stylesheets();
 
+    let sidebar_ctx = SidebarContext::current();
+    let in_sidebar = sidebar_ctx.is_some();
     let effective_presentation = presentation
-        .or_else(|| SidebarContext::current().map(|ctx| ctx.presentation))
+        .or_else(|| sidebar_ctx.map(|ctx| ctx.presentation))
         .unwrap_or_else(|| Signal::stored_local(SidebarPresentation::default()));
 
     let has_trailing = trailing.is_some();
     let trailing_reserve = (if has_trailing { ICON_BUTTON_SIZE } else { 0.0 })
         + reserve_trailing_keytip.unwrap_or(0.0);
 
-    provide_local_context(NavItemContext {
-        presentation: effective_presentation,
-        trailing_reserve,
-    });
+    provide_local_context(NavItemContext { trailing_reserve });
 
     let collapsed_icon_inset =
         (COLLAPSED_SIDEBAR_WIDTH - 2.0 * SIDEBAR_PADDING - SIDEBAR_ICON_SIZE) * 0.5;
+    let standalone_attrs = if in_sidebar {
+        Attrs::new()
+    } else {
+        Attrs::new()
+            .custom_property(CustomPropertyName::new("gds-sidebar-progress"), move || {
+                Some(format!("{:.4}", effective_presentation.get().progress()))
+            })
+            .custom_property(
+                CustomPropertyName::new("gds-sidebar-label-opacity"),
+                move || {
+                    Some(format!(
+                        "{:.3}",
+                        effective_presentation.get().label_opacity()
+                    ))
+                },
+            )
+            .custom_property(
+                CustomPropertyName::new("gds-sidebar-actions-opacity"),
+                move || {
+                    Some(format!(
+                        "{:.3}",
+                        effective_presentation.get().actions_opacity()
+                    ))
+                },
+            )
+            .custom_property(
+                CustomPropertyName::new("gds-nav-item-pad-left"),
+                move || {
+                    let inset = effective_presentation
+                        .get()
+                        .interpolate(ITEM_GAP, collapsed_icon_inset);
+                    Some(format!("{inset:.2}px"))
+                },
+            )
+            .custom_property(
+                CustomPropertyName::new("gds-nav-item-pad-right"),
+                move || {
+                    let pad = effective_presentation.get().interpolate(ITEM_GAP, 0.0);
+                    Some(format!("{pad:.2}px"))
+                },
+            )
+            .custom_property(CustomPropertyName::new("gds-nav-item-gap"), move || {
+                let gap = effective_presentation.get().interpolate(ITEM_GAP, 0.0);
+                Some(format!("{gap:.2}px"))
+            })
+            .attribute(AttrName::new("data-collapsed"), move || {
+                effective_presentation
+                    .get()
+                    .is_collapsed()
+                    .then(|| "true".to_owned())
+            })
+            .attribute(AttrName::new("data-expanded"), move || {
+                (!effective_presentation.get().is_collapsed()).then(|| "true".to_owned())
+            })
+            .attribute(AttrName::new("data-actions-visible"), move || {
+                Some(
+                    if effective_presentation.get().actions_visible() {
+                        "true"
+                    } else {
+                        "false"
+                    }
+                    .to_owned(),
+                )
+            })
+    };
     let resolved_ref = node_ref.unwrap_or_default();
 
     let middle_armed = Rc::new(Cell::new(false));
@@ -315,33 +407,11 @@ pub fn NavItem(
             class = "gds-nav-item",
             node_ref = resolved_ref,
             tabindex = Focus::Sequential,
-            style:padding-left = move || {
-                let inset = effective_presentation
-                    .get()
-                    .interpolate(ITEM_GAP, collapsed_icon_inset);
-                Some(format!("{inset:.2}px"))
-            },
-            style:padding-right = move || {
-                let pad = effective_presentation.get().interpolate(ITEM_GAP, 0.0);
-                Some(format!("{pad:.2}px"))
-            },
-            style:gap = move || {
-                let gap = effective_presentation.get().interpolate(ITEM_GAP, 0.0);
-                Some(format!("{gap:.2}px"))
-            },
+            {..standalone_attrs},
             attr:data-selected = move || selected.get().then(|| "true".to_owned()),
             attr:data-drop-target = move || drop_target.get().then(|| "true".to_owned()),
             attr:data-disabled = move || disabled.get().then(|| "true".to_owned()),
             attr:data-compact = move || compact.get().then(|| "true".to_owned()),
-            attr:data-collapsed = move || {
-                effective_presentation
-                    .get()
-                    .is_collapsed()
-                    .then(|| "true".to_owned())
-            },
-            attr:data-expanded = move || {
-                (!effective_presentation.get().is_collapsed()).then(|| "true".to_owned())
-            },
             a11y:role = Role::Button,
             a11y:selected = move || selected.get(),
             a11y:disabled = move || disabled.get(),

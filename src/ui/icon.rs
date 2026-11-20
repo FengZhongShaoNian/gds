@@ -208,6 +208,9 @@ pub fn Icon(
     /// Optional accessible name; hidden from assistive technologies when omitted.
     #[prop(into, optional)]
     label: Option<String>,
+    /// Optional reference to the underlying `<vector>` node.
+    #[prop(optional)]
+    node_ref: Option<NodeRef>,
     /// Extra CSS classes appended after `.gds-icon`.
     #[prop(into, optional)]
     class: Classes,
@@ -224,6 +227,7 @@ pub fn Icon(
     view! {
         vector(
             class = "gds-icon",
+            node_ref = node_ref.unwrap_or_default(),
             var:--gds-icon-size = size_px,
             attr:data-icon = move || Some(name.get().as_str().to_owned()),
             prop:svg = move || PropValue::from(name.get().svg()),

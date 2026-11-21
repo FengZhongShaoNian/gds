@@ -1630,7 +1630,7 @@ impl Browser {
                     },
                     tabindex = Focus::Sequential,
                     a11y:role = Role::Slider,
-                    a11y:label = i18n::text("files-terminal-resize"),
+                    a11y:label = move || i18n::text("files-terminal-resize"),
                     attr:data-dragging = move || dragging_sig.get().is_some().then(|| "true".to_owned()),
                     on:pointer_down = on_handle_pointer_down,
                     on:pointer_move = on_handle_pointer_move,
@@ -1690,12 +1690,12 @@ impl Browser {
                             },
                         ) {
                             SideBarSectionTitle {
-                                {i18n::text("settings-terminal")}
+                                {move || i18n::text("settings-terminal")}
                             }
                         }
                         IconButton(
                             icon = IconName::Plus,
-                            label = i18n::text("files-terminal-new"),
+                            label = Signal::derive_local(|| i18n::text("files-terminal-new")),
                             shortcut = Some(Shortcut::new(Key::character("n"), Modifiers::CONTROL)),
                             shortcut_enabled = Signal::derive_local(move || {
                                 zgui::view::current_host()
@@ -1718,7 +1718,7 @@ impl Browser {
                         }
                         IconButton(
                             icon = IconName::FolderInput,
-                            label = i18n::text("files-terminal-switch-directory"),
+                            label = Signal::derive_local(|| i18n::text("files-terminal-switch-directory")),
                             disabled = cwd_disabled,
                             on:click = move |_| b_cwd.switch_terminal_directory(),
                         )
@@ -1738,7 +1738,7 @@ impl Browser {
                         class = "gds-files-terminal-rail",
                         tabindex = Focus::Sequential,
                         a11y:role = Role::TabList,
-                        a11y:label = i18n::text("settings-terminal"),
+                        a11y:label = move || i18n::text("settings-terminal"),
                         style:width = move || Some(format!("{:.2}px", sidebar_width.get())),
                         on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
                             if !ev.repeat && b_rail_key.handle_terminal_shortcut(&ev.key, ev.modifiers) {
@@ -1821,7 +1821,7 @@ impl Browser {
                                     let close_action = AnyView::new(view! {
                                         IconButton(
                                             icon = IconName::Close,
-                                            label = i18n::text("files-terminal-end"),
+                                            label = Signal::derive_local(|| i18n::text("files-terminal-end")),
                                             size = zgui_ui::ButtonSize::IconXs,
                                             shortcut = Some(close_shortcut.clone()),
                                             shortcut_enabled = expanded_shortcut_target,
@@ -1895,7 +1895,7 @@ impl Browser {
                                                             CornerButton(
                                                                 node_ref = Some(corner_ref),
                                                                 icon = IconName::Close,
-                                                                label = i18n::text("files-terminal-end"),
+                                                                label = Signal::derive_local(|| i18n::text("files-terminal-end")),
                                                                 on:click = move |_| {
                                                                     b_close_corner.close_terminal_session(id);
                                                                 },

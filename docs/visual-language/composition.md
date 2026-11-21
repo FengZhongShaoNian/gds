@@ -81,5 +81,5 @@ view! {
 }
 ```
 
-- **Metadata registration**: Reads `package.{version,homepage,authors,license}` and `[package.metadata.gds.about]` (feedback URL, root `LICENSE`, shared credits, and per-binary `applications.<bin-name>` `name` + `icon`). `build.rs` embeds the 9-character Git commit hash as `GDS_BUILD_TAG` (falling back to flake revision or explicit `GDS_BUILD_TAG` env var in `.git`-less sandboxes).
-- **Behavior**: Displays `assets/<app>/icon-solid.svg` and the product name, separate copyable version and build-tag rows, external Website/Feedback links, Credits, and the embedded Apache-2.0 license with `Esc` / `Alt+Left` sub-page navigation.
+- **Metadata registration**: Reads `package.{version,homepage,authors,license}` and `[package.metadata.gds.about]` (feedback URL, root `LICENSE`, shared credits, and per-binary `applications.<bin-name>` `name` + `icon`). `build.rs` embeds the 9-character Git commit hash as `GDS_BUILD_TAG` (falling back to flake revision or explicit `GDS_BUILD_TAG` env var in `.git`-less sandboxes), appending `-<profile>` (e.g., `-debug`) for non-release builds.
+- **Behavior**: Displays `assets/<app>/icon-desktop.svg` (falling back to `icon-solid.svg`) and the product name, separate copyable version and build-tag rows, external Website/Feedback links, Credits, and the embedded Apache-2.0 license with `Esc` / `Alt+Left` sub-page navigation.

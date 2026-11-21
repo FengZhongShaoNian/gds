@@ -138,7 +138,7 @@ impl Themes {
 struct SelectOption {
     value: String,
     label_id: &'static str,
-    disabled: Signal<bool, LocalStorage>,
+    disabled: bool,
 }
 
 fn select_option_view(option: SelectOption) -> AnyView {
@@ -162,12 +162,11 @@ impl View {
         placeholder_id: &'static str,
         reset: AnyView,
         value: Signal<String, LocalStorage>,
-        options: Vec<SelectOption>,
+        options: Signal<Vec<SelectOption>, LocalStorage>,
         on_pick: impl Fn(String) + 'static,
     ) -> AnyView {
         let preferences = self.preferences;
         let title_ref = NodeRef::new();
-        let list = Signal::stored_local(options);
 
         AnyView::new(view! {
             SettingRow {
@@ -187,8 +186,8 @@ impl View {
                             SelectContent {
                                 for opt in move || {
                                     let _ = preferences.with(|p| p.language);
-                                    list.get()
-                                }, key = |opt| (opt.value.clone(), i18n::text_untracked(opt.label_id)) {
+                                    options.get()
+                                }, key = |opt| (opt.value.clone(), i18n::text_untracked(opt.label_id), opt.disabled) {
                                     {select_option_view(opt)}
                                 }
                             }
@@ -222,25 +221,27 @@ impl View {
         });
         on_cleanup_local(move || drop(sync_custom));
 
-        let system_disabled =
-            Signal::derive_local(move || system_option_disabled(available_sig.get()));
-        let options = vec![
-            SelectOption {
-                value: source_kind_key(SourceKind::System).to_owned(),
-                label_id: "theme-system",
-                disabled: system_disabled,
-            },
-            SelectOption {
-                value: source_kind_key(SourceKind::Builtin).to_owned(),
-                label_id: "theme-builtin",
-                disabled: Signal::stored_local(false),
-            },
-            SelectOption {
-                value: source_kind_key(SourceKind::Custom).to_owned(),
-                label_id: "theme-custom",
-                disabled: Signal::stored_local(false),
-            },
-        ];
+        // Resolve disabled state inside the `SelectContent` `for` loop so each `SelectItem` holds
+        // a static stored bool rather than a derived signal read by `Listbox`'s event handlers.
+        let options = Signal::derive_local(move || {
+            vec![
+                SelectOption {
+                    value: source_kind_key(SourceKind::System).to_owned(),
+                    label_id: "theme-system",
+                    disabled: system_option_disabled(available_sig.get()),
+                },
+                SelectOption {
+                    value: source_kind_key(SourceKind::Builtin).to_owned(),
+                    label_id: "theme-builtin",
+                    disabled: false,
+                },
+                SelectOption {
+                    value: source_kind_key(SourceKind::Custom).to_owned(),
+                    label_id: "theme-custom",
+                    disabled: false,
+                },
+            ]
+        });
 
         let active_kind = Signal::derive_local(move || {
             let source = preferences.with(|p| p.appearance.source.clone());
@@ -297,7 +298,7 @@ impl View {
                             .map(|entry| SelectOption {
                                 value: serde_json::to_string(&entry).unwrap_or_default(),
                                 label_id: entry.label_id(),
-                                disabled: Signal::stored_local(false),
+                                disabled: false,
                             })
                             .collect();
                         view.palette_choice(
@@ -402,7 +403,7 @@ impl View {
             label_id,
             self.reset(label_id, get, set),
             value,
-            options,
+            Signal::stored_local(options),
             move |raw| {
                 if let Ok(parsed) = serde_json::from_str::<T>(&raw) {
                     view.apply(|preferences| set(preferences, parsed));
@@ -417,17 +418,17 @@ impl View {
             SelectOption {
                 value: serde_json::to_string(&theme::ModePreference::System).unwrap_or_default(),
                 label_id: "theme-mode-system",
-                disabled: Signal::stored_local(false),
+                disabled: false,
             },
             SelectOption {
                 value: serde_json::to_string(&theme::ModePreference::Light).unwrap_or_default(),
                 label_id: "theme-light",
-                disabled: Signal::stored_local(false),
+                disabled: false,
             },
             SelectOption {
                 value: serde_json::to_string(&theme::ModePreference::Dark).unwrap_or_default(),
                 label_id: "theme-dark",
-                disabled: Signal::stored_local(false),
+                disabled: false,
             },
         ];
         let font = self.subform(|p| p.font.clone(), |p, v| p.font = v).view();

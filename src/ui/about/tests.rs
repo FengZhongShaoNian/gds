@@ -16,7 +16,7 @@ use crate::service::task_manager::Scope;
 
 use super::{
     APPLICATIONS, AboutDialogProps, AboutProps, AboutViewProps, Application, HEIGHT, Section,
-    WIDTH, is_back_key, is_http_url, localized, open_about_dialog, test_probe,
+    WIDTH, display_url, is_back_key, is_http_url, localized, open_about_dialog, test_probe,
 };
 
 #[derive(Default)]
@@ -99,14 +99,30 @@ fn registered_files_application_metadata_is_present() {
     assert_eq!(app_meta.name, "GDS Files");
     assert_eq!(app_meta.version, env!("CARGO_PKG_VERSION"));
     assert_eq!(app_meta.build_tag, env!("GDS_BUILD_TAG"));
+    #[cfg(debug_assertions)]
+    assert!(
+        app_meta.build_tag.ends_with("-debug"),
+        "non-release builds must annotate build_tag, got {}",
+        app_meta.build_tag
+    );
     assert!(
         app_meta
             .artwork_svg()
             .is_some_and(|svg| svg.contains("<svg"))
     );
+    assert!(
+        app_meta
+            .desktop_icon_svg()
+            .is_some_and(|svg| svg.contains("<svg"))
+    );
+    assert!(
+        app_meta
+            .desktop_icon_image()
+            .is_some_and(|img| img.url().starts_with("zgui-bytes:"))
+    );
     assert!(app_meta.license_text.contains("Apache License"));
-    assert_eq!(WIDTH, 480.0);
-    assert_eq!(HEIGHT, 360.0);
+    assert_eq!(WIDTH, 420.0);
+    assert_eq!(HEIGHT, 408.0);
     assert!(!APPLICATIONS.is_empty());
 }
 
@@ -117,6 +133,12 @@ fn about_url_guard_back_keys_and_localized_strings_work_with_and_without_gds() {
     assert!(!is_http_url("file:///etc/passwd"));
     assert!(!is_http_url("javascript:alert(1)"));
     assert!(!is_http_url(""));
+
+    assert_eq!(
+        display_url("https://github.com/zortax/zgui/"),
+        "github.com/zortax/zgui"
+    );
+    assert_eq!(display_url(" http://localhost:8080/ "), "localhost:8080");
 
     assert!(is_back_key(
         &zgui::vocab::Key::Named(NamedKey::Escape),
@@ -138,18 +160,21 @@ fn about_url_guard_back_keys_and_localized_strings_work_with_and_without_gds() {
         let gds = Gds::install(Scope::default());
         let credits = Signal::derive_local(|| localized("gds-about-credits", "Fallback"));
         let license = Signal::derive_local(|| localized("gds-about-license", "Fallback"));
+        let copied = Signal::derive_local(|| localized("gds-about-copied", "Fallback"));
 
         gds.i18n()
             .install(Language::English)
             .expect("English locale");
         assert_eq!(credits.get_untracked(), "Credits");
         assert_eq!(license.get_untracked(), "License");
+        assert_eq!(copied.get_untracked(), "Copied");
 
         gds.i18n()
             .install(Language::Chinese)
             .expect("Chinese locale");
         assert_eq!(credits.get_untracked(), "致谢");
         assert_eq!(license.get_untracked(), "许可证");
+        assert_eq!(copied.get_untracked(), "已复制");
 
         let app_meta = Application::cargo("gds-files");
         let _about_view = view! { About(application = app_meta) };

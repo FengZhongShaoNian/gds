@@ -9,7 +9,7 @@ use gds::appearance::{
     tokens::DataListStyle,
 };
 use gds::i18n;
-use gds::ui::about::{AboutProps, Application, HEIGHT as ABOUT_HEIGHT, WIDTH as ABOUT_WIDTH};
+use gds::ui::about::{AboutProps, Application};
 use gds::ui::button::IconButtonProps;
 use gds::ui::feedback::dialog::{
     DialogActionsProps, DialogContentProps, DialogDecision, DialogDescriptionProps,
@@ -995,8 +995,6 @@ const WORKSPACE_CSS: &str = css!(
         min-width: 0px;
     }
 
-    .gds-files-about-dialog,
-    .gds-files-prompt-dialog[data-about="true"],
     .gds-files-prompt-dialog[data-conflict="true"] {
         width: 520px;
         max-width: calc(100vw - 32px);
@@ -1010,6 +1008,10 @@ const WORKSPACE_CSS: &str = css!(
     .gds-files-about-box {
         display: flex;
         flex-direction: column;
+        flex: 1 1 0%;
+        width: 100%;
+        height: 100%;
+        min-width: 0px;
         min-height: 0px;
     }
 
@@ -3234,11 +3236,7 @@ impl Browser {
                 });
                 decision_slot.register(true, None, decision_cb);
                 AnyView::new(view! {
-                    box(
-                        class = "gds-files-about-box",
-                        style:width = format!("{ABOUT_WIDTH}px"),
-                        style:height = format!("{ABOUT_HEIGHT}px")
-                    ) {
+                    box(class = "gds-files-about-box") {
                         About(application = Application::cargo("gds-files"))
                     }
                 })

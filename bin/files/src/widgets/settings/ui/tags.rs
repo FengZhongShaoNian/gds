@@ -184,6 +184,14 @@ impl Probe {
             .with(|state| matches!(state, State::Checking(checked) if *checked == current))
     }
 
+    #[cfg(test)]
+    fn checking_untracked(&self, preferences: ReadSignal<Preferences, LocalStorage>) -> bool {
+        let current = preferences.with_untracked(|p| p.tags.commands.clone());
+        self.state.with_untracked(
+            |state| matches!(state, State::Checking(checked) if *checked == current),
+        )
+    }
+
     fn status(&self, preferences: ReadSignal<Preferences, LocalStorage>) -> String {
         let current = preferences.with(|p| p.tags.commands.clone());
         self.state.with(|state| match state {
@@ -350,7 +358,7 @@ mod tests {
                 .expect("supervisor active")
                 .expect("first probe started");
             assert_eq!(started.load(Ordering::SeqCst), 1);
-            assert!(probe.checking(prefs.read_only()));
+            assert!(probe.checking_untracked(prefs.read_only()));
 
             // Unrelated preference edits MUST NOT restart the tag backend probe.
             prefs.update(|p| p.appearance.rounded_corners = true);

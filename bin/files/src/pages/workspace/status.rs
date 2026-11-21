@@ -139,6 +139,7 @@ const STATUS_CSS: &str = css!(
     .gds-files-status-label.gds-files-status-label {
         max-width: 240px;
         min-width: 0px;
+        flex-shrink: 0;
         font-size: var(--gds-font-size-xs, 12px);
         line-height: 18px;
         overflow: hidden;

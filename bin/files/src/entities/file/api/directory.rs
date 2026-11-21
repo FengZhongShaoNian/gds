@@ -9,6 +9,7 @@ mod inspection;
 
 pub use self::children::{ChildCount, DEFAULT_CHILD_COUNT_LIMIT};
 pub(crate) use self::content::descriptions as mime_descriptions;
+pub(crate) use self::content::matches_mime_filter;
 pub use self::details::*;
 pub use self::enrich::*;
 pub use self::watching::{DEFAULT_WATCH_DEBOUNCE_MS, DEFAULT_WATCH_INCREMENTAL_LIMIT};

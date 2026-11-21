@@ -215,3 +215,27 @@ fn corner_trailing_trailing_before_and_bottom_leading_placements_avoid_collision
     let dense_rects = label_rects(&dense, content);
     assert_clear_and_inside(&dense_rects, content);
 }
+
+#[test]
+fn rects_intersect_requires_positive_area_overlap() {
+    let outer = Rect::new(
+        Point::new(CssPx(0.0), CssPx(0.0)),
+        Size::new(CssPx(10.0), CssPx(10.0)),
+    );
+    let zero_width_inside = Rect::new(
+        Point::new(CssPx(5.0), CssPx(2.0)),
+        Size::new(CssPx(0.0), CssPx(6.0)),
+    );
+    let touching_edge = Rect::new(
+        Point::new(CssPx(10.0), CssPx(0.0)),
+        Size::new(CssPx(10.0), CssPx(10.0)),
+    );
+    let overlapping = Rect::new(
+        Point::new(CssPx(8.0), CssPx(8.0)),
+        Size::new(CssPx(4.0), CssPx(4.0)),
+    );
+    assert!(!rects_intersect(zero_width_inside, outer));
+    assert!(!rects_intersect(outer, zero_width_inside));
+    assert!(!rects_intersect(outer, touching_edge));
+    assert!(rects_intersect(outer, overlapping));
+}

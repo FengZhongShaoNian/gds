@@ -281,6 +281,41 @@ impl ContentType {
     }
 }
 
+/// Match a file's basename (or already-detected MIME) against expected picker MIME patterns
+/// using the process-wide shared MIME database.
+pub(crate) fn matches_mime_filter<'a>(
+    name: &OsStr,
+    detected_mime: Option<&str>,
+    expected: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    matches_mime_filter_with_database(&MIME_DB, name, detected_mime, expected)
+}
+
+fn matches_mime_filter_with_database<'a>(
+    db: &MimeDatabase,
+    name: &OsStr,
+    detected_mime: Option<&str>,
+    expected: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    let resolved: std::borrow::Cow<'_, str> = if let Some(mime) = detected_mime
+        .map(|raw| raw.split(';').next().unwrap_or(raw).trim())
+        .filter(|essence| essence.contains('/'))
+    {
+        std::borrow::Cow::Borrowed(mime)
+    } else {
+        let candidates = db.filename_candidates(&name.to_string_lossy());
+        if candidates.is_empty() {
+            std::borrow::Cow::Borrowed("application/octet-stream")
+        } else {
+            std::borrow::Cow::Owned(disambiguation::converge_candidates(db, &candidates))
+        }
+    };
+
+    expected
+        .into_iter()
+        .any(|pattern| db.is_subclass(resolved.as_ref(), pattern))
+}
+
 fn map_generic_icon(icon: &str, mime: &str, name: Option<&OsStr>) -> Option<ContentCategory> {
     match icon {
         "x-office-document" | "x-office-spreadsheet" | "x-office-presentation" => {

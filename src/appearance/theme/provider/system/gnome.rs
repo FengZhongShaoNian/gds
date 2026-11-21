@@ -453,28 +453,10 @@ fn parse_color_expr(expr: &str, colors: &HashMap<String, Color>, depth: usize) -
     if expr.is_empty() {
         return None;
     }
-    if expr.eq_ignore_ascii_case("transparent") {
-        return Some(Color::TRANSPARENT);
-    }
-    if expr.eq_ignore_ascii_case("black") {
-        return Some(rgb(0x000000));
-    }
-    if expr.eq_ignore_ascii_case("white") {
-        return Some(rgb(0xffffff));
-    }
     if let Some(name) = expr.strip_prefix('@') {
         return is_css_ident(name)
             .then(|| colors.get(name).copied())
             .flatten();
-    }
-    if let Some(hex) = expr.strip_prefix('#') {
-        return parse_css_hex(hex);
-    }
-    if let Some(args) = strip_call(expr, "rgb") {
-        return parse_rgb_call(args, false);
-    }
-    if let Some(args) = strip_call(expr, "rgba") {
-        return parse_rgb_call(args, true);
     }
     if let Some(args) = strip_call(expr, "alpha") {
         let (inner, factor) = split_last_top_level_comma(args)?;
@@ -482,7 +464,32 @@ fn parse_color_expr(expr: &str, colors: &HashMap<String, Color>, depth: usize) -
         let factor = parse_alpha(factor)?;
         return Some(color.with_alpha((color.alpha() * factor).clamp(0.0, 1.0)));
     }
-    None
+    parse_css_color_literal(expr)
+}
+
+fn parse_css_color_literal(expr: &str) -> Option<Color> {
+    let parsed = color::parse_color(expr).ok()?;
+    let [r, g, b, a] = parsed.to_alpha_color::<color::Srgb>().components;
+    (r.is_finite() && g.is_finite() && b.is_finite() && a.is_finite()).then(|| {
+        Color::srgb(
+            normalize_srgb_channel(r),
+            normalize_srgb_channel(g),
+            normalize_srgb_channel(b),
+            normalize_srgb_channel(a),
+        )
+    })
+}
+
+/// Align 8-bit channels scaled by `color`'s `*(1.0 / 255.0)` reciprocal multiply with
+/// `Color::srgb_u8`'s `/ 255.0` division while keeping arbitrary fractional values intact.
+fn normalize_srgb_channel(value: f32) -> f32 {
+    let clamped = value.clamp(0.0, 1.0);
+    let exact_u8 = (clamped * 255.0).round() / 255.0;
+    if (clamped - exact_u8).abs() <= f32::EPSILON {
+        exact_u8
+    } else {
+        clamped
+    }
 }
 
 fn strip_call<'a>(expr: &'a str, name: &str) -> Option<&'a str> {
@@ -508,80 +515,6 @@ fn split_last_top_level_comma(args: &str) -> Option<(&str, &str)> {
         }
     }
     None
-}
-
-fn parse_css_hex(hex: &str) -> Option<Color> {
-    let hex = hex.trim();
-    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let value = u32::from_str_radix(hex, 16).ok()?;
-    let color = match hex.len() {
-        3 => {
-            let r = ((value >> 8) & 0xf) * 17;
-            let g = ((value >> 4) & 0xf) * 17;
-            let b = (value & 0xf) * 17;
-            Color::srgb(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
-        }
-        4 => {
-            let r = ((value >> 12) & 0xf) * 17;
-            let g = ((value >> 8) & 0xf) * 17;
-            let b = ((value >> 4) & 0xf) * 17;
-            let a = (value & 0xf) * 17;
-            Color::srgb(
-                r as f32 / 255.0,
-                g as f32 / 255.0,
-                b as f32 / 255.0,
-                a as f32 / 255.0,
-            )
-        }
-        6 => rgb(value),
-        8 => Color::srgb(
-            ((value >> 24) & 0xff) as f32 / 255.0,
-            ((value >> 16) & 0xff) as f32 / 255.0,
-            ((value >> 8) & 0xff) as f32 / 255.0,
-            (value & 0xff) as f32 / 255.0,
-        ),
-        _ => return None,
-    };
-    Some(color)
-}
-
-fn parse_rgb_call(args: &str, expect_alpha: bool) -> Option<Color> {
-    let parts: Vec<&str> = args.split(',').map(str::trim).collect();
-    let (r, g, b, a) = match (expect_alpha, parts.as_slice()) {
-        (false, [r, g, b]) => (
-            parse_rgb_channel(r)?,
-            parse_rgb_channel(g)?,
-            parse_rgb_channel(b)?,
-            1.0,
-        ),
-        (true, [r, g, b, a]) => (
-            parse_rgb_channel(r)?,
-            parse_rgb_channel(g)?,
-            parse_rgb_channel(b)?,
-            parse_alpha(a)?,
-        ),
-        (true, [r, g, b]) => (
-            parse_rgb_channel(r)?,
-            parse_rgb_channel(g)?,
-            parse_rgb_channel(b)?,
-            1.0,
-        ),
-        _ => return None,
-    };
-    Some(Color::srgb(r, g, b, a))
-}
-
-fn parse_rgb_channel(token: &str) -> Option<f32> {
-    let token = token.trim();
-    if let Some(pct) = token.strip_suffix('%') {
-        let value: f32 = pct.trim().parse().ok()?;
-        value.is_finite().then(|| (value / 100.0).clamp(0.0, 1.0))
-    } else {
-        let value: f32 = token.parse().ok()?;
-        value.is_finite().then(|| (value / 255.0).clamp(0.0, 1.0))
-    }
 }
 
 fn parse_alpha(token: &str) -> Option<f32> {

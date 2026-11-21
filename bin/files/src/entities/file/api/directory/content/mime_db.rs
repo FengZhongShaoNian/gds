@@ -183,18 +183,18 @@ impl MimeDatabase {
     pub(super) fn is_subclass(&self, child: &str, ancestor: &str) -> bool {
         let child = self.unalias(child);
         let ancestor = self.unalias(ancestor);
-        if child == ancestor {
+        if child == ancestor || ancestor == "*/*" {
             return true;
         }
-        if ancestor == "application/octet-stream" {
+        // Per shared-mime-info spec:
+        // - All streamable types (everything except `inode/*`) are subclasses of `application/octet-stream`.
+        // - All `text/*` types are subclasses of `text/plain`.
+        if ancestor == "application/octet-stream" && !child.starts_with("inode/") {
             return true;
         }
-        if let Some(prefix) = ancestor.strip_suffix("/*")
-            && child.split_once('/').is_some_and(|(top, _)| top == prefix)
-        {
+        if matches_supertype(child.as_ref(), ancestor.as_ref()) {
             return true;
         }
-        // Per shared-mime-info spec, all `text/*` types implicitly inherit from `text/plain`.
         if ancestor == "text/plain" && child.starts_with("text/") {
             return true;
         }
@@ -208,7 +208,9 @@ impl MimeDatabase {
         while let Some(current) = queue.pop_front() {
             for parent in self.direct_parents(&current) {
                 if parent == ancestor.as_ref()
+                    || matches_supertype(&parent, ancestor.as_ref())
                     || (ancestor == "text/plain" && parent.starts_with("text/"))
+                    || (ancestor == "application/octet-stream" && !parent.starts_with("inode/"))
                 {
                     return true;
                 }
@@ -333,4 +335,10 @@ impl MimeDatabase {
             .iter()
             .any(|dir| matches!(dir.index, DirectoryIndex::Cache(_)))
     }
+}
+
+fn matches_supertype(mime: &str, ancestor: &str) -> bool {
+    ancestor
+        .strip_suffix("/*")
+        .is_some_and(|prefix| mime.split_once('/').is_some_and(|(top, _)| top == prefix))
 }

@@ -1,7 +1,5 @@
 //! Reusable still preview backed by the shared file inspection cache and icon fallback.
 
-use std::rc::Rc;
-
 use zgui::prelude::*;
 use zgui::reactive::LocalStorage;
 use zgui::view::ChildrenFn;
@@ -56,17 +54,17 @@ const SHEET: &str = css!(
 
 /// Reusable view builder invoked whenever [`Thumbnail`] renders fallback artwork.
 #[derive(Clone)]
-pub struct ViewFn(Rc<dyn Fn() -> AnyView>);
+pub struct ViewFn(ChildrenFn);
 
 impl ViewFn {
     #[must_use]
     pub fn new<V: IntoView + 'static>(build: impl Fn() -> V + 'static) -> Self {
-        Self(Rc::new(move || AnyView::new(build())))
+        Self(ChildrenFn::new(move || AnyView::new(build())))
     }
 
     #[must_use]
     pub fn render(&self) -> AnyView {
-        (self.0)()
+        self.0.view()
     }
 }
 
@@ -82,7 +80,13 @@ where
 
 impl From<ChildrenFn> for ViewFn {
     fn from(children: ChildrenFn) -> Self {
-        Self(Rc::new(move || children.view()))
+        Self(children)
+    }
+}
+
+impl From<ViewFn> for ChildrenFn {
+    fn from(view: ViewFn) -> Self {
+        view.0
     }
 }
 

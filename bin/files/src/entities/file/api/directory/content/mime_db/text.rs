@@ -8,7 +8,8 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 use globset::{Glob, GlobMatcher};
@@ -39,28 +40,33 @@ struct TextGlob {
 }
 
 pub(super) struct TextIndex {
+    base_dir: PathBuf,
+    has_magic: bool,
     aliases: HashMap<String, String>,
     parents: HashMap<String, Vec<String>>,
     generic_icons: HashMap<String, String>,
     globs: Vec<TextGlob>,
-    /// Delegate binary `magic` file parsing/matching to `xdg-mime` for the text fallback.
-    magic_db: SharedMimeInfo,
+    /// Delegate binary `magic` file parsing/matching to `xdg-mime` lazily so
+    /// directories without `magic` (or filename-only lookups) never re-read the text indexes.
+    magic_db: OnceLock<SharedMimeInfo>,
 }
 
 impl TextIndex {
     pub(super) fn load(base_dir: &Path) -> Self {
         let mime_dir = base_dir.join("mime");
+        let has_magic = mime_dir.join("magic").is_file();
         let aliases = read_aliases(&mime_dir.join("aliases"));
         let parents = read_subclasses(&mime_dir.join("subclasses"));
         let generic_icons = read_generic_icons(&mime_dir.join("generic-icons"));
         let globs = read_globs(&mime_dir);
-        let magic_db = SharedMimeInfo::new_for_directory(base_dir);
         Self {
+            base_dir: base_dir.to_path_buf(),
+            has_magic,
             aliases,
             parents,
             generic_icons,
             globs,
-            magic_db,
+            magic_db: OnceLock::new(),
         }
     }
 
@@ -132,10 +138,11 @@ impl TextIndex {
     }
 
     pub(super) fn match_data(&self, sample: &[u8]) -> Option<(String, u32)> {
-        if sample.is_empty() {
+        if sample.is_empty() || !self.has_magic {
             return None;
         }
         self.magic_db
+            .get_or_init(|| SharedMimeInfo::new_for_directory(&self.base_dir))
             .get_mime_type_for_data(sample)
             .map(|(mime, priority)| (mime.essence_str().to_owned(), priority))
     }

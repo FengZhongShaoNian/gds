@@ -133,3 +133,40 @@ fn gtk3_and_gtk4_css_define_color_overrides_resolve_with_gtk4_precedence() {
     assert_eq!(loaded.palette.foreground, hex(0xf5f5f5));
     assert_eq!(loaded.palette.tooltip, loaded.palette.panel);
 }
+
+#[test]
+fn gtk_css_supports_standard_css_color_literals_and_nested_alpha_bounds() {
+    let mut colors = HashMap::new();
+    let mut overridden = HashSet::new();
+    let mut too_deep = String::from("white");
+    for _ in 0..MAX_COLOR_DEPTH {
+        too_deep = format!("alpha({too_deep}, 1)");
+    }
+    let css = format!(
+        r#"
+        @define-color named rebeccapurple;
+        @define-color short_alpha #0f08;
+        @define-color legacy_rgba rgba(32, 64, 96, .5);
+        @define-color clear transparent;
+        @define-color nested alpha(alpha(@named, 0.5), 50%);
+        @define-color too_deep {too_deep};
+        "#
+    );
+    parse_gtk_css(&css, &mut colors, &mut overridden);
+
+    assert_eq!(colors.get("named").copied(), Some(hex(0x663399)));
+    assert_eq!(
+        colors.get("short_alpha").copied(),
+        Some(Color::srgb(0.0, 1.0, 0.0, 0x88 as f32 / 255.0))
+    );
+    assert_eq!(
+        colors.get("legacy_rgba").copied(),
+        Some(Color::srgb(32.0 / 255.0, 64.0 / 255.0, 96.0 / 255.0, 0.5))
+    );
+    assert_eq!(colors.get("clear").copied(), Some(Color::TRANSPARENT));
+    assert_eq!(
+        colors.get("nested").copied(),
+        Some(hex(0x663399).with_alpha(0.25))
+    );
+    assert!(!colors.contains_key("too_deep"));
+}

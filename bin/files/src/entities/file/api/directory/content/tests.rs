@@ -482,3 +482,77 @@ fn system_shared_mime_info_acceptance_checks_when_installed() {
         "Go Module"
     );
 }
+
+#[test]
+fn subclass_excludes_non_streamable_inodes_and_picker_shares_case_sensitive_rules() {
+    let base = tempfile::tempdir().expect("create temp XDG dir");
+    let mime_dir = base.path().join("mime");
+    fs::create_dir_all(&mime_dir).expect("create mime dir");
+    fs::write(mime_dir.join("globs2"), "60:text/x-kind:ExactName:cs\n").expect("write globs2");
+    fs::write(
+        mime_dir.join("subclasses"),
+        "application/x-special-text text/plain\n",
+    )
+    .expect("write subclasses");
+
+    let db = MimeDatabase::from_directory(base.path());
+
+    // Per freedesktop spec, non-streamable `inode/*` types are not subclasses of `application/octet-stream`.
+    assert!(!db.is_subclass("inode/directory", "application/octet-stream"));
+    assert!(!db.is_subclass("inode/blockdevice", "application/octet-stream"));
+    assert!(db.is_subclass("inode/directory", "inode/directory"));
+    assert!(db.is_subclass("inode/directory", "inode/*"));
+    assert!(db.is_subclass("inode/directory", "*/*"));
+    assert!(db.is_subclass("text/plain", "application/octet-stream"));
+    assert!(db.is_subclass("application/x-special-text", "text/*"));
+
+    // Both directory filename classification and picker MIME filtering enforce case-sensitive literal rules.
+    assert!(matches!(
+        ContentType::classify_filename_with_database(&db, OsStr::new("ExactName")),
+        FilenameClassification::Resolved(content) if content.mime.as_deref() == Some("text/x-kind")
+    ));
+    assert!(matches!(
+        ContentType::classify_filename_with_database(&db, OsStr::new("exactname")),
+        FilenameClassification::Unmatched
+    ));
+    assert!(matches_mime_filter_with_database(
+        &db,
+        OsStr::new("ExactName"),
+        None,
+        ["text/x-kind"],
+    ));
+    assert!(matches_mime_filter_with_database(
+        &db,
+        OsStr::new("ExactName"),
+        None,
+        ["text/plain"],
+    ));
+    assert!(!matches_mime_filter_with_database(
+        &db,
+        OsStr::new("exactname"),
+        None,
+        ["text/x-kind"],
+    ));
+    // Unknown basename falls back to `application/octet-stream`, matching wildcard/octet-stream filters.
+    assert!(matches_mime_filter_with_database(
+        &db,
+        OsStr::new("exactname"),
+        None,
+        ["application/octet-stream"],
+    ));
+    assert!(matches_mime_filter_with_database(
+        &db,
+        OsStr::new("exactname"),
+        None,
+        ["*/*"],
+    ));
+    // Explicit detected MIME takes precedence over filename fallback and honours subclass inheritance.
+    assert!(matches_mime_filter_with_database(
+        &db,
+        OsStr::new("exactname"),
+        Some("application/x-special-text"),
+        ["text/plain"],
+    ));
+    // Fallback directory without `magic` returns `None` from `sniff_data` without re-opening text indexes.
+    assert_eq!(db.sniff_data(b"hello world"), None);
+}

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use zgui::geom::{Css, CssPx, Device, DevicePx, Point, Rect, Size};
+use zgui::geom::{Css, CssPx, Device, DevicePx, Edges, Point, Rect, Size};
 use zgui::prelude::*;
 use zgui::reactive::{
     LocalStorage, RenderEffect, RwSignal, Signal, on_cleanup_local, provide_local_context,
@@ -442,51 +442,21 @@ enum Side {
     Above,
 }
 
-fn rect_left(r: Rect<CssPx, Css>) -> f32 {
-    r.origin.x.0
-}
-
-fn rect_top(r: Rect<CssPx, Css>) -> f32 {
-    r.origin.y.0
-}
-
-fn rect_right(r: Rect<CssPx, Css>) -> f32 {
-    r.origin.x.0 + r.size.width.0
-}
-
-fn rect_bottom(r: Rect<CssPx, Css>) -> f32 {
-    r.origin.y.0 + r.size.height.0
-}
-
 fn rect_center_x(r: Rect<CssPx, Css>) -> f32 {
-    r.origin.x.0 + r.size.width.0 * 0.5
+    r.left().0 + r.width().0 * 0.5
 }
 
 fn rect_center_y(r: Rect<CssPx, Css>) -> f32 {
-    r.origin.y.0 + r.size.height.0 * 0.5
+    r.top().0 + r.height().0 * 0.5
 }
 
 pub(crate) fn rects_intersect(a: Rect<CssPx, Css>, b: Rect<CssPx, Css>) -> bool {
-    rect_left(a) < rect_right(b)
-        && rect_right(a) > rect_left(b)
-        && rect_top(a) < rect_bottom(b)
-        && rect_bottom(a) > rect_top(b)
+    a.intersects(b)
 }
 
 fn free(origin: Point<CssPx, Css>, size: Size<CssPx, Css>, placed: &[Rect<CssPx, Css>]) -> bool {
-    let dilated = Rect::new(
-        Point::new(
-            CssPx(origin.x.0 - LABEL_SEPARATION),
-            CssPx(origin.y.0 - LABEL_SEPARATION),
-        ),
-        Size::new(
-            CssPx(size.width.0 + LABEL_SEPARATION * 2.0),
-            CssPx(size.height.0 + LABEL_SEPARATION * 2.0),
-        ),
-    );
-    placed
-        .iter()
-        .all(|existing| !rects_intersect(dilated, *existing))
+    let dilated = Rect::new(origin, size).outset(Edges::uniform(CssPx(LABEL_SEPARATION)));
+    placed.iter().all(|existing| !dilated.intersects(*existing))
 }
 
 fn clamp_axis(origin: f32, length: f32, start: f32, end: f32) -> f32 {
@@ -497,7 +467,7 @@ fn clamp_axis(origin: f32, length: f32, start: f32, end: f32) -> f32 {
 }
 
 fn fits(left: f32, width: f32, content: Rect<CssPx, Css>) -> bool {
-    left >= rect_left(content) + EDGE_MARGIN && left + width <= rect_right(content) - EDGE_MARGIN
+    left >= content.left().0 + EDGE_MARGIN && left + width <= content.right().0 - EDGE_MARGIN
 }
 
 fn shifted_columns(preferred: f32, slot: LabelSlot, content: Rect<CssPx, Css>) -> Vec<f32> {
@@ -510,8 +480,8 @@ fn shifted_columns(preferred: f32, slot: LabelSlot, content: Rect<CssPx, Css>) -
         columns.push(clamp_axis(
             preferred,
             slot.size.width.0,
-            rect_left(content),
-            rect_right(content),
+            content.left().0,
+            content.right().0,
         ));
     }
     columns
@@ -519,12 +489,12 @@ fn shifted_columns(preferred: f32, slot: LabelSlot, content: Rect<CssPx, Css>) -
 
 fn corner_origins(slot: LabelSlot, content: Rect<CssPx, Css>) -> Vec<Point<CssPx, Css>> {
     let top = clamp_axis(
-        rect_top(slot.anchor) + EDGE_INSET,
+        slot.anchor.top().0 + EDGE_INSET,
         slot.size.height.0,
-        rect_top(content),
-        rect_bottom(content),
+        content.top().0,
+        content.bottom().0,
     );
-    let preferred = rect_right(slot.anchor) - EDGE_INSET - slot.size.width.0;
+    let preferred = slot.anchor.right().0 - EDGE_INSET - slot.size.width.0;
     shifted_columns(preferred, slot, content)
         .into_iter()
         .map(|left| Point::new(CssPx(left), CssPx(top)))
@@ -539,16 +509,16 @@ fn trailing_origin(slot: LabelSlot, content: Rect<CssPx, Css>) -> Option<Point<C
     }
     Some(Point::new(
         CssPx(clamp_axis(
-            rect_right(slot.anchor) - TRAILING_INSET - slot.size.width.0,
+            slot.anchor.right().0 - TRAILING_INSET - slot.size.width.0,
             slot.size.width.0,
-            rect_left(content),
-            rect_right(content),
+            content.left().0,
+            content.right().0,
         )),
         CssPx(clamp_axis(
             rect_center_y(slot.anchor) - slot.size.height.0 * 0.5,
             slot.size.height.0,
-            rect_top(content),
-            rect_bottom(content),
+            content.top().0,
+            content.bottom().0,
         )),
     ))
 }
@@ -565,12 +535,12 @@ fn trailing_before_origins(
     let top = clamp_axis(
         rect_center_y(slot.anchor) - slot.size.height.0 * 0.5,
         slot.size.height.0,
-        rect_top(content),
-        rect_bottom(content),
+        content.top().0,
+        content.bottom().0,
     );
     let mut origins = Vec::new();
-    let mut left = rect_right(slot.anchor) - reserved - slot.size.width.0;
-    while left >= rect_left(slot.anchor) && fits(left, slot.size.width.0, content) {
+    let mut left = slot.anchor.right().0 - reserved - slot.size.width.0;
+    while left >= slot.anchor.left().0 && fits(left, slot.size.width.0, content) {
         origins.push(Point::new(CssPx(left), CssPx(top)));
         left -= step;
     }
@@ -579,12 +549,12 @@ fn trailing_before_origins(
 
 fn bottom_leading_origins(slot: LabelSlot, content: Rect<CssPx, Css>) -> Vec<Point<CssPx, Css>> {
     let top = clamp_axis(
-        rect_bottom(slot.anchor) - EDGE_INSET - slot.size.height.0,
+        slot.anchor.bottom().0 - EDGE_INSET - slot.size.height.0,
         slot.size.height.0,
-        rect_top(content),
-        rect_bottom(content),
+        content.top().0,
+        content.bottom().0,
     );
-    let preferred = rect_left(slot.anchor) + EDGE_INSET;
+    let preferred = slot.anchor.left().0 + EDGE_INSET;
     let mut columns: Vec<f32> = NUDGES
         .into_iter()
         .filter(|nudge| *nudge >= 0.0)
@@ -595,8 +565,8 @@ fn bottom_leading_origins(slot: LabelSlot, content: Rect<CssPx, Css>) -> Vec<Poi
         columns.push(clamp_axis(
             preferred,
             slot.size.width.0,
-            rect_left(content),
-            rect_right(content),
+            content.left().0,
+            content.right().0,
         ));
     }
     columns
@@ -609,22 +579,20 @@ fn edge_top(slot: LabelSlot, content: Rect<CssPx, Css>, side: Side, row: usize) 
     let height = slot.size.height.0;
     let step = height + LABEL_SEPARATION;
     let top = match side {
-        Side::Below if row == 0 => rect_bottom(slot.anchor) - height * 0.5,
-        Side::Below => {
-            rect_bottom(slot.anchor) + height * 0.5 + LABEL_GAP + step * (row - 1) as f32
-        }
-        Side::Above if row == 0 => rect_top(slot.anchor) - height * 0.5,
+        Side::Below if row == 0 => slot.anchor.bottom().0 - height * 0.5,
+        Side::Below => slot.anchor.bottom().0 + height * 0.5 + LABEL_GAP + step * (row - 1) as f32,
+        Side::Above if row == 0 => slot.anchor.top().0 - height * 0.5,
         Side::Above => {
-            rect_top(slot.anchor) - height * 0.5 - LABEL_GAP - height - step * (row - 1) as f32
+            slot.anchor.top().0 - height * 0.5 - LABEL_GAP - height - step * (row - 1) as f32
         }
     };
-    (top >= rect_top(content) + EDGE_MARGIN && top + height <= rect_bottom(content) - EDGE_MARGIN)
+    (top >= content.top().0 + EDGE_MARGIN && top + height <= content.bottom().0 - EDGE_MARGIN)
         .then_some(top)
 }
 
 fn edge_columns(slot: LabelSlot, content: Rect<CssPx, Css>) -> Vec<f32> {
     shifted_columns(
-        rect_right(slot.anchor) - EDGE_INSET - slot.size.width.0,
+        slot.anchor.right().0 - EDGE_INSET - slot.size.width.0,
         slot,
         content,
     )
@@ -657,10 +625,10 @@ fn overflow_origin(
     content: Rect<CssPx, Css>,
     placed: &[Rect<CssPx, Css>],
 ) -> Point<CssPx, Css> {
-    let left = rect_left(content) + EDGE_MARGIN;
-    let right = rect_right(content) - EDGE_MARGIN;
-    let top = rect_top(content) + EDGE_MARGIN;
-    let bottom = rect_bottom(content) - EDGE_MARGIN;
+    let left = content.left().0 + EDGE_MARGIN;
+    let right = content.right().0 - EDGE_MARGIN;
+    let top = content.top().0 + EDGE_MARGIN;
+    let bottom = content.bottom().0 - EDGE_MARGIN;
     let step_x = (slot.size.width.0 + LABEL_SEPARATION).max(1.0);
     let step_y = (slot.size.height.0 + LABEL_SEPARATION).max(1.0);
     let mut y = top;
@@ -679,14 +647,14 @@ fn overflow_origin(
         CssPx(clamp_axis(
             rect_center_x(slot.anchor) - slot.size.width.0 * 0.5,
             slot.size.width.0,
-            rect_left(content),
-            rect_right(content),
+            content.left().0,
+            content.right().0,
         )),
         CssPx(clamp_axis(
-            rect_bottom(slot.anchor) + LABEL_GAP,
+            slot.anchor.bottom().0 + LABEL_GAP,
             slot.size.height.0,
-            rect_top(content),
-            rect_bottom(content),
+            content.top().0,
+            content.bottom().0,
         )),
     )
 }

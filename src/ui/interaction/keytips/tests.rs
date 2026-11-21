@@ -132,10 +132,18 @@ fn registry_and_modal_dialog_scope_suppress_workspace_hints() {
 
         assert!(scope_allows(&[], None));
         let modal_id = allocate_dialog_scope_id();
-        push_modal_scope(modal_id);
+        push_modal_scope(Some(reg), modal_id);
         assert!(!reg.is_scope_active(None));
         assert!(reg.is_scope_active(Some(modal_id)));
-        remove_modal_scope(modal_id);
+        remove_modal_scope(Some(reg), modal_id);
+        assert!(reg.is_scope_active(None));
+
+        let child = scope.owner().child();
+        let child_scope_id =
+            child.with(|| crate::ui::feedback::dialog::DialogScope::enter().id().0);
+        assert!(!reg.is_scope_active(None));
+        assert!(reg.is_scope_active(Some(child_scope_id)));
+        child.cleanup();
         assert!(reg.is_scope_active(None));
 
         reg.release();

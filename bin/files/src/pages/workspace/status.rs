@@ -593,127 +593,132 @@ impl Browser {
         open: Signal<bool, LocalStorage>,
         clipboard_state: ClipboardDetailState,
     ) -> AnyView {
-        let anchor = NodeRef::new();
-        let label_inner_ref = NodeRef::new();
-        let label_size = label_inner_ref.observe_border_size();
+        let browser = self.clone();
+        AnyView::new(Scoped::new(move || {
+            let anchor = NodeRef::new();
+            let label_inner_ref = NodeRef::new();
+            let label_size = label_inner_ref.observe_border_size();
 
-        let toggle_browser = self.clone();
-        let close_browser = self.clone();
-        let details_browser = self.clone();
+            let toggle_browser = browser.clone();
+            let close_browser = browser.clone();
+            let details_browser = browser.clone();
 
-        let _overlay = OverlayState::new(
-            Binding::controlled(open, move |next: bool| {
-                if !next {
-                    close_browser.0.menus.close();
-                }
-            }),
-            false,
-            None,
-        )
-        .anchored_to(anchor)
-        .provide();
-
-        let title = Signal::derive_local(move || i18n::text(kind.title()));
-
-        let show_badge =
-            Signal::derive_local(move || summary.get().count > 0 && expanded.get() < 1.0 - 1e-4);
-        let show_label =
-            Signal::derive_local(move || !summary.get().label.is_empty() && expanded.get() > 1e-4);
-
-        let button = view! {
-            HintTooltip(text = title) {
-                control(
-                    node_ref = anchor,
-                    class = "gds-files-status-button",
-                    style:height = format!("{CONTROL_SIZE}px"),
-                    tabindex = Focus::Sequential,
-                    a11y:role = Role::Button,
-                    a11y:label = move || SharedString::from(title.get()),
-                    on:click = move |_| {
-                        toggle_browser.0.menus.surface.update(|surface| {
-                            *surface = if matches!(surface, Surface::Status(current) if *current == kind) {
-                                Surface::Closed
-                            } else {
-                                Surface::Status(kind)
-                            };
-                        });
-                        if kind == Kind::Clipboard {
-                            Clipboard::current().refresh();
-                        }
+            let _overlay = OverlayState::new(
+                Binding::controlled(open, move |next: bool| {
+                    if !next {
+                        close_browser.0.menus.close();
                     }
-                ) {
-                    row(class = "gds-files-status-button-inner") {
-                        box(class = "gds-files-status-icon-wrap") {
-                            Icon(
-                                name = Signal::derive_local(move || summary.get().icon),
-                                size = TRIGGER_ICON_SIZE
-                            ) {}
-                            Show(when = move || show_badge.get()) {
+                }),
+                false,
+                None,
+            )
+            .anchored_to(anchor)
+            .provide();
+
+            let title = Signal::derive_local(move || i18n::text(kind.title()));
+
+            let show_badge = Signal::derive_local(move || {
+                summary.get().count > 0 && expanded.get() < 1.0 - 1e-4
+            });
+            let show_label = Signal::derive_local(move || {
+                !summary.get().label.is_empty() && expanded.get() > 1e-4
+            });
+
+            let button = view! {
+                HintTooltip(text = title) {
+                    control(
+                        node_ref = anchor,
+                        class = "gds-files-status-button",
+                        style:height = format!("{CONTROL_SIZE}px"),
+                        tabindex = Focus::Sequential,
+                        a11y:role = Role::Button,
+                        a11y:label = move || SharedString::from(title.get()),
+                        on:click = move |_| {
+                            toggle_browser.0.menus.surface.update(|surface| {
+                                *surface = if matches!(surface, Surface::Status(current) if *current == kind) {
+                                    Surface::Closed
+                                } else {
+                                    Surface::Status(kind)
+                                };
+                            });
+                            if kind == Kind::Clipboard {
+                                Clipboard::current().refresh();
+                            }
+                        }
+                    ) {
+                        row(class = "gds-files-status-button-inner") {
+                            box(class = "gds-files-status-icon-wrap") {
+                                Icon(
+                                    name = Signal::derive_local(move || summary.get().icon),
+                                    size = TRIGGER_ICON_SIZE
+                                ) {}
+                                Show(when = move || show_badge.get()) {
+                                    box(
+                                        class = "gds-files-status-badge",
+                                        style:opacity = move || {
+                                            Some(format!("{:.3}", (1.0 - expanded.get()).clamp(0.0, 1.0)))
+                                        }
+                                    ) {
+                                        text(class = "gds-files-status-badge-text") {
+                                            {move || summary.get().count.to_string()}
+                                        }
+                                    }
+                                }
+                            }
+                            Show(when = move || show_label.get()) {
                                 box(
-                                    class = "gds-files-status-badge",
+                                    class = "gds-files-status-label-clip",
                                     style:opacity = move || {
-                                        Some(format!("{:.3}", (1.0 - expanded.get()).clamp(0.0, 1.0)))
+                                        Some(format!("{:.3}", expanded.get().clamp(0.0, 1.0)))
+                                    },
+                                    style:margin-right = move || {
+                                        Some(format!(
+                                            "{:.2}px",
+                                            LABEL_TRAILING_GAP * expanded.get().clamp(0.0, 1.0)
+                                        ))
+                                    },
+                                    style:width = move || {
+                                        let exp = expanded.get().clamp(0.0, 1.0);
+                                        if exp >= 1.0 - 1e-4 {
+                                            return None;
+                                        }
+                                        let scale = label_inner_ref.scale().max(1.0);
+                                        let natural = label_size
+                                            .get()
+                                            .map(|sz| (sz.width.0 / scale).min(LABEL_MAX_WIDTH))
+                                            .filter(|w| *w > 0.0)
+                                            .unwrap_or_else(|| {
+                                                let chars = summary.get().label.chars().count() as f32;
+                                                (chars * 7.2).clamp(24.0, LABEL_MAX_WIDTH)
+                                            });
+                                        Some(format!("{:.2}px", natural * exp))
                                     }
                                 ) {
-                                    text(class = "gds-files-status-badge-text") {
-                                        {move || summary.get().count.to_string()}
+                                    text(node_ref = label_inner_ref, class = "gds-files-status-label") {
+                                        {move || summary.get().label}
                                     }
-                                }
-                            }
-                        }
-                        Show(when = move || show_label.get()) {
-                            box(
-                                class = "gds-files-status-label-clip",
-                                style:opacity = move || {
-                                    Some(format!("{:.3}", expanded.get().clamp(0.0, 1.0)))
-                                },
-                                style:margin-right = move || {
-                                    Some(format!(
-                                        "{:.2}px",
-                                        LABEL_TRAILING_GAP * expanded.get().clamp(0.0, 1.0)
-                                    ))
-                                },
-                                style:width = move || {
-                                    let exp = expanded.get().clamp(0.0, 1.0);
-                                    if exp >= 1.0 - 1e-4 {
-                                        return None;
-                                    }
-                                    let scale = label_inner_ref.scale().max(1.0);
-                                    let natural = label_size
-                                        .get()
-                                        .map(|sz| (sz.width.0 / scale).min(LABEL_MAX_WIDTH))
-                                        .filter(|w| *w > 0.0)
-                                        .unwrap_or_else(|| {
-                                            let chars = summary.get().label.chars().count() as f32;
-                                            (chars * 7.2).clamp(24.0, LABEL_MAX_WIDTH)
-                                        });
-                                    Some(format!("{:.2}px", natural * exp))
-                                }
-                            ) {
-                                text(node_ref = label_inner_ref, class = "gds-files-status-label") {
-                                    {move || summary.get().label}
                                 }
                             }
                         }
                     }
                 }
-            }
-        };
+            };
 
-        AnyView::new(view! {
-            box(class = "gds-files-status-slot") {
-                {button}
-                PopoverContent(
-                    placement = Placement::new(Side::Top, Align::Start),
-                    class = "gds-files-status-popover"
-                ) {
-                    {{
-                        let b = details_browser.clone();
-                        move || b.status_details(kind, clipboard_state)
-                    }}
+            view! {
+                box(class = "gds-files-status-slot") {
+                    {button}
+                    PopoverContent(
+                        placement = Placement::new(Side::Top, Align::Start),
+                        class = "gds-files-status-popover"
+                    ) {
+                        {{
+                            let b = details_browser.clone();
+                            move || b.status_details(kind, clipboard_state)
+                        }}
+                    }
                 }
             }
-        })
+        }))
     }
 
     fn status_details(&self, kind: Kind, clipboard_state: ClipboardDetailState) -> AnyView {

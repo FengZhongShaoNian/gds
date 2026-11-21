@@ -147,6 +147,7 @@ fn ensure_device_drain_observer(browser: &Browser) {
 
 impl Browser {
     pub(super) fn connect_server(&self) {
+        self.0.menus.close();
         let browser = self.clone();
         self.0
             .connector

@@ -7,6 +7,7 @@ GDS applications share a single visual and interaction grammar implemented in `s
 ## 1. Design Principles
 
 - **Native, calm, and content-first**: Favor crisp hierarchy and compact density over marketing whitespace, nested card stacks, or decorative gradients.
+- **No Shock (fixed spatial anchors)**: Recurring structural elements keep invariant coordinates across selection, content, and state changes (e.g., `SettingReset` reserves fixed horizontal space when empty; the Files details pane pins a constant `168 px` preview stage and fixed 2-line `44 px` title slot above an independently scrollable metadata body regardless of media presence, filename length, or multi-selection).
 - **Icons speak first, backed by clear tooltips**: Common toolbar and row actions use semantic icons with concise hover/focus tooltips (`ShortcutHint`) and accessible names. Keep visible text for user-identifiable data (filenames, paths, errors, selected values).
 - **Suite-first components**: Implement shared patterns in `src/ui/` and style them exclusively through semantic tokens rather than app-private color keys or ad-hoc alpha tweaks.
 

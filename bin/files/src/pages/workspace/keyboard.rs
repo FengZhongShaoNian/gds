@@ -349,12 +349,34 @@ impl Browser {
         match self.0.prompt.get_untracked() {
             Prompt::Closed => {}
             Prompt::Name { .. } => {
+                let _ = self.0.prompt_decisions.handle_key_down(event);
                 // `NameForm` owns Enter/Escape and guards against IME preedit.
                 return;
             }
-            Prompt::About | Prompt::Confirm { .. } => {
+            Prompt::About => {
+                if self.0.prompt_decisions.handle_key_down(event) {
+                    return;
+                }
                 if event.key == Key::Named(NamedKey::Escape) {
                     self.cancel_prompt();
+                    event.prevent_default();
+                    event.stop_propagation();
+                }
+                return;
+            }
+            Prompt::Confirm { .. } => {
+                if self.0.prompt_decisions.handle_key_down(event) {
+                    return;
+                }
+                if event.key == Key::Named(NamedKey::Escape) {
+                    self.cancel_prompt();
+                    event.prevent_default();
+                    event.stop_propagation();
+                } else if !event.repeat
+                    && modifiers.is_empty()
+                    && event.key == Key::Named(NamedKey::Enter)
+                    && self.0.prompt_decisions.confirm()
+                {
                     event.prevent_default();
                     event.stop_propagation();
                 }

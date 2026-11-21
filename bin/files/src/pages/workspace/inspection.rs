@@ -3,10 +3,19 @@
 mod info;
 pub(super) mod tags;
 
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use gds::app::Gds;
-use gds::service::file_inspection::{FileFacts, Metadata, Request};
+use gds::service::file_inspection::{FileFacts, Metadata, Request, Source as InspectionSource};
 use gds::service::file_tags;
 use gds::service::task_manager::Scope;
 use gds::ui::button::{ButtonSize, ButtonVariant};
@@ -23,12 +32,14 @@ use gds::ui::time::Timestamp;
 use gds::ui::window::{TitleBarProps, workspace_options};
 use gds::ui::{IconName, IconProps, Shortcut};
 use gds::{i18n, t};
+use unicode_segmentation::UnicodeSegmentation as _;
+use unicode_width::UnicodeWidthStr as _;
 use zgui::prelude::*;
 use zgui::reactive::{
     LocalStorage, RwSignal, Signal, UnsyncCallback, on_cleanup_local, spawn_local,
 };
 use zgui::runtime::{WindowHandle, try_use_windows};
-use zgui::view::{EventCx, current_host, events, install_stylesheet};
+use zgui::view::{Either, EventCx, current_host, events, install_stylesheet};
 use zgui::vocab::{Key, Modifiers, NamedKey};
 use zgui::{css, view};
 use zgui_ui::{ButtonProps, CheckboxProps, Checked, LabelProps, SpinnerProps};
@@ -137,9 +148,7 @@ pub(super) const INSPECTION_CSS: &str = css!(
         width: 100%;
         min-width: 0;
         min-height: 0;
-        overflow-y: auto;
-        padding: 14px;
-        gap: 14px;
+        overflow: hidden;
         box-sizing: border-box;
         background: transparent;
         border-left: 1px solid var(--gds-border);
@@ -167,22 +176,58 @@ pub(super) const INSPECTION_CSS: &str = css!(
         text-align: center;
     }
 
-    .gds-files-details__hero {
+    .gds-files-details__content {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0%;
         width: 100%;
         min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .gds-files-details__hero {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        min-width: 0;
+        flex-shrink: 0;
         align-items: center;
         gap: 10px;
-        padding-bottom: 12px;
+        padding: 14px 14px 12px 14px;
+        box-sizing: border-box;
         border-bottom: 1px solid var(--gds-border);
+    }
+
+    .gds-files-details__body {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 0%;
+        width: 100%;
+        min-width: 0;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 12px 14px 14px 14px;
+        gap: 12px;
+        box-sizing: border-box;
+    }
+
+    .gds-files-details__fallback-slot {
+        width: 64px;
+        height: 64px;
+        flex-shrink: 0;
     }
 
     .gds-files-details__thumb-wrap {
         position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         width: 100%;
         height: 168px;
         border-radius: 8px;
         border: 1px solid var(--gds-border);
-        background: var(--gds-surface);
+        background: var(--gds-surface-container-low, var(--gds-surface));
         box-sizing: border-box;
         overflow: hidden;
         flex-shrink: 0;
@@ -199,19 +244,41 @@ pub(super) const INSPECTION_CSS: &str = css!(
         bottom: 6px;
     }
 
+    .gds-files-details__title-slot {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        min-width: 0;
+        height: calc(44px * var(--gds-font-scale, 1));
+        flex-shrink: 0;
+        overflow: hidden;
+    }
+
+    .gds-files-details__title-trigger.zui-tooltip__trigger {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+        max-height: 100%;
+        overflow: hidden;
+    }
+
     .gds-files-details__title {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        max-height: calc(44px * var(--gds-font-scale, 1));
         font-size: var(--gds-font-size-md, 16px);
+        line-height: calc(22px * var(--gds-font-scale, 1));
         font-weight: 600;
         color: var(--gds-foreground);
         text-align: center;
+        white-space: normal;
         overflow-wrap: anywhere;
-    }
-
-    .gds-files-details__subtitle {
-        font-size: var(--gds-font-size-xs, 12px);
-        color: var(--gds-muted-foreground);
-        text-align: center;
-        overflow-wrap: anywhere;
+        overflow: hidden;
     }
 
     .gds-files-details__rows {
@@ -284,11 +351,13 @@ pub(super) const INSPECTION_CSS: &str = css!(
     }
 
     .gds-files-properties-window {
+        display: flex;
+        flex-direction: column;
         flex: 1 1 0%;
+        width: 100%;
+        min-width: 0;
         min-height: 0;
-        overflow-y: auto;
-        padding: 16px;
-        gap: 14px;
+        overflow: hidden;
         background-color: var(--gds-content-bg, var(--gds-content));
     }
 
@@ -453,6 +522,149 @@ fn file_artwork_view(icon: FileIcon, size: f32, is_directory: bool) -> AnyView {
     })
 }
 
+/// Format a title for the fixed 2-line details slot (`max_cols` display width units across two
+/// lines), preserving the trailing extension/suffix via middle ellipsis when clamping 3+ line
+/// names and reporting whether a hover tooltip should expose the full unabbreviated title.
+pub(super) fn format_two_line_title(name: &str, max_cols: usize) -> (String, bool) {
+    let total = name.width();
+    if total <= max_cols {
+        return (name.to_owned(), total > max_cols.saturating_sub(4));
+    }
+    let budget = max_cols.saturating_sub(1);
+    let tail_budget = (budget / 3).clamp(8, 16);
+    let mut tail_parts: Vec<&str> = Vec::new();
+    let mut tail_cols = 0usize;
+    for grapheme in name.graphemes(true).rev() {
+        let w = grapheme.width();
+        if tail_cols + w > tail_budget {
+            break;
+        }
+        tail_cols += w;
+        tail_parts.push(grapheme);
+    }
+    tail_parts.reverse();
+
+    let head_budget = budget.saturating_sub(tail_cols);
+    let mut out = String::with_capacity(name.len());
+    let mut head_cols = 0usize;
+    for grapheme in name.graphemes(true) {
+        let w = grapheme.width();
+        if head_cols + w > head_budget {
+            break;
+        }
+        head_cols += w;
+        out.push_str(grapheme);
+    }
+    out.push('…');
+    for part in tail_parts {
+        out.push_str(part);
+    }
+    (out, true)
+}
+
+fn details_stage_media_view(
+    cache: Cache,
+    thumb_src: InspectionSource,
+    icon: FileIcon,
+    is_directory: bool,
+) -> AnyView {
+    let badge_overlay = icon
+        .badge()
+        .map(|badge_icon| badge_pill_view(badge_icon, 36.0));
+    let thumb_wrap_ref = NodeRef::new();
+    #[cfg(test)]
+    tests::record_details_thumb_node(thumb_wrap_ref);
+    AnyView::new(view! {
+        box(node_ref = thumb_wrap_ref, class = "gds-files-details__thumb-wrap") {
+            {Either::<_, ()>::Left(view! {
+                Thumbnail(
+                    cache = cache,
+                    source = thumb_src,
+                    fallback = ViewFn::new(move || file_artwork_view(icon, 64.0, is_directory)),
+                    show_status = true,
+                    class = "gds-files-details__thumb",
+                ) {}
+                {badge_overlay}
+            })}
+        }
+    })
+}
+
+fn details_stage_icon_view(icon: FileIcon, is_directory: bool) -> AnyView {
+    let thumb_wrap_ref = NodeRef::new();
+    let fallback_ref = NodeRef::new();
+    #[cfg(test)]
+    {
+        tests::record_details_thumb_node(thumb_wrap_ref);
+        tests::record_details_fallback_node(fallback_ref);
+    }
+    let badge_overlay = icon
+        .badge()
+        .map(|badge_icon| badge_pill_view(badge_icon, 64.0));
+    AnyView::new(view! {
+        box(node_ref = thumb_wrap_ref, class = "gds-files-details__thumb-wrap") {
+            {Either::<(), _>::Right(view! {
+                box(
+                    node_ref = fallback_ref,
+                    class = "gds-files-artwork-slot gds-files-details__fallback-slot",
+                    attr:data-directory = move || is_directory.then(|| "true".to_owned()),
+                ) {
+                    Icon(name = icon.base(), size = 64.0) {}
+                    {badge_overlay}
+                }
+            })}
+        }
+    })
+}
+
+fn details_hero_view(stage: AnyView, full_title: &str, panel_chrome: bool) -> AnyView {
+    let max_cols = if panel_chrome { 48 } else { 72 };
+    let (display_title, show_tooltip) = format_two_line_title(full_title, max_cols);
+    let title_slot_ref = NodeRef::new();
+    #[cfg(test)]
+    tests::record_details_title_slot_node(title_slot_ref);
+    let inner = if show_tooltip {
+        let tip = full_title.to_owned();
+        Either::Left(
+            view! {
+                HintTooltip(text = tip, trigger_class = "gds-files-details__title-trigger") {
+                    text(class = "gds-files-details__title") {{display_title}}
+                }
+            }
+            .into_view(),
+        )
+    } else {
+        Either::Right(
+            view! {
+                text(class = "gds-files-details__title") {{display_title}}
+            }
+            .into_view(),
+        )
+    };
+    AnyView::new(view! {
+        column(class = "gds-files-details__hero") {
+            {stage}
+            box(node_ref = title_slot_ref, class = "gds-files-details__title-slot") {
+                {inner}
+            }
+        }
+    })
+}
+
+fn details_content_view(hero: AnyView, body: AnyView) -> AnyView {
+    let body_ref = NodeRef::new();
+    #[cfg(test)]
+    tests::record_details_body_node(body_ref);
+    AnyView::new(view! {
+        column(class = "gds-files-details__content") {
+            {hero}
+            column(node_ref = body_ref, class = "gds-files-details__body") {
+                {body}
+            }
+        }
+    })
+}
+
 #[derive(Clone)]
 enum EntryState {
     Loading,
@@ -559,6 +771,7 @@ impl Properties {
                 }));
             }
 
+            let props_body = props.view(None, false);
             view! {
                 box(
                     node_ref = root_ref,
@@ -581,10 +794,8 @@ impl Properties {
                     },
                 ) {
                     Frame(without_sidebar = true) {
-                        TitleBar(title = title_text)
-                        column(class = "gds-files-properties-window") {
-                            {props.view(None, false)}
-                        }
+                        TitleBar(title = title_text) {}
+                        {props_body}
                     }
                 }
             }
@@ -864,30 +1075,48 @@ impl Properties {
         } else {
             "gds-files-properties-window"
         };
+        let fallback_name = self
+            .0
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| self.0.path.display().to_string());
 
         AnyView::new(view! {
             column(class = class_name) {
                 {move || match entry_sig.get() {
                     EntryState::Loading => {
-                        AnyView::new(view! {
+                        let hero = details_hero_view(
+                            details_stage_icon_view(FileIcon::plain(IconName::Folder), true),
+                            &fallback_name,
+                            panel_chrome,
+                        );
+                        let body = AnyView::new(view! {
                             column(class = "gds-files-collection-state") {
                                 Spinner(label = i18n::text("loading"))
                                 text(class = "gds-files-details__empty-text") {{i18n::text("loading")}}
                             }
-                        })
+                        });
+                        Either::Left(Either::Left(details_content_view(hero, body)))
                     }
                     EntryState::Failed(message) => {
                         let retry_props = props.clone();
-                        AnyView::new(view! {
+                        let hero = details_hero_view(
+                            details_stage_icon_view(FileIcon::plain(IconName::CircleAlert), false),
+                            &fallback_name,
+                            panel_chrome,
+                        );
+                        let body = AnyView::new(view! {
                             column(class = "gds-files-collection-state") {
-                                Icon(name = IconName::CircleAlert, class = "gds-files-details__empty-icon")
                                 text(class = "gds-files-details__empty-text") {{message}}
                                 Button(
                                     variant = ButtonVariant::Outline,
                                     on:click = move |_| retry_props.reload(),
                                 ) {{i18n::text("retry")}}
                             }
-                        })
+                        });
+                        Either::Left(Either::Right(details_content_view(hero, body)))
                     }
                     EntryState::Ready(entry) => {
                         let source = entry.inspection_source();
@@ -898,67 +1127,27 @@ impl Properties {
                         };
                         let icon = FileIcon::for_entry(&entry);
                         let is_dir = FileIcon::is_directory(&entry);
-                        let hero_visual = if let Some(thumb_src) = entry.thumbnail_source() {
+                        let stage = if let Some(thumb_src) = entry.thumbnail_source() {
                             let _ = props.0.cache.request(&thumb_src, Request::Thumbnail);
-                            let badge_overlay = icon
-                                .badge()
-                                .map(|badge_icon| badge_pill_view(badge_icon, 36.0));
-                            let thumb_wrap_ref = NodeRef::new();
-                            #[cfg(test)]
-                            tests::record_details_thumb_node(thumb_wrap_ref);
-                            AnyView::new(view! {
-                                box(node_ref = thumb_wrap_ref, class = "gds-files-details__thumb-wrap") {
-                                    Thumbnail(
-                                        cache = props.0.cache.clone(),
-                                        source = thumb_src,
-                                        fallback = ViewFn::new(move || file_artwork_view(icon, 64.0, is_dir)),
-                                        show_status = true,
-                                        class = "gds-files-details__thumb",
-                                    ) {}
-                                    {badge_overlay}
-                                }
-                            })
+                            details_stage_media_view(props.0.cache.clone(), thumb_src, icon, is_dir)
                         } else {
-                            let fallback_ref = NodeRef::new();
-                            #[cfg(test)]
-                            tests::record_details_fallback_node(fallback_ref);
-                            let badge_overlay = icon
-                                .badge()
-                                .map(|badge_icon| badge_pill_view(badge_icon, 64.0));
-                            AnyView::new(view! {
-                                box(
-                                    node_ref = fallback_ref,
-                                    class = "gds-files-artwork-slot",
-                                    style:width = "64.0px",
-                                    style:height = "64.0px",
-                                    attr:data-directory = is_dir.then(|| "true".to_owned()),
-                                ) {
-                                    Icon(name = icon.base(), size = 64.0) {}
-                                    {badge_overlay}
-                                }
-                            })
+                            details_stage_icon_view(icon, is_dir)
                         };
+                        let hero = details_hero_view(stage, &entry.display_name, panel_chrome);
 
                         let mut all_rows = props.base_rows(&entry, metadata_ref);
                         if let Some(meta) = metadata_ref {
                             all_rows.extend(Self::fact_rows(meta));
                         }
-
                         let tags_view = props.tags_section(browser.as_ref(), entry.kind);
-
-                        AnyView::new(view! {
-                            column(style:width = "100%", style:min-width = "0px", style:gap = "12px") {
-                                column(class = "gds-files-details__hero") {
-                                    {hero_visual}
-                                    text(class = "gds-files-details__title") {{entry.display_name.clone()}}
-                                    text(class = "gds-files-details__subtitle") {{gds::ui::feedback::tooltip::wrap_tokens(&entry.path.display().to_string())}}
-                                }
-                                column(class = "gds-files-details__rows") {
-                                    {all_rows}
-                                }
-                                {tags_view}
+                        let body = AnyView::new(view! {
+                            column(class = "gds-files-details__rows") {
+                                {all_rows}
                             }
-                        })
+                            {tags_view}
+                        });
+
+                        Either::Right(details_content_view(hero, body))
                     }
                 }}
             }
@@ -1283,6 +1472,76 @@ impl PermissionEditor {
     }
 }
 
+const MULTI_DIR_ENTRY_LIMIT: usize = 200_000;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MultiDirSizeState {
+    Loading,
+    Ready { bytes: u64, capped: bool },
+}
+
+struct MultiDirSizeJob {
+    dirs: Vec<PathBuf>,
+    generation: u64,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+impl MultiDirSizeJob {
+    fn new() -> Self {
+        Self {
+            dirs: Vec::new(),
+            generation: 0,
+            cancel: None,
+        }
+    }
+
+    fn cancel_active(&mut self) {
+        if let Some(flag) = self.cancel.take() {
+            flag.store(true, Ordering::Relaxed);
+        }
+        self.dirs.clear();
+    }
+}
+
+fn measure_local_directories(dirs: &[PathBuf], cancel: &AtomicBool) -> Option<(u64, bool)> {
+    let mut total = 0u64;
+    let mut visited = 0usize;
+    let mut capped = false;
+    #[cfg(unix)]
+    let mut seen_hardlinks: HashSet<(u64, u64)> = HashSet::new();
+
+    for root in dirs {
+        for entry in walkdir::WalkDir::new(root).follow_links(false) {
+            if visited.is_multiple_of(64) && cancel.load(Ordering::Relaxed) {
+                return None;
+            }
+            visited += 1;
+            if visited > MULTI_DIR_ENTRY_LIMIT {
+                capped = true;
+                return Some((total, capped));
+            }
+            let Ok(entry) = entry else {
+                continue;
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                if meta.nlink() > 1 && !seen_hardlinks.insert((meta.dev(), meta.ino())) {
+                    continue;
+                }
+            }
+            total = total.saturating_add(meta.len());
+        }
+    }
+    (!cancel.load(Ordering::Relaxed)).then_some((total, capped))
+}
+
 fn empty_details_state(icon: IconName, text: String) -> AnyView {
     AnyView::new(view! {
         column(class = "gds-files-details__empty") {
@@ -1294,22 +1553,26 @@ fn empty_details_state(icon: IconName, text: String) -> AnyView {
 
 fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
     match row {
-        Row::Place(location) => AnyView::new(view! {
-            column(class = "gds-files-details") {
-                column(class = "gds-files-details__hero") {
-                    {file_artwork_view(
-                        FileIcon::plain(location.icon()),
-                        64.0,
-                        matches!(location, Location::Directory(_)),
-                    )}
-                    text(class = "gds-files-details__title") {{location.label()}}
-                    text(class = "gds-files-details__subtitle") {{location.display_address()}}
-                }
+        Row::Place(location) => {
+            let hero = details_hero_view(
+                details_stage_icon_view(
+                    FileIcon::plain(location.icon()),
+                    matches!(location, Location::Directory(_)),
+                ),
+                &location.label(),
+                true,
+            );
+            let body = AnyView::new(view! {
                 column(class = "gds-files-details__rows") {
                     {text_row("place-location", location.display_address())}
                 }
-            }
-        }),
+            });
+            AnyView::new(view! {
+                column(class = "gds-files-details") {
+                    {details_content_view(hero, body)}
+                }
+            })
+        }
         Row::Trash(entry) => {
             let size = entry
                 .size
@@ -1317,46 +1580,64 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
                 .or_else(|| entry.items.map(|n| i18n::count("item-count", n)))
                 .unwrap_or_else(|| UNKNOWN_VALUE.to_owned());
             let is_dir = entry.kind == EntryKind::Directory;
+            let title = row.label();
+            let hero = details_hero_view(
+                details_stage_icon_view(FileIcon::plain(row.icon()), is_dir),
+                &title,
+                true,
+            );
+            let body = AnyView::new(view! {
+                column(class = "gds-files-details__rows") {
+                    {text_row("recycle-original-location", entry.original_path.display().to_string())}
+                    {metadata_row("recycle-deleted-at", AnyView::new(view! { {Timestamp::new(entry.deleted_at)} }))}
+                    {text_row("size", size)}
+                }
+            });
             AnyView::new(view! {
                 column(class = "gds-files-details") {
-                    column(class = "gds-files-details__hero") {
-                        {file_artwork_view(FileIcon::plain(row.icon()), 64.0, is_dir)}
-                        text(class = "gds-files-details__title") {{row.label()}}
-                    }
-                    column(class = "gds-files-details__rows") {
-                        {text_row("recycle-original-location", entry.original_path.display().to_string())}
-                        {metadata_row("recycle-deleted-at", AnyView::new(view! { {Timestamp::new(entry.deleted_at)} }))}
-                        {text_row("size", size)}
-                    }
+                    {details_content_view(hero, body)}
                 }
             })
         }
-        Row::Tag(tag) => AnyView::new(view! {
-            column(class = "gds-files-details") {
-                column(class = "gds-files-details__hero") {
-                    {file_artwork_view(FileIcon::plain(IconName::Tag), 64.0, false)}
-                    text(class = "gds-files-details__title") {{row.label()}}
-                    text(class = "gds-files-details__subtitle") {{tag.clone()}}
+        Row::Tag(tag) => {
+            let title = row.label();
+            let hero = details_hero_view(
+                details_stage_icon_view(FileIcon::plain(IconName::Tag), false),
+                &title,
+                true,
+            );
+            let body = AnyView::new(view! {
+                column(class = "gds-files-details__rows") {
+                    {text_row("tags-title", tag.clone())}
                 }
-            }
-        }),
+            });
+            AnyView::new(view! {
+                column(class = "gds-files-details") {
+                    {details_content_view(hero, body)}
+                }
+            })
+        }
         Row::Remote(entry) => {
             let size = entry
                 .size
                 .map(EntryPresentation::format_size)
                 .unwrap_or_else(|| UNKNOWN_VALUE.to_owned());
             let is_dir = entry.kind == gds::service::remote::EntryKind::Directory;
+            let hero = details_hero_view(
+                details_stage_icon_view(FileIcon::plain(row.icon()), is_dir),
+                &entry.name,
+                true,
+            );
+            let body = AnyView::new(view! {
+                column(class = "gds-files-details__rows") {
+                    {text_row("place-location", entry.address.uri().to_owned())}
+                    {metadata_row("modified", AnyView::new(view! { {Timestamp::new(entry.modified)} }))}
+                    {text_row("size", size)}
+                }
+            });
             AnyView::new(view! {
                 column(class = "gds-files-details") {
-                    column(class = "gds-files-details__hero") {
-                        {file_artwork_view(FileIcon::plain(row.icon()), 64.0, is_dir)}
-                        text(class = "gds-files-details__title") {{entry.name.clone()}}
-                        text(class = "gds-files-details__subtitle") {{entry.address.uri().to_owned()}}
-                    }
-                    column(class = "gds-files-details__rows") {
-                        {metadata_row("modified", AnyView::new(view! { {Timestamp::new(entry.modified)} }))}
-                        {text_row("size", size)}
-                    }
+                    {details_content_view(hero, body)}
                 }
             })
         }
@@ -1396,21 +1677,25 @@ fn static_row_details(browser: &Browser, row: &Row) -> AnyView {
                     .collect::<Vec<_>>()
                     .join(", ")
             };
+            let hero = details_hero_view(
+                details_stage_icon_view(FileIcon::plain(IconName::HardDrive), false),
+                &volume.name,
+                true,
+            );
+            let body = AnyView::new(view! {
+                column(class = "gds-files-details__rows") {
+                    {text_row("volume-format", fs)}
+                    {text_row("volume-default-mount", mounts)}
+                }
+                CapacityBar(label = cap_label, fraction = fraction, unavailable = unavailable)
+            });
             AnyView::new(view! {
                 column(class = "gds-files-details") {
-                    column(class = "gds-files-details__hero") {
-                        {file_artwork_view(FileIcon::plain(IconName::HardDrive), 64.0, false)}
-                        text(class = "gds-files-details__title") {{volume.name.clone()}}
-                    }
-                    column(class = "gds-files-details__rows") {
-                        {text_row("volume-format", fs)}
-                        {text_row("volume-default-mount", mounts)}
-                    }
-                    CapacityBar(label = cap_label, fraction = fraction, unavailable = unavailable)
+                    {details_content_view(hero, body)}
                 }
             })
         }
-        Row::File(_) => AnyView::new(view! { box() }),
+        Row::File(_) => AnyView::new(()),
     }
 }
 
@@ -1474,7 +1759,7 @@ impl Browser {
             ) {
                 DialogContent(class = "gds-dialog-content") {
                     {move || match tags_sig.get() {
-                        None => AnyView::new(view! { box() }),
+                        None => AnyView::new(()),
                         Some(editor) => {
                             let full_path = editor.path().display().to_string();
                             let title_path = editor
@@ -1569,7 +1854,7 @@ impl Browser {
             ) {
                 DialogContent(class = "gds-dialog-content") {
                     {move || match perm_sig.get() {
-                        None => AnyView::new(view! { box() }),
+                        None => AnyView::new(()),
                         Some(editor) => {
                             let name = editor.0.entry.display_name.clone();
                             let full_path = editor.0.entry.path.display().to_string();
@@ -1659,11 +1944,11 @@ impl Browser {
             let thumb_ref = NodeRef::new();
             #[cfg(test)]
             tests::record_tile_thumb_node(&entry.display_name, thumb_ref);
-            return AnyView::new(view! {
+            return AnyView::new(Either::<_, ()>::Left(view! {
                 box(
                     node_ref = thumb_ref,
                     class = "gds-files-tile-thumb-wrap",
-                    attr:data-directory = is_directory.then(|| "true".to_owned()),
+                    attr:data-directory = move || is_directory.then(|| "true".to_owned()),
                     attr:data-selected = move || (selected.get() > 0.5).then(|| "true".to_owned()),
                 ) {
                     Thumbnail(
@@ -1675,7 +1960,7 @@ impl Browser {
                     ) {}
                     {badge_overlay}
                 }
-            });
+            }));
         }
 
         let icon = match row {
@@ -1685,18 +1970,18 @@ impl Browser {
         let slot_ref = NodeRef::new();
         #[cfg(test)]
         tests::record_tile_fallback_node(&row.label(), slot_ref);
-        AnyView::new(view! {
+        AnyView::new(Either::<(), _>::Right(view! {
             box(
                 node_ref = slot_ref,
                 class = "gds-files-artwork-slot",
                 style:width = format!("{icon_size:.1}px"),
                 style:height = format!("{icon_size:.1}px"),
-                attr:data-directory = is_directory.then(|| "true".to_owned()),
+                attr:data-directory = move || is_directory.then(|| "true".to_owned()),
                 attr:data-selected = move || (selected.get() > 0.5).then(|| "true".to_owned()),
             ) {
                 {file_artwork_view(icon, icon_size, is_directory)}
             }
-        })
+        }))
     }
 
     pub(super) fn artwork(
@@ -1724,12 +2009,12 @@ impl Browser {
                     let badge_overlay = icon
                         .badge()
                         .map(|badge_icon| badge_pill_view(badge_icon, size));
-                    AnyView::new(view! {
+                    AnyView::new(Either::<_, ()>::Left(view! {
                         box(
                             class = "gds-files-artwork-slot",
                             style:width = format!("{size:.1}px"),
                             style:height = format!("{size:.1}px"),
-                            attr:data-directory = is_directory.then(|| "true".to_owned()),
+                            attr:data-directory = move || is_directory.then(|| "true".to_owned()),
                         ) {
                             box(class = "gds-files-artwork-thumb") {
                                 Thumbnail(
@@ -1741,7 +2026,7 @@ impl Browser {
                             }
                             {badge_overlay}
                         }
-                    })
+                    }))
                 } else {
                     file_artwork_view(icon, size, is_directory)
                 }
@@ -1778,6 +2063,12 @@ impl Browser {
         let browser = self.clone();
         let cached_entry: Rc<RefCell<Option<(PathBuf, Option<(i64, i64)>, bool, Properties)>>> =
             Rc::new(RefCell::new(None));
+        let multi_dir_job = Rc::new(RefCell::new(MultiDirSizeJob::new()));
+        let multi_dir_sig = self.0.owner.with(|| {
+            let job_cleanup = Rc::clone(&multi_dir_job);
+            on_cleanup_local(move || job_cleanup.borrow_mut().cancel_active());
+            RwSignal::new_local(MultiDirSizeState::Loading)
+        });
 
         AnyView::new(move || {
             let (pure_tags, selected) = browser.read(|state| {
@@ -1788,22 +2079,188 @@ impl Browser {
             });
 
             if pure_tags {
-                return AnyView::new(view! { box() });
+                multi_dir_job.borrow_mut().cancel_active();
+                return AnyView::new(());
             }
 
             if selected.is_empty() {
+                multi_dir_job.borrow_mut().cancel_active();
                 return empty_details_state(IconName::Info, i18n::text("preview-empty"));
             }
 
             if selected.len() > 1 {
                 let count = selected.len();
+                let mut file_bytes = 0u64;
+                let mut folders = 0usize;
+                let mut files = 0usize;
+                let mut links = 0usize;
+                let mut local_dirs: Vec<PathBuf> = Vec::new();
+                let mut has_unsized_non_local = false;
+
+                for item in &selected {
+                    match item {
+                        Row::File(e) => match e.kind {
+                            EntryKind::Directory => {
+                                folders += 1;
+                                local_dirs.push(e.path.clone());
+                            }
+                            EntryKind::SymbolicLink => {
+                                links += 1;
+                            }
+                            EntryKind::File | EntryKind::Other => {
+                                files += 1;
+                                if let Some(bytes) = e.size {
+                                    file_bytes = file_bytes.saturating_add(bytes);
+                                } else {
+                                    has_unsized_non_local = true;
+                                }
+                            }
+                            EntryKind::Unknown => {
+                                has_unsized_non_local = true;
+                            }
+                        },
+                        Row::Trash(e) => match e.kind {
+                            EntryKind::Directory => {
+                                folders += 1;
+                                has_unsized_non_local = true;
+                            }
+                            EntryKind::SymbolicLink => {
+                                links += 1;
+                            }
+                            EntryKind::File | EntryKind::Other => {
+                                files += 1;
+                                if let Some(bytes) = e.size {
+                                    file_bytes = file_bytes.saturating_add(bytes);
+                                } else {
+                                    has_unsized_non_local = true;
+                                }
+                            }
+                            EntryKind::Unknown => {
+                                has_unsized_non_local = true;
+                            }
+                        },
+                        Row::Remote(e) => match e.kind {
+                            gds::service::remote::EntryKind::Directory => {
+                                folders += 1;
+                                has_unsized_non_local = true;
+                            }
+                            gds::service::remote::EntryKind::SymbolicLink => {
+                                links += 1;
+                            }
+                            gds::service::remote::EntryKind::File
+                            | gds::service::remote::EntryKind::Other => {
+                                files += 1;
+                                if let Some(bytes) = e.size {
+                                    file_bytes = file_bytes.saturating_add(bytes);
+                                } else {
+                                    has_unsized_non_local = true;
+                                }
+                            }
+                        },
+                        Row::Place(Location::Directory(path)) => {
+                            folders += 1;
+                            local_dirs.push(PathBuf::from(path));
+                        }
+                        Row::Place(_) | Row::Tag(_) | Row::Volume(_) => {
+                            has_unsized_non_local = true;
+                        }
+                    }
+                }
+
+                let size_row = if !local_dirs.is_empty() {
+                    let needs_spawn = multi_dir_job.borrow().dirs != local_dirs;
+                    if needs_spawn {
+                        let cancel = Arc::new(AtomicBool::new(false));
+                        let my_gen = {
+                            let mut job = multi_dir_job.borrow_mut();
+                            if let Some(prev) = job.cancel.take() {
+                                prev.store(true, Ordering::Relaxed);
+                            }
+                            job.generation = job.generation.wrapping_add(1);
+                            job.dirs.clone_from(&local_dirs);
+                            job.cancel = Some(Arc::clone(&cancel));
+                            job.generation
+                        };
+                        let _ = multi_dir_sig.try_set(MultiDirSizeState::Loading);
+                        let dirs_for_task = local_dirs;
+                        let cancel_for_task = Arc::clone(&cancel);
+                        let job_ref = Rc::clone(&multi_dir_job);
+                        let sig = multi_dir_sig;
+                        let task = browser.scope().spawn_blocking_named(
+                            "Calculate selected directory sizes",
+                            move || measure_local_directories(&dirs_for_task, &cancel_for_task),
+                        );
+                        drop(spawn_local(async move {
+                            if let Ok(Some((bytes, capped))) = task.await
+                                && job_ref.borrow().generation == my_gen
+                            {
+                                let _ = sig.try_set(MultiDirSizeState::Ready { bytes, capped });
+                            }
+                        }));
+                    }
+                    metadata_row(
+                        "size",
+                        AnyView::new(view! {
+                            text(class = "gds-files-details__value") {
+                                {move || match multi_dir_sig.get() {
+                                    MultiDirSizeState::Loading => i18n::text("details-calculating"),
+                                    MultiDirSizeState::Ready { bytes, capped } => {
+                                        let sum = file_bytes.saturating_add(bytes);
+                                        let formatted = EntryPresentation::format_size(sum);
+                                        if capped || has_unsized_non_local {
+                                            format!("≥ {formatted}")
+                                        } else {
+                                            formatted
+                                        }
+                                    }
+                                }}
+                            }
+                        }),
+                    )
+                } else {
+                    multi_dir_job.borrow_mut().cancel_active();
+                    let size_label = if files > 0 && !has_unsized_non_local {
+                        EntryPresentation::format_size(file_bytes)
+                    } else if file_bytes > 0 {
+                        format!("≥ {}", EntryPresentation::format_size(file_bytes))
+                    } else if files == 0 && links > 0 && !has_unsized_non_local {
+                        EntryPresentation::format_size(0)
+                    } else {
+                        UNKNOWN_VALUE.to_owned()
+                    };
+                    text_row("size", size_label)
+                };
+
+                let mut rows = vec![text_row("details-items", count.to_string()), size_row];
+                if folders > 0 {
+                    rows.push(text_row("details-folders", folders.to_string()));
+                }
+                if files > 0 {
+                    rows.push(text_row("details-files", files.to_string()));
+                }
+                if links > 0 {
+                    rows.push(text_row("details-links", links.to_string()));
+                }
+
+                let summary_title = t!("preview-multiple", count);
+                let hero = details_hero_view(
+                    details_stage_icon_view(FileIcon::multiple(), false),
+                    &summary_title,
+                    true,
+                );
+                let body = AnyView::new(view! {
+                    column(class = "gds-files-details__rows") {
+                        {rows}
+                    }
+                });
                 return AnyView::new(view! {
-                    column(class = "gds-files-details__empty") {
-                        {file_artwork_view(FileIcon::multiple(), 48.0, false)}
-                        text(class = "gds-files-details__empty-text") {{t!("preview-multiple", count)}}
+                    column(class = "gds-files-details") {
+                        {details_content_view(hero, body)}
                     }
                 });
             }
+
+            multi_dir_job.borrow_mut().cancel_active();
 
             let row = &selected[0];
             let tags_enabled = browser.tags_enabled();
@@ -1883,13 +2340,15 @@ pub(super) mod tests {
 
     use zgui::prelude::NodeRef;
 
-    use super::INSPECTION_CSS;
+    use super::{INSPECTION_CSS, format_two_line_title};
 
     thread_local! {
         static TILE_THUMB_NODES: RefCell<HashMap<String, NodeRef>> = RefCell::new(HashMap::new());
         static TILE_FALLBACK_NODES: RefCell<HashMap<String, NodeRef>> = RefCell::new(HashMap::new());
         static DETAILS_THUMB_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
         static DETAILS_FALLBACK_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
+        static DETAILS_TITLE_SLOT_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
+        static DETAILS_BODY_NODE: RefCell<Option<NodeRef>> = const { RefCell::new(None) };
     }
 
     pub(super) fn record_tile_thumb_node(name: &str, node: NodeRef) {
@@ -1916,11 +2375,25 @@ pub(super) mod tests {
         });
     }
 
+    pub(super) fn record_details_title_slot_node(node: NodeRef) {
+        DETAILS_TITLE_SLOT_NODE.with(|slot| {
+            *slot.borrow_mut() = Some(node);
+        });
+    }
+
+    pub(super) fn record_details_body_node(node: NodeRef) {
+        DETAILS_BODY_NODE.with(|slot| {
+            *slot.borrow_mut() = Some(node);
+        });
+    }
+
     pub(in crate::pages::workspace) fn clear_recorded_artwork_nodes() {
         TILE_THUMB_NODES.with(|slot| slot.borrow_mut().clear());
         TILE_FALLBACK_NODES.with(|slot| slot.borrow_mut().clear());
         DETAILS_THUMB_NODE.with(|slot| *slot.borrow_mut() = None);
         DETAILS_FALLBACK_NODE.with(|slot| *slot.borrow_mut() = None);
+        DETAILS_TITLE_SLOT_NODE.with(|slot| *slot.borrow_mut() = None);
+        DETAILS_BODY_NODE.with(|slot| *slot.borrow_mut() = None);
     }
 
     pub(in crate::pages::workspace) fn tile_thumb_node(name: &str) -> Option<NodeRef> {
@@ -1937,6 +2410,14 @@ pub(super) mod tests {
 
     pub(in crate::pages::workspace) fn details_fallback_node() -> Option<NodeRef> {
         DETAILS_FALLBACK_NODE.with(|slot| *slot.borrow())
+    }
+
+    pub(in crate::pages::workspace) fn details_title_slot_node() -> Option<NodeRef> {
+        DETAILS_TITLE_SLOT_NODE.with(|slot| *slot.borrow())
+    }
+
+    pub(in crate::pages::workspace) fn details_body_node() -> Option<NodeRef> {
+        DETAILS_BODY_NODE.with(|slot| *slot.borrow())
     }
 
     fn css_rule_body<'a>(sheet: &'a str, selector: &str) -> Option<&'a str> {
@@ -1986,5 +2467,29 @@ pub(super) mod tests {
             thumb_wrap.contains("width: 100%;") && thumb_wrap.contains("height: 168px;"),
             ".gds-files-details__thumb-wrap must span full width x 168px matching GPUI main: {thumb_wrap}"
         );
+    }
+
+    #[test]
+    fn two_line_title_preserves_full_two_line_names_and_middle_truncates_longer_names_keeping_extension()
+     {
+        let (short, tip_short) = format_two_line_title("notes.txt", 48);
+        assert_eq!(short, "notes.txt");
+        assert!(!tip_short);
+
+        let hash_name = "eb72d0c7423da74ca3d41fb9e570ce33470697977.png";
+        let (two_line, tip_two_line) = format_two_line_title(hash_name, 48);
+        assert_eq!(two_line, hash_name, "45-char 2-line filename stays intact");
+        assert!(tip_two_line);
+
+        let very_long =
+            "release_artifact_2026_11_21_x86_64_unknown_linux_gnu_symbols_bundle.tar.zst";
+        let (clamped, tip_long) = format_two_line_title(very_long, 48);
+        assert!(tip_long);
+        assert!(clamped.contains('…'));
+        assert!(
+            clamped.ends_with(".tar.zst"),
+            "middle truncation must preserve trailing compound extension, got {clamped:?}"
+        );
+        assert!(unicode_width::UnicodeWidthStr::width(clamped.as_str()) <= 48);
     }
 }

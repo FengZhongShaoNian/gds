@@ -318,6 +318,7 @@ fn resolve(
         }
     }
     palette.link = palette.primary;
+    palette.sync_material_defaults(mode);
     palette.terminal_fallback(mode);
     Ok(Loaded {
         palette,

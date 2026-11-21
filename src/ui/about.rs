@@ -6,12 +6,10 @@ mod tests;
 
 pub use metadata::{APPLICATIONS, Application, Credit};
 
-use std::cell::Cell;
 use std::process::{Command, Stdio};
-use std::rc::Rc;
 
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, RenderEffect, RwSignal, Signal, UnsyncCallback};
+use zgui::reactive::{LocalStorage, RwSignal, Signal, UnsyncCallback};
 use zgui::view::{ListenerOptions, PropValue, events, install_stylesheet};
 use zgui::vocab::{Key, Modifiers, NamedKey, Role};
 use zgui::{component, css, view};
@@ -23,7 +21,7 @@ use zgui_ui_primitives::prelude::{DismissReason, DismissableLayerProps};
 use crate::app::Gds;
 use crate::appearance::tokens::SIDEBAR_ICON_SIZE;
 use crate::ui::button::{ButtonProps, IconButtonProps};
-use crate::ui::dialog::{DialogAnchor, DialogCommand, DialogContentProps, DialogProps};
+use crate::ui::dialog::{DialogAnchor, ModalDialogProps};
 use crate::ui::icon::{IconName, IconProps};
 use crate::ui::page::{ContentPageProps, PageContentProps, PageHeaderProps, PageTitleProps};
 use crate::ui::shortcut::Shortcut;
@@ -726,7 +724,7 @@ pub fn About(
 pub use About as AboutView;
 pub use AboutProps as AboutViewProps;
 
-/// Modal dialog wrapper hosting [`About`] with `Alt+C` / `Esc` dismissal.
+/// Modal dialog wrapper hosting [`About`] with `DialogScope` isolation and `Alt+C` / `Esc` dismissal.
 #[component]
 pub fn AboutDialog(
     #[prop(into, optional)] open: Binding<bool>,
@@ -735,64 +733,17 @@ pub fn AboutDialog(
     #[prop(optional)] on_close: Option<UnsyncCallback<()>>,
 ) -> impl IntoView {
     install_about_stylesheets();
-    let settled = Rc::new(Cell::new(false));
-    let reset_settled = {
-        let settled = Rc::clone(&settled);
-        RenderEffect::new(move |_| {
-            if open.get() == Some(true) {
-                settled.set(false);
-            }
-        })
-    };
-    on_cleanup_local(move || drop(reset_settled));
-    let dismiss = {
-        let settled = Rc::clone(&settled);
-        move || {
-            if settled.replace(true) {
-                return;
-            }
-            open.write(false);
-            if let Some(on_close) = on_close {
-                on_close.run(());
-            }
-            if let Some(anchor) = anchor {
-                anchor.restore();
-            }
-        }
-    };
-    let on_open_change = {
-        let settled = Rc::clone(&settled);
-        UnsyncCallback::new(move |next_open: bool| {
-            open.write(next_open);
-            if next_open {
-                settled.set(false);
-            } else if !settled.replace(true) {
-                if let Some(on_close) = on_close {
-                    on_close.run(());
-                }
-                if let Some(anchor) = anchor {
-                    anchor.restore();
-                }
-            }
-        })
-    };
+    let on_decision = on_close.map(|cb| UnsyncCallback::new(move |_| cb.run(())));
 
     view! {
-        Dialog(open = open, on_open_change = on_open_change) {
-            DialogContent(
-                class = "gds-about-dialog",
-                dismiss_on_outside_press = true,
-                dismiss_on_escape = true,
-                on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
-                    if DialogCommand::Cancel.matches_event(ev, ev.modifiers) {
-                        dismiss();
-                        ev.prevent_default();
-                        ev.stop_propagation();
-                    }
-                },
-            ) {
-                About(application = application)
-            }
+        ModalDialog(
+            open = open,
+            disabled = true,
+            anchor = anchor,
+            on_decision = on_decision,
+            class = "gds-about-dialog",
+        ) {
+            About(application = application)
         }
     }
 }

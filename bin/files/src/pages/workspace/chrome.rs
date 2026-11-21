@@ -2288,6 +2288,7 @@ impl Browser {
                 box(
                     class = "gds-files-tab-action",
                     attr:data-revealed = move || expanded_action_revealed.get().then(|| "true".to_owned()),
+                    a11y:hidden = move || !actions_visible.get(),
                     on:pointer_down = move |ev: &mut EventCx<'_, events::PointerDown>| {
                         ev.stop_propagation();
                         if let Some(ref handler) = no_drag_exp {

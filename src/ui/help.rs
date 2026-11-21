@@ -8,9 +8,7 @@ use zgui::{component, css, view};
 use zgui_ui_primitives::Binding;
 
 use super::{Shortcut, ShortcutBadgeProps};
-use crate::ui::dialog::{
-    DialogCommand, DialogContentProps, DialogHeaderProps, DialogProps, DialogTitleProps,
-};
+use crate::ui::dialog::{DialogHeaderProps, DialogTitleProps, ModalDialogProps};
 
 const HELP_SHEET: &str = "gds-ui-help";
 
@@ -188,25 +186,16 @@ pub fn HelpDialog(
     install_help_stylesheets();
     let children_store = StoredValue::new_local(children);
     view! {
-        Dialog(open = open) {
-            DialogContent(
-                class = "gds-help-dialog",
-                dismiss_on_outside_press = true,
-                dismiss_on_escape = true,
-                on:key_down = move |ev: &mut EventCx<'_, zgui::view::events::KeyDown>| {
-                    if DialogCommand::Cancel.matches_event(ev, ev.modifiers) {
-                        open.write(false);
-                        ev.prevent_default();
-                        ev.stop_propagation();
-                    }
-                },
-            ) {
-                DialogHeader {
-                    DialogTitle {{move || title.get()}}
-                }
-                HelpPage {
-                    {children_store.with_value(ChildrenFn::view)}
-                }
+        ModalDialog(
+            open = open,
+            disabled = true,
+            class = "gds-help-dialog",
+        ) {
+            DialogHeader {
+                DialogTitle {{move || title.get()}}
+            }
+            HelpPage {
+                {children_store.with_value(ChildrenFn::view)}
             }
         }
     }

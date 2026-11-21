@@ -10,6 +10,7 @@ use gds::service::remote;
 use gds::ui::button::{ButtonSize, ButtonVariant};
 use gds::ui::capacity::CapacityBarProps;
 use gds::ui::feedback::tooltip::{HintTooltipProps, wrap_tokens};
+use gds::ui::menu::MenuFocusParkProps;
 use gds::ui::page::PageNoticeProps;
 use gds::ui::time::Timestamp;
 use gds::ui::{IconButtonProps, IconName, IconProps};
@@ -855,6 +856,7 @@ fn volume_mount_point_cell(
                     }
                 }
                 DropdownMenuContent(class = "gds-menu-content") {
+                    MenuFocusPark {}
                     {mount_points
                         .iter()
                         .map(|mount| {

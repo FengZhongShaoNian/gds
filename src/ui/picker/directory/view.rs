@@ -26,8 +26,8 @@ use crate::app::Gds;
 use crate::appearance::tokens::{DataListStyle, SIDEBAR_ICON_SIZE};
 use crate::ui::button::{ButtonProps, IconButtonProps};
 use crate::ui::dialog::{
-    DialogActionsProps, DialogAnchor, DialogCommand, DialogContentProps, DialogDecision,
-    DialogFooterProps, DialogHeaderProps, DialogProps, DialogTitleProps,
+    DialogActionsProps, DialogAnchor, DialogContentProps, DialogDecision, DialogFooterProps,
+    DialogHeaderProps, DialogProps, DialogScope, DialogTitleProps, handle_dialog_key_down,
 };
 use crate::ui::icon::{IconName, IconProps};
 use crate::ui::list::{ListGeometry, ListSurfaceProps};
@@ -957,31 +957,27 @@ pub fn DirectoryPickerDialog(
                 dismiss_on_outside_press = true,
                 dismiss_on_escape = dismiss_on_escape,
                 on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
-                    if !disabled.get_untracked()
-                        && DialogCommand::Confirm.matches_event(ev, ev.modifiers)
-                    {
-                        on_key_decision.run(DialogDecision::Confirm);
-                        ev.prevent_default();
-                        ev.stop_propagation();
-                    } else if DialogCommand::Cancel.matches_event(ev, ev.modifiers) {
-                        on_key_decision.run(DialogDecision::Cancel);
-                        ev.prevent_default();
-                        ev.stop_propagation();
-                    }
+                    handle_dialog_key_down(disabled.get_untracked(), on_key_decision, ev);
                 },
             ) {
-                DialogHeader {
-                    DialogTitle {{move || title.get()}}
-                }
-                DirectoryPickerView(picker = picker.clone())
-                DialogFooter {
-                    DialogActions(
-                        confirm_label = confirm_label,
-                        cancel_label = cancel_label,
-                        disabled = disabled,
-                        on_decision = on_decision,
-                    )
-                }
+                {{
+                    let _scope = DialogScope::enter();
+                    let picker = picker.clone();
+                    view! {
+                        DialogHeader {
+                            DialogTitle {{move || title.get()}}
+                        }
+                        DirectoryPickerView(picker = picker)
+                        DialogFooter {
+                            DialogActions(
+                                confirm_label = confirm_label,
+                                cancel_label = cancel_label,
+                                disabled = disabled,
+                                on_decision = on_decision,
+                            )
+                        }
+                    }
+                }}
             }
         }
     }

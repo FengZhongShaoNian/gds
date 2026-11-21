@@ -1,23 +1,36 @@
 //! Resolved GDS color roles shared across custom CSS properties and `zgui-ui-tokens`.
 use std::fmt::Write as _;
-use zgui::canvas::zgui_color::Color;
+use zgui::canvas::zgui_color::{Color, ColorSpace};
 use zgui_ui_tokens::Theme;
 
-use super::provider::color::{ColorExt as _, color_css};
+use super::provider::color::{ColorExt as _, color_css, rgb};
 use crate::appearance::{motion, typography};
 
 const HOVER_OPACITY: f32 = 0.08;
 const PRESSED_OPACITY: f32 = 0.12;
 const DRAG_OPACITY: f32 = 0.12;
+const CONTROL_BORDER_OUTLINE_MIX: f32 = 0.35;
 const SWITCH_OFF_TINT_LIGHT: f32 = 0.14;
 const SWITCH_OFF_TINT_DARK: f32 = 0.16;
 const SWITCH_THUMB_INK_LIGHT: f32 = 0.28;
 
-/// Resolved GDS color roles shared by native components and custom surfaces.
-/// Surface/foreground and action/foreground pairs must be used together.
+fn contrasting_ink(fill: Color) -> Color {
+    let [r, g, b] = fill.to_space(ColorSpace::Srgb).components();
+    let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if luminance > 0.58 {
+        rgb(0x1b1b1b)
+    } else {
+        rgb(0xffffff)
+    }
+}
+
+/// Resolved GDS semantic roles and full Material 3 / DMS color tokens shared by native components
+/// and custom surfaces. Surface/foreground and container/`on_*` pairs must be used together.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub terminal: super::TerminalColors,
+
+    // GDS semantic surface & boundary roles.
     pub content: Color,
     pub sidebar: Color,
     pub foreground: Color,
@@ -25,13 +38,19 @@ pub struct Palette {
     pub muted_foreground: Color,
     pub surface: Color,
     pub surface_foreground: Color,
-    /// Raised panels, including the Agents control panel.
+    /// Raised panels, dialogs, and menus.
     pub panel: Color,
     pub panel_foreground: Color,
+    /// Neutral raised interactive controls (`ButtonVariant::Outline`, Cancel actions).
+    pub control: Color,
+    pub control_foreground: Color,
     /// Subtle separators; `outline` is the stronger control boundary.
     pub border: Color,
     pub outline: Color,
     pub shadow: Color,
+    pub scrim: Color,
+
+    // GDS semantic accent & feedback roles.
     pub primary: Color,
     pub primary_foreground: Color,
     pub selection: Color,
@@ -46,9 +65,136 @@ pub struct Palette {
     pub success_foreground: Color,
     pub warning: Color,
     pub warning_foreground: Color,
+
+    // Complete Material 3 / DMS aligned palette tokens (`surface` maps to `content`).
+    pub background: Color,
+    pub on_background: Color,
+    pub on_surface: Color,
+    pub surface_dim: Color,
+    pub surface_bright: Color,
+    pub surface_container_lowest: Color,
+    pub surface_container_low: Color,
+    pub surface_container: Color,
+    pub surface_container_high: Color,
+    pub surface_container_highest: Color,
+    pub surface_variant: Color,
+    pub on_surface_variant: Color,
+    pub surface_tint: Color,
+    pub inverse_surface: Color,
+    pub inverse_on_surface: Color,
+    pub inverse_primary: Color,
+    pub outline_variant: Color,
+    pub source_color: Color,
+
+    pub on_primary: Color,
+    pub primary_container: Color,
+    pub on_primary_container: Color,
+    pub primary_fixed: Color,
+    pub primary_fixed_dim: Color,
+    pub on_primary_fixed: Color,
+    pub on_primary_fixed_variant: Color,
+
+    pub secondary: Color,
+    pub on_secondary: Color,
+    pub secondary_container: Color,
+    pub on_secondary_container: Color,
+    pub secondary_fixed: Color,
+    pub secondary_fixed_dim: Color,
+    pub on_secondary_fixed: Color,
+    pub on_secondary_fixed_variant: Color,
+
+    pub tertiary: Color,
+    pub on_tertiary: Color,
+    pub tertiary_container: Color,
+    pub on_tertiary_container: Color,
+    pub tertiary_fixed: Color,
+    pub tertiary_fixed_dim: Color,
+    pub on_tertiary_fixed: Color,
+    pub on_tertiary_fixed_variant: Color,
+
+    pub on_error: Color,
+    pub error_container: Color,
+    pub on_error_container: Color,
 }
 
 impl Palette {
+    /// Populate Material 3 aligned roles and neutral `control` surfaces from this palette's
+    /// resolved semantic roles when a theme source does not supply explicit Material tokens.
+    pub(super) fn sync_material_defaults(&mut self, mode: super::Mode) {
+        self.background = self.content;
+        self.on_background = self.foreground;
+        self.on_surface = self.foreground;
+        self.surface_container_lowest = match mode {
+            super::Mode::Light => self.content.overlay(rgb(0xffffff).with_alpha(0.75)),
+            super::Mode::Dark => self.content.overlay(rgb(0x000000).with_alpha(0.28)),
+        };
+        self.surface_container_low = self.sidebar;
+        self.surface_container = self.surface;
+        self.surface_container_high = self.panel;
+        self.surface_container_highest = match mode {
+            super::Mode::Light => self.panel.overlay(self.foreground.with_alpha(0.04)),
+            super::Mode::Dark => self.panel.overlay(self.foreground.with_alpha(0.07)),
+        };
+        self.surface_dim = match mode {
+            super::Mode::Light => self.content.overlay(rgb(0x000000).with_alpha(0.08)),
+            super::Mode::Dark => self.content,
+        };
+        self.surface_bright = match mode {
+            super::Mode::Light => self.content,
+            super::Mode::Dark => self.panel.overlay(self.foreground.with_alpha(0.12)),
+        };
+        self.surface_variant = self.surface.overlay(self.foreground.with_alpha(0.06));
+        self.on_surface_variant = self.muted_foreground;
+        self.surface_tint = self.primary;
+        self.inverse_surface = self.foreground;
+        self.inverse_on_surface = self.content;
+        self.inverse_primary = self.selection;
+        self.outline_variant = self.border;
+        self.scrim = self.shadow;
+        self.source_color = self.primary;
+
+        self.on_primary = self.primary_foreground;
+        self.primary_container = self.selection;
+        self.on_primary_container = self.selection_foreground;
+        self.primary_fixed = self.selection;
+        self.primary_fixed_dim = self.primary;
+        self.on_primary_fixed = self.selection_foreground;
+        self.on_primary_fixed_variant = self.primary;
+
+        let derived_secondary = self.muted_foreground.overlay(self.primary.with_alpha(0.35));
+        self.secondary = derived_secondary;
+        self.on_secondary = contrasting_ink(derived_secondary);
+        self.secondary_container = self.surface.overlay(self.primary.with_alpha(0.12));
+        self.on_secondary_container = self.surface_foreground;
+        self.secondary_fixed = self.secondary_container;
+        self.secondary_fixed_dim = self.secondary;
+        self.on_secondary_fixed = self.on_secondary_container;
+        self.on_secondary_fixed_variant = self.secondary;
+
+        self.tertiary = self.link;
+        self.on_tertiary = contrasting_ink(self.link);
+        self.tertiary_container = self.surface.overlay(self.link.with_alpha(0.14));
+        self.on_tertiary_container = self.surface_foreground;
+        self.tertiary_fixed = self.tertiary_container;
+        self.tertiary_fixed_dim = self.tertiary;
+        self.on_tertiary_fixed = self.on_tertiary_container;
+        self.on_tertiary_fixed_variant = self.tertiary;
+
+        self.on_error = self.error_foreground;
+        let error_wash = match mode {
+            super::Mode::Light => 0.14,
+            super::Mode::Dark => 0.24,
+        };
+        self.error_container = self.content.overlay(self.error.with_alpha(error_wash));
+        self.on_error_container = self.foreground;
+
+        self.control = match mode {
+            super::Mode::Light => self.surface_container_lowest,
+            super::Mode::Dark => self.surface_container_highest,
+        };
+        self.control_foreground = self.foreground;
+    }
+
     /// Sources without terminal data share ANSI defaults and their own paired
     /// text/surface roles. Call after resolving the source's UI roles.
     pub(super) fn terminal_fallback(&mut self, mode: super::Mode) {
@@ -70,6 +216,27 @@ impl Palette {
 
     pub fn pressed(self) -> Color {
         self.foreground.with_alpha(PRESSED_OPACITY)
+    }
+
+    /// Opaque hover fill for raised neutral controls (`--gds-control`).
+    #[must_use]
+    pub fn control_hover(self) -> Color {
+        self.control
+            .overlay(self.control_foreground.with_alpha(HOVER_OPACITY))
+    }
+
+    /// Opaque pressed fill for raised neutral controls (`--gds-control`).
+    #[must_use]
+    pub fn control_pressed(self) -> Color {
+        self.control
+            .overlay(self.control_foreground.with_alpha(PRESSED_OPACITY))
+    }
+
+    /// Balanced contour border for raised neutral controls across light, dark, and high-contrast themes.
+    #[must_use]
+    pub fn control_border(self) -> Color {
+        self.border
+            .overlay(self.outline.with_alpha(CONTROL_BORDER_OUTLINE_MIX))
     }
 
     pub fn sidebar_hover(self) -> Color {
@@ -123,6 +290,7 @@ impl Palette {
 
     pub(crate) fn write_css_declarations(self, out: &mut String) {
         let colors = [
+            // GDS semantic & interactive tokens.
             ("--gds-content", self.content),
             ("--gds-sidebar", self.sidebar),
             ("--gds-foreground", self.foreground),
@@ -132,10 +300,16 @@ impl Palette {
             ("--gds-surface-foreground", self.surface_foreground),
             ("--gds-panel", self.panel),
             ("--gds-panel-foreground", self.panel_foreground),
+            ("--gds-control", self.control),
+            ("--gds-control-foreground", self.control_foreground),
+            ("--gds-control-hover", self.control_hover()),
+            ("--gds-control-pressed", self.control_pressed()),
+            ("--gds-control-border", self.control_border()),
             ("--gds-border", self.border),
             ("--gds-outline", self.outline),
             ("--gds-shadow", self.shadow),
-            ("--gds-scrim", self.shadow.with_alpha(0.5)),
+            ("--gds-scrim", self.scrim),
+            ("--gds-scrim-backdrop", self.scrim.with_alpha(0.5)),
             ("--gds-primary", self.primary),
             ("--gds-primary-foreground", self.primary_foreground),
             ("--gds-selection", self.selection),
@@ -155,6 +329,66 @@ impl Palette {
             ("--gds-drag-target", self.drag_target()),
             ("--gds-switch-off", self.switch_off()),
             ("--gds-switch-thumb-off", self.switch_thumb_off()),
+            // Complete Material 3 / DMS aligned tokens.
+            ("--gds-background", self.background),
+            ("--gds-on-background", self.on_background),
+            ("--gds-on-surface", self.on_surface),
+            ("--gds-surface-dim", self.surface_dim),
+            ("--gds-surface-bright", self.surface_bright),
+            (
+                "--gds-surface-container-lowest",
+                self.surface_container_lowest,
+            ),
+            ("--gds-surface-container-low", self.surface_container_low),
+            ("--gds-surface-container", self.surface_container),
+            ("--gds-surface-container-high", self.surface_container_high),
+            (
+                "--gds-surface-container-highest",
+                self.surface_container_highest,
+            ),
+            ("--gds-surface-variant", self.surface_variant),
+            ("--gds-on-surface-variant", self.on_surface_variant),
+            ("--gds-surface-tint", self.surface_tint),
+            ("--gds-inverse-surface", self.inverse_surface),
+            ("--gds-inverse-on-surface", self.inverse_on_surface),
+            ("--gds-inverse-primary", self.inverse_primary),
+            ("--gds-outline-variant", self.outline_variant),
+            ("--gds-source-color", self.source_color),
+            ("--gds-on-primary", self.on_primary),
+            ("--gds-primary-container", self.primary_container),
+            ("--gds-on-primary-container", self.on_primary_container),
+            ("--gds-primary-fixed", self.primary_fixed),
+            ("--gds-primary-fixed-dim", self.primary_fixed_dim),
+            ("--gds-on-primary-fixed", self.on_primary_fixed),
+            (
+                "--gds-on-primary-fixed-variant",
+                self.on_primary_fixed_variant,
+            ),
+            ("--gds-secondary", self.secondary),
+            ("--gds-on-secondary", self.on_secondary),
+            ("--gds-secondary-container", self.secondary_container),
+            ("--gds-on-secondary-container", self.on_secondary_container),
+            ("--gds-secondary-fixed", self.secondary_fixed),
+            ("--gds-secondary-fixed-dim", self.secondary_fixed_dim),
+            ("--gds-on-secondary-fixed", self.on_secondary_fixed),
+            (
+                "--gds-on-secondary-fixed-variant",
+                self.on_secondary_fixed_variant,
+            ),
+            ("--gds-tertiary", self.tertiary),
+            ("--gds-on-tertiary", self.on_tertiary),
+            ("--gds-tertiary-container", self.tertiary_container),
+            ("--gds-on-tertiary-container", self.on_tertiary_container),
+            ("--gds-tertiary-fixed", self.tertiary_fixed),
+            ("--gds-tertiary-fixed-dim", self.tertiary_fixed_dim),
+            ("--gds-on-tertiary-fixed", self.on_tertiary_fixed),
+            (
+                "--gds-on-tertiary-fixed-variant",
+                self.on_tertiary_fixed_variant,
+            ),
+            ("--gds-on-error", self.on_error),
+            ("--gds-error-container", self.error_container),
+            ("--gds-on-error-container", self.on_error_container),
         ];
         for (name, value) in colors {
             let _ = writeln!(out, "    {name}: {};", color_css(value));
@@ -185,8 +419,8 @@ impl Palette {
         theme.color.tooltip_border = color_css(self.border);
         theme.color.primary = color_css(self.primary);
         theme.color.primary_foreground = color_css(self.primary_foreground);
-        theme.color.secondary = color_css(self.surface);
-        theme.color.secondary_foreground = color_css(self.surface_foreground);
+        theme.color.secondary = color_css(self.secondary_container);
+        theme.color.secondary_foreground = color_css(self.on_secondary_container);
         theme.color.muted = color_css(self.surface);
         theme.color.muted_foreground = color_css(self.muted_foreground);
         theme.color.accent = color_css(self.selection);
@@ -203,7 +437,7 @@ impl Palette {
         theme.color.border = color_css(self.border);
         theme.color.input = color_css(self.outline);
         theme.color.ring = color_css(self.primary);
-        theme.color.scrim = color_css(self.shadow.with_alpha(0.5));
+        theme.color.scrim = color_css(self.scrim.with_alpha(0.5));
         theme.color.sidebar = color_css(self.sidebar);
         theme.color.sidebar_foreground = color_css(self.sidebar_foreground);
         theme.color.sidebar_primary = color_css(self.primary);
@@ -214,7 +448,8 @@ impl Palette {
         theme.color.sidebar_ring = color_css(self.primary);
 
         theme.control.ghost_hover = color_css(self.hover());
-        theme.control.outline_hover = color_css(self.hover());
+        theme.control.outline_border = color_css(self.control_border());
+        theme.control.outline_hover = color_css(self.control_hover());
         theme.control.switch_off = color_css(self.switch_off_for(mode));
         theme.control.switch_thumb = color_css(self.switch_thumb_off_for(mode));
         theme.control.switch_thumb_on = color_css(self.primary_foreground);
@@ -268,7 +503,7 @@ mod tests {
     use crate::appearance::{motion, typography};
 
     #[test]
-    fn switch_palette_tokens_are_emitted_and_high_contrast_across_all_builtin_themes() {
+    fn switch_and_control_palette_tokens_are_emitted_and_contrast_across_all_builtin_themes() {
         let typo = typography::Preferences::default()
             .resolve()
             .expect("default typography");
@@ -298,10 +533,35 @@ mod tests {
                     palette.primary, palette.primary_foreground,
                     "checked switch track and thumb must contrast in {builtin:?} {expected_mode:?}"
                 );
+                assert_ne!(
+                    palette.control, palette.control_foreground,
+                    "neutral control fill and ink must contrast in {builtin:?} {expected_mode:?}"
+                );
+                assert_ne!(
+                    palette.control, palette.panel,
+                    "neutral control fill must stand apart from dialog panel in {builtin:?} {expected_mode:?}"
+                );
 
                 let css = prepared.gds_stylesheet_css(&typo, motion_policy);
-                assert!(css.contains("--gds-switch-off:"));
-                assert!(css.contains("--gds-switch-thumb-off:"));
+                for token in [
+                    "--gds-control:",
+                    "--gds-control-foreground:",
+                    "--gds-control-hover:",
+                    "--gds-control-pressed:",
+                    "--gds-control-border:",
+                    "--gds-surface-container-lowest:",
+                    "--gds-surface-container-highest:",
+                    "--gds-secondary:",
+                    "--gds-secondary-container:",
+                    "--gds-tertiary:",
+                    "--gds-tertiary-container:",
+                    "--gds-error-container:",
+                    "--gds-inverse-surface:",
+                    "--gds-switch-off:",
+                    "--gds-switch-thumb-off:",
+                ] {
+                    assert!(css.contains(token), "missing {token} in {builtin:?}");
+                }
 
                 let tokens = prepared.tokens_theme(&typo, motion_policy);
                 assert_ne!(tokens.control.switch_off, tokens.control.switch_thumb);

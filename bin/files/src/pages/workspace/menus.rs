@@ -23,7 +23,7 @@ use zgui::prelude::*;
 use zgui::reactive::{
     RenderEffect, RwSignal, UnsyncCallback, enter_non_reactive_zone, on_cleanup_local,
 };
-use zgui::view::{current_host, events, install_stylesheet};
+use zgui::view::{Scoped, current_host, events, install_stylesheet};
 use zgui::vocab::{Key, KeyEvent, Modifiers, NamedKey, PointerButton};
 use zgui::{css, view};
 use zgui_ui::menu::{MenuContentProps, MenuContext};
@@ -478,26 +478,29 @@ fn anchored_menu_surface(
     placement: Placement,
     build_entries: std::rc::Rc<dyn Fn() -> Vec<MenuEntry>>,
 ) -> AnyView {
-    let overlay = OverlayState::new(
-        Binding::controlled(open, move |next: bool| {
-            if !next {
-                on_close.run(());
+    AnyView::new(Scoped::new(move || {
+        let overlay = OverlayState::new(
+            Binding::controlled(open, move |next: bool| {
+                if !next {
+                    on_close.run(());
+                }
+            }),
+            false,
+            None,
+        )
+        .anchored_to(anchor)
+        .provide();
+        MenuContext::new(overlay).provide();
+        view! {
+            MenuContent(
+                state = overlay,
+                placement = placement,
+                class = "gds-menu-content gds-files-menu-content"
+            ) {
+                {{render_entries(build_entries())}}
             }
-        }),
-        false,
-        None,
-    )
-    .anchored_to(anchor);
-    MenuContext::new(overlay).provide();
-    AnyView::new(view! {
-        MenuContent(
-            state = overlay,
-            placement = placement,
-            class = "gds-menu-content gds-files-menu-content"
-        ) {
-            {{render_entries(build_entries())}}
         }
-    })
+    }))
 }
 
 fn move_column_pinned(layout: &mut Layout, column: Column, target_index: usize) {
@@ -2091,39 +2094,43 @@ impl Browser {
             return AnyView::new(view! { box(class = "gds-files-hidden") });
         };
 
-        let anchor = NodeRef::new();
         let close = self.clone();
-        let overlay = OverlayState::new(
-            Binding::controlled(Signal::stored_local(true), move |next: bool| {
-                if !next {
-                    close.0.menus.close();
-                }
-            }),
-            true,
-            None,
-        )
-        .anchored_to(anchor);
-        MenuContext::new(overlay).provide();
+        AnyView::new(Scoped::new(move || {
+            let anchor = NodeRef::new();
+            let close = close.clone();
+            let overlay = OverlayState::new(
+                Binding::controlled(Signal::stored_local(true), move |next: bool| {
+                    if !next {
+                        close.0.menus.close();
+                    }
+                }),
+                true,
+                None,
+            )
+            .anchored_to(anchor)
+            .provide();
+            MenuContext::new(overlay).provide();
 
-        AnyView::new(view! {
-            box(class = "gds-files-context-portal-anchor") {
-                box(
-                    node_ref = anchor,
-                    class = "gds-files-context-point",
-                    style:left = format!("{x:.1}px"),
-                    style:top = format!("{y:.1}px"),
-                    a11y:hidden = true
-                )
-                MenuContent(
-                    state = overlay,
-                    placement = Placement::new(Side::Bottom, Align::Start),
-                    offset = 0.0,
-                    class = "gds-menu-content gds-files-menu-content"
-                ) {
-                    {render_entries(entries.clone())}
+            view! {
+                box(class = "gds-files-context-portal-anchor") {
+                    box(
+                        node_ref = anchor,
+                        class = "gds-files-context-point",
+                        style:left = format!("{x:.1}px"),
+                        style:top = format!("{y:.1}px"),
+                        a11y:hidden = true
+                    )
+                    MenuContent(
+                        state = overlay,
+                        placement = Placement::new(Side::Bottom, Align::Start),
+                        offset = 0.0,
+                        class = "gds-menu-content gds-files-menu-content"
+                    ) {
+                        {render_entries(entries.clone())}
+                    }
                 }
             }
-        })
+        }))
     }
 
     fn columns_dialog(&self) -> AnyView {

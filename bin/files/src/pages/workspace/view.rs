@@ -14,7 +14,6 @@ use gds::ui::button::IconButtonProps;
 use gds::ui::feedback::dialog::{
     DialogActionsProps, DialogContentProps, DialogDecision, DialogDescriptionProps,
     DialogFooterProps, DialogHeaderProps, DialogProps, DialogScope, DialogTitleProps,
-    handle_dialog_key_down,
 };
 use gds::ui::feedback::notifications::{NotificationHostProps, error as notify_error};
 use gds::ui::feedback::tooltip::{HintTooltipProps, wrap_tokens};
@@ -43,7 +42,7 @@ use zgui::view::time::{FrameHandle, Timers};
 use zgui::view::{
     CustomPropertyName, Scoped, current_host, events, focus_is_text_entry, install_stylesheet,
 };
-use zgui::vocab::{PointerButton, Role, SharedString, Timestamp};
+use zgui::vocab::{Key, NamedKey, PointerButton, Role, SharedString, Timestamp};
 use zgui::{css, view};
 use zgui_ui::{ButtonProps, ButtonVariant, SpinnerProps, VirtualListProps, Virtualize};
 use zgui_ui_primitives::Binding;
@@ -52,7 +51,6 @@ use super::geometry::{GRID_GAP, GRID_PADDING, GridMotion};
 use super::marquee;
 use super::menus::Surface;
 use super::model::{ConfirmOptions, Contents, Pane, Prompt, Row};
-use super::name_form::PromptDecisionHandler;
 use super::ui::Browser;
 use crate::entities::file::ViewMode;
 use crate::entities::file::columns::Column;
@@ -1307,8 +1305,7 @@ impl Browser {
         let prompt_open = Signal::derive_local(move || !matches!(prompt_sig.get(), Prompt::Closed));
         let prompt_conflict = RwSignal::new_local(false);
         let prompt_about_retained = RwSignal::new_local(false);
-        let decision_slot: PromptDecisionHandler = Rc::new(RefCell::new(None));
-        let key_decision_slot = Rc::clone(&decision_slot);
+        let key_decision_slot = self.0.prompt_decisions.clone();
 
         let keyboard = self.clone();
         let init_focus_browser = self.clone();
@@ -1356,10 +1353,7 @@ impl Browser {
                                         dismiss_on_outside_press = true,
                                         dismiss_on_escape = true,
                                         on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
-                                            let handler = key_decision_slot.borrow().clone();
-                                            if let Some((disabled, cb)) = handler {
-                                                handle_dialog_key_down(disabled.get(), cb, ev);
-                                            }
+                                            let _ = key_decision_slot.handle_key_down(ev);
                                         }
                                     ) {
                                         {{
@@ -1370,7 +1364,6 @@ impl Browser {
                                                 Prompt::Closed,
                                                 ConfirmOptions::default(),
                                             )));
-                                            let slot = Rc::clone(&decision_slot);
                                             move || {
                                                 let generation = gen_sig.get();
                                                 let live_options = opts_sig.get();
@@ -1390,7 +1383,7 @@ impl Browser {
                                                         (current.clone(), live_options.clone());
                                                     (current, live_options)
                                                 };
-                                                pb.prompt_view(prompt, options, generation, &slot)
+                                                pb.prompt_view(prompt, options, generation)
                                             }
                                         }}
                                     }
@@ -3215,25 +3208,41 @@ impl Browser {
         })
     }
 
-    fn prompt_view(
-        &self,
-        prompt: Prompt,
-        options: ConfirmOptions,
-        generation: u64,
-        decision_slot: &PromptDecisionHandler,
-    ) -> AnyView {
-        *decision_slot.borrow_mut() = None;
+    fn prompt_view(&self, prompt: Prompt, options: ConfirmOptions, generation: u64) -> AnyView {
+        let decision_slot = &self.0.prompt_decisions;
         match prompt {
-            Prompt::Closed => AnyView::new(view! { box() }),
-            Prompt::About => AnyView::new(view! {
-                box(
-                    class = "gds-files-about-box",
-                    style:width = format!("{ABOUT_WIDTH}px"),
-                    style:height = format!("{ABOUT_HEIGHT}px")
-                ) {
-                    About(application = Application::cargo("gds-files"))
+            Prompt::Closed => {
+                if matches!(self.0.prompt.get_untracked(), Prompt::Closed) {
+                    decision_slot.clear();
                 }
-            }),
+                AnyView::new(())
+            }
+            Prompt::About => {
+                let about_browser = self.downgrade();
+                let decision_cb = UnsyncCallback::new(move |decision: DialogDecision| {
+                    let Some(browser) = about_browser.upgrade() else {
+                        return;
+                    };
+                    if browser.0.prompt_generation.get_untracked() != generation
+                        || !matches!(browser.0.prompt.get_untracked(), Prompt::About)
+                    {
+                        return;
+                    }
+                    if matches!(decision, DialogDecision::Cancel | DialogDecision::Dismiss) {
+                        browser.cancel_prompt();
+                    }
+                });
+                decision_slot.register(true, None, decision_cb);
+                AnyView::new(view! {
+                    box(
+                        class = "gds-files-about-box",
+                        style:width = format!("{ABOUT_WIDTH}px"),
+                        style:height = format!("{ABOUT_HEIGHT}px")
+                    ) {
+                        About(application = Application::cargo("gds-files"))
+                    }
+                })
+            }
             Prompt::Confirm {
                 title,
                 message,
@@ -3257,6 +3266,7 @@ impl Browser {
                     settled.set(true);
                     match decision {
                         DialogDecision::Confirm => {
+                            browser.0.prompt_decisions.clear();
                             browser.0.prompt.set(Prompt::Closed);
                             accept();
                         }
@@ -3266,13 +3276,21 @@ impl Browser {
                     }
                 });
 
-                *decision_slot.borrow_mut() = Some((Rc::new(Cell::new(false)), decision_cb));
-                {
-                    let cleanup_slot = Rc::clone(decision_slot);
-                    on_cleanup_local(move || {
-                        *cleanup_slot.borrow_mut() = None;
-                    });
-                }
+                decision_slot.register(false, None, decision_cb);
+
+                let confirm_body = NodeRef::new();
+                let prompt_sig = self.0.prompt;
+                let focus_fx = RenderEffect::new(move |mounted_before: Option<bool>| {
+                    let mounted = confirm_body.get().is_some();
+                    if mounted
+                        && mounted_before != Some(true)
+                        && matches!(prompt_sig.get_untracked(), Prompt::Confirm { .. })
+                    {
+                        confirm_body.focus();
+                    }
+                    mounted
+                });
+                on_cleanup_local(move || drop(focus_fx));
 
                 let shown_items: Vec<String> = options
                     .items
@@ -3287,7 +3305,21 @@ impl Browser {
                 let primary_icon = options.primary_icon.unwrap_or(IconName::Check);
 
                 AnyView::new(view! {
-                    column(class = "gds-files-confirm-body") {
+                    column(
+                        node_ref = confirm_body,
+                        class = "gds-files-confirm-body",
+                        tabindex = Focus::Programmatic,
+                        on:key_down = move |ev: &mut EventCx<'_, events::KeyDown>| {
+                            if !ev.repeat
+                                && ev.modifiers.held().is_empty()
+                                && ev.key == Key::Named(NamedKey::Enter)
+                            {
+                                decision_cb.run(DialogDecision::Confirm);
+                                ev.prevent_default();
+                                ev.stop_propagation();
+                            }
+                        },
+                    ) {
                         DialogHeader {
                             {if let Some(icon) = header_icon {
                                 AnyView::new(view! {
@@ -4207,13 +4239,23 @@ pub(super) mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let home = temp.path().join("home");
         std::fs::create_dir_all(home.join("Pictures")).expect("create Pictures");
+        std::fs::write(home.join("Pictures/nested.bin"), vec![0xabu8; 4096])
+            .expect("create nested file inside Pictures");
         std::fs::write(home.join("notes.txt"), b"hello\n").expect("create notes.txt");
+        let two_line_name = "eb72d0c7423da74ca3d41fb9e570ce33470697977.txt";
+        let very_long_name =
+            "release_artifact_2026_11_21_x86_64_unknown_linux_gnu_symbols_bundle.tar.zst";
+        std::fs::write(home.join(two_line_name), b"two lines\n").expect("create 2-line fixture");
+        std::fs::write(home.join(very_long_name), b"long\n").expect("create 3-line fixture");
         let png_path = home.join("screenshot.png");
         let img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
             image::ImageBuffer::from_fn(320, 180, |x, y| {
                 image::Rgba([(x & 0xff) as u8, (y & 0xff) as u8, 200, 255])
             });
         img.save(&png_path).expect("write 16:9 PNG fixture");
+        let png_len = std::fs::metadata(&png_path).expect("png metadata").len();
+        let expected_multi_size =
+            crate::entities::file::ui::EntryPresentation::format_size(png_len + 5 + 4096);
 
         clear_row_content_nodes();
         super::super::inspection::tests::clear_recorded_artwork_nodes();
@@ -4241,7 +4283,7 @@ pub(super) mod tests {
 
             let browser = browser_slot.borrow().clone().expect("browser constructed");
             let deadline = Instant::now() + Duration::from_secs(3);
-            while browser.read_untracked(|state| state.tab().rows.len() < 3) {
+            while browser.read_untracked(|state| state.tab().rows.len() < 5) {
                 assert!(
                     Instant::now() < deadline,
                     "timed out waiting for Home directory rows to load"
@@ -4257,22 +4299,32 @@ pub(super) mod tests {
             zgui::reactive::flush();
             harness.settle(16);
 
-            let (screenshot_idx, notes_idx) = browser.read_untracked(|state| {
-                let tab = state.tab();
-                let mut s_idx = None;
-                let mut n_idx = None;
-                for (idx, row) in tab.rows.iter().enumerate() {
-                    if row.label() == "screenshot.png" {
-                        s_idx = Some(idx);
-                    } else if row.label() == "notes.txt" {
-                        n_idx = Some(idx);
+            let (screenshot_idx, notes_idx, pictures_idx, two_line_idx, very_long_idx) = browser
+                .read_untracked(|state| {
+                    let tab = state.tab();
+                    let mut s_idx = None;
+                    let mut n_idx = None;
+                    let mut p_idx = None;
+                    let mut t_idx = None;
+                    let mut l_idx = None;
+                    for (idx, row) in tab.rows.iter().enumerate() {
+                        match row.label().as_str() {
+                            "screenshot.png" => s_idx = Some(idx),
+                            "notes.txt" => n_idx = Some(idx),
+                            "Pictures" => p_idx = Some(idx),
+                            name if name == two_line_name => t_idx = Some(idx),
+                            name if name == very_long_name => l_idx = Some(idx),
+                            _ => {}
+                        }
                     }
-                }
-                (
-                    s_idx.expect("screenshot.png row index"),
-                    n_idx.expect("notes.txt row index"),
-                )
-            });
+                    (
+                        s_idx.expect("screenshot.png row index"),
+                        n_idx.expect("notes.txt row index"),
+                        p_idx.expect("Pictures row index"),
+                        t_idx.expect("two-line row index"),
+                        l_idx.expect("very-long row index"),
+                    )
+                });
 
             // Select screenshot.png and wait for background inspection worker to decode its PNG thumbnail.
             browser.select_row(screenshot_idx, Modifiers::NONE);
@@ -4342,27 +4394,65 @@ pub(super) mod tests {
                 );
             }
 
-            // 3. Details pane media box spans full inner width (> 240px inside 280px pane) x 168px height!
-            let details_thumb = super::super::inspection::tests::details_thumb_node()
-                .expect("recorded .gds-files-details__thumb-wrap");
-            let details_bounds = details_thumb
+            // 3. No Shock contract: Details pane stage (168px), 2-line title slot (44px), and
+            //    scrollable body origin Y stay at identical pixel coordinates across images,
+            //    plain files, folders, 2-line filenames, 3+ line clamped filenames, and multi-select!
+            let measure_details_anchors = |label: &str| -> (f32, f32, f32, f32, f32) {
+                let stage =
+                    super::super::inspection::tests::details_thumb_node().unwrap_or_else(|| {
+                        panic!("recorded .gds-files-details__thumb-wrap for {label}")
+                    });
+                let title = super::super::inspection::tests::details_title_slot_node()
+                    .unwrap_or_else(|| {
+                        panic!("recorded .gds-files-details__title-slot for {label}")
+                    });
+                let body = super::super::inspection::tests::details_body_node()
+                    .unwrap_or_else(|| panic!("recorded .gds-files-details__body for {label}"));
+                let sb = stage.window_bounds().expect("stage window bounds");
+                let tb = title.window_bounds().expect("title slot window bounds");
+                let bb = body.window_bounds().expect("body window bounds");
+                (
+                    sb.size.width.0 / scale,
+                    sb.size.height.0 / scale,
+                    sb.origin.y.0 / scale,
+                    tb.origin.y.0 / scale,
+                    bb.origin.y.0 / scale,
+                )
+            };
+
+            let (details_w, details_h, base_stage_y, base_title_y, base_body_y) =
+                measure_details_anchors("screenshot.png");
+            let base_title_h = super::super::inspection::tests::details_title_slot_node()
+                .expect("title slot")
                 .bounds()
-                .expect("measured bounds for .gds-files-details__thumb-wrap");
-            let details_w = details_bounds.size.width.0 / scale;
-            let details_h = details_bounds.size.height.0 / scale;
+                .expect("title bounds")
+                .size
+                .height
+                .0
+                / scale;
             assert_content_width_matches_layout(&browser);
             assert!(
                 details_w > 240.0 && (details_h - 168.0).abs() < 0.5,
-                "expected Details media box to span full width (> 240px) x 168px (never 144x144px), got {details_w:.1}x{details_h:.1}"
+                "expected Details media box to span full width (> 240px) x 168px, got {details_w:.1}x{details_h:.1}"
+            );
+            assert!(
+                (base_title_h - 44.0).abs() < 0.5,
+                "expected fixed 2-line Details title slot height == 44px, got {base_title_h:.1}"
             );
 
-            // Selecting a non-thumbnail file (`notes.txt`) renders centered 64x64px fallback without media box.
+            // Selecting non-thumbnail `notes.txt` keeps the exact 168px stage + 44px title slot +
+            // body Y anchor while centering a 64x64px icon inside the stage.
             browser.select_row(notes_idx, Modifiers::NONE);
             zgui::reactive::flush();
             harness.settle(16);
+            let (nw, nh, n_stage_y, n_title_y, n_body_y) = measure_details_anchors("notes.txt");
             assert!(
-                !details_thumb.is_bound(),
-                "non-thumbnail file in Details pane must unmount .gds-files-details__thumb-wrap"
+                nw > 240.0
+                    && (nh - 168.0).abs() < 0.5
+                    && (n_stage_y - base_stage_y).abs() < 0.5
+                    && (n_title_y - base_title_y).abs() < 0.5
+                    && (n_body_y - base_body_y).abs() < 0.5,
+                "No Shock violation on notes.txt: stage=({nw:.1}x{nh:.1} @ {n_stage_y:.1}), title_y={n_title_y:.1}, body_y={n_body_y:.1} vs base ({base_stage_y:.1}, {base_title_y:.1}, {base_body_y:.1})"
             );
             let details_fb = super::super::inspection::tests::details_fallback_node()
                 .expect("recorded Details 64px fallback artwork");
@@ -4373,7 +4463,130 @@ pub(super) mod tests {
             let dfb_h = details_fb_bounds.size.height.0 / scale;
             assert!(
                 (dfb_w - 64.0).abs() < 0.5 && (dfb_h - 64.0).abs() < 0.5,
-                "expected Details fallback icon to measure 64x64px, got {dfb_w:.1}x{dfb_h:.1}"
+                "expected Details fallback icon inside 168px stage to measure 64x64px, got {dfb_w:.1}x{dfb_h:.1}"
+            );
+
+            // Check folder, 2-line hash filename, and 3+ line clamped filename: 0px anchor shift!
+            for (idx, label) in [
+                (pictures_idx, "Pictures"),
+                (two_line_idx, two_line_name),
+                (very_long_idx, very_long_name),
+            ] {
+                browser.select_row(idx, Modifiers::NONE);
+                zgui::reactive::flush();
+                harness.settle(16);
+                let (sw, sh, sy, ty, by) = measure_details_anchors(label);
+                assert!(
+                    sw > 240.0
+                        && (sh - 168.0).abs() < 0.5
+                        && (sy - base_stage_y).abs() < 0.5
+                        && (ty - base_title_y).abs() < 0.5
+                        && (by - base_body_y).abs() < 0.5,
+                    "No Shock violation on {label}: stage=({sw:.1}x{sh:.1} @ {sy:.1}), title_y={ty:.1}, body_y={by:.1} vs base ({base_stage_y:.1}, {base_title_y:.1}, {base_body_y:.1})"
+                );
+            }
+
+            // Check multi-selection (`Ctrl` toggle across 2 files + 1 folder): 0px anchor shift
+            // AND displays item count ("项目数量"), folder/file breakdown, and combined byte size!
+            browser.select_row(screenshot_idx, Modifiers::CONTROL);
+            browser.select_row(pictures_idx, Modifiers::CONTROL);
+            let multi_deadline = Instant::now() + Duration::from_secs(3);
+            let live_texts = loop {
+                harness.advance(Duration::from_millis(15));
+                harness.pump();
+                zgui::reactive::flush();
+                harness.settle(8);
+                let mut nodes = std::collections::HashMap::new();
+                for update in offscreen.a11y_log() {
+                    for (id, node) in update.nodes {
+                        nodes.insert(id, node);
+                    }
+                }
+                let texts: Vec<String> = nodes
+                    .values()
+                    .filter(|n| !n.is_hidden())
+                    .filter_map(|n| n.value().or_else(|| n.label()).map(str::to_owned))
+                    .collect();
+                if texts.iter().any(|t| t == &expected_multi_size) {
+                    break texts;
+                }
+                assert!(
+                    Instant::now() < multi_deadline,
+                    "timed out waiting for multi-select combined size {expected_multi_size:?}; live_texts={texts:?}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            let items_label = gds::i18n::text("details-items");
+            let size_label = gds::i18n::text("size");
+            let folders_label = gds::i18n::text("details-folders");
+            let files_label = gds::i18n::text("details-files");
+            for expected_token in [
+                items_label.as_str(),
+                "3",
+                size_label.as_str(),
+                expected_multi_size.as_str(),
+                folders_label.as_str(),
+                files_label.as_str(),
+            ] {
+                assert!(
+                    live_texts.iter().any(|t| t == expected_token),
+                    "expected multi-select details row token {expected_token:?} in {live_texts:?}"
+                );
+            }
+            let (mw, mh, my, mty, mby) = measure_details_anchors("multi-select");
+            assert!(
+                mw > 240.0
+                    && (mh - 168.0).abs() < 0.5
+                    && (my - base_stage_y).abs() < 0.5
+                    && (mty - base_title_y).abs() < 0.5
+                    && (mby - base_body_y).abs() < 0.5,
+                "No Shock violation on multi-select: stage=({mw:.1}x{mh:.1} @ {my:.1}), title_y={mty:.1}, body_y={mby:.1} vs base ({base_stage_y:.1}, {base_title_y:.1}, {base_body_y:.1})"
+            );
+
+            // Re-selecting `screenshot.png` after toggle cycle keeps the full-width (> 240px) x 168px
+            // media box and identical No Shock anchors.
+            browser.select_row(screenshot_idx, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(16);
+            assert!(
+                !details_fb.is_bound(),
+                "re-selecting image in Details pane must unmount the 64px fallback slot"
+            );
+            let (details_w2, details_h2, sy2, ty2, by2) =
+                measure_details_anchors("screenshot.png re-select");
+            assert!(
+                details_w2 > 240.0
+                    && (details_h2 - 168.0).abs() < 0.5
+                    && (sy2 - base_stage_y).abs() < 0.5
+                    && (ty2 - base_title_y).abs() < 0.5
+                    && (by2 - base_body_y).abs() < 0.5,
+                "expected re-selected Details media box to preserve full width x 168px and anchors, got {details_w2:.1}x{details_h2:.1}"
+            );
+
+            browser.toggle_details();
+            zgui::reactive::flush();
+            harness.settle(8);
+            browser.toggle_details();
+            zgui::reactive::flush();
+            harness.settle(8);
+            browser.select_row(screenshot_idx, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(8);
+            browser.select_row(notes_idx, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(8);
+            browser.select_row(screenshot_idx, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(16);
+            let (details_w3, details_h3, sy3, ty3, by3) =
+                measure_details_anchors("screenshot.png post-toggle");
+            assert!(
+                details_w3 > 240.0
+                    && (details_h3 - 168.0).abs() < 0.5
+                    && (sy3 - base_stage_y).abs() < 0.5
+                    && (ty3 - base_title_y).abs() < 0.5
+                    && (by3 - base_body_y).abs() < 0.5,
+                "expected Details media box after toggle + regular-file switch to stay > 240px x 168px at fixed anchors, got {details_w3:.1}x{details_h3:.1}"
             );
 
             harness.shut_down();
@@ -5091,5 +5304,346 @@ pub(super) mod tests {
                 browser.view()
             })
             .expect("single-dispatch and portal isolation harness");
+    }
+
+    #[test]
+    fn context_menu_dismissal_modal_scope_cleanup_and_shift_delete_alt_mnemonics() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(&home).expect("create home");
+        std::fs::write(home.join("victim.txt"), b"bye\n").expect("write victim.txt");
+        clear_row_content_nodes();
+
+        let supervisor = Supervisor::new(false).expect("tokio supervisor");
+        let bg_scope = supervisor.scope();
+        let browser_slot: Rc<RefCell<Option<Browser>>> = Rc::new(RefCell::new(None));
+        let slot_for_view = Rc::clone(&browser_slot);
+        let start = home.clone();
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(1280.0),
+                DevicePx(800.0),
+            )));
+            harness.settle(16);
+
+            let browser = browser_slot.borrow().clone().expect("browser constructed");
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while browser.read_untracked(|state| state.tab().rows.is_empty()) {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for victim.txt to load"
+                );
+                harness.advance(Duration::from_millis(25));
+                harness.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            zgui::reactive::flush();
+            harness.settle(8);
+
+            // 1. Right-click empty directory space -> click "New Folder" (first item) ->
+            //    context menu must dismiss immediately and stay dismissed after creating the folder.
+            let menu_origin = Point::new(CssPx(640.0), CssPx(420.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(menu_origin).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(menu_origin).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(8);
+            zgui::reactive::flush();
+            assert!(
+                browser.0.menus.is_open(),
+                "right-clicking empty directory space must open directory context menu"
+            );
+
+            // Opening the context menu via right-click must NOT pre-highlight/focus item 0:
+            // pressing Enter before any pointer hover or ArrowDown must leave the menu open
+            // without triggering item 0 ("New Folder").
+            send_key_chord(
+                &mut harness,
+                KeyEvent::named(NamedKey::Enter, PhysicalKey::Code(KeyCode::Enter)),
+                Modifiers::NONE,
+            );
+            assert!(
+                matches!(browser.0.prompt.get_untracked(), super::Prompt::Closed),
+                "context menu must not pre-focus item 0 on open"
+            );
+            assert!(
+                browser.0.menus.is_open(),
+                "unfocused Enter on newly opened context menu must keep menu open"
+            );
+
+            // Click the first menu item ("New Folder") inside the anchored context menu.
+            let first_item_pos = Point::new(CssPx(680.0), CssPx(438.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(first_item_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(first_item_pos).with_button(PointerButton::Primary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(8);
+            zgui::reactive::flush();
+            assert!(
+                matches!(browser.0.prompt.get_untracked(), super::Prompt::Name { .. }),
+                "clicking New Folder must open NameForm prompt"
+            );
+            assert!(
+                !browser.0.menus.is_open(),
+                "clicking New Folder in context menu must immediately dismiss the context menu"
+            );
+
+            // Submit the new folder with Enter and wait for creation.
+            send_key_chord(
+                &mut harness,
+                KeyEvent::named(NamedKey::Enter, PhysicalKey::Code(KeyCode::Enter)),
+                Modifiers::NONE,
+            );
+            let folder_deadline = Instant::now() + Duration::from_secs(3);
+            while browser.read_untracked(|state| state.tab().rows.len() < 2) {
+                assert!(
+                    Instant::now() < folder_deadline,
+                    "timed out waiting for created folder to appear"
+                );
+                harness.advance(Duration::from_millis(25));
+                harness.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            zgui::reactive::flush();
+            harness.settle(8);
+            assert!(
+                !browser.0.menus.is_open(),
+                "context menu must remain closed after new folder creation completes"
+            );
+
+            // 2. Opening and closing a `DialogScope::enter()` modal (`Surface::Columns`) must NOT
+            //    leak `modal_scopes` in `KeytipRegistry` (which would block subsequent shortcuts
+            //    and suppress modal `Alt` keytips).
+            browser.configure_columns();
+            zgui::reactive::flush();
+            harness.settle(8);
+            assert!(gds::ui::keytips::has_active_modal_scope());
+            send_key_chord(
+                &mut harness,
+                KeyEvent::named(NamedKey::Escape, PhysicalKey::Code(KeyCode::Escape)),
+                Modifiers::NONE,
+            );
+            assert!(
+                !gds::ui::keytips::has_active_modal_scope(),
+                "closing Surface::Columns must clean up its modal scope from KeytipRegistry"
+            );
+
+            let collect_labels = |harness: &Harness<Box<dyn AppHandler>>| -> Vec<String> {
+                let Some(surface) = harness.platform().offscreens().first().cloned() else {
+                    return Vec::new();
+                };
+                let mut nodes = HashMap::new();
+                let mut root = None;
+                for update in surface.a11y_log() {
+                    if let Some(tree) = update.tree {
+                        root = Some(tree.root);
+                    }
+                    for (id, node) in update.nodes {
+                        nodes.insert(id, node);
+                    }
+                }
+                let Some(root_id) = root else {
+                    return Vec::new();
+                };
+                let mut stack = vec![root_id];
+                let mut seen = HashSet::new();
+                let mut labels = Vec::new();
+                while let Some(id) = stack.pop() {
+                    if !seen.insert(id) {
+                        continue;
+                    }
+                    let Some(node) = nodes.get(&id) else {
+                        continue;
+                    };
+                    if node.role() == Role::Label
+                        && let Some(lbl) = node.label()
+                    {
+                        labels.push(lbl.to_owned());
+                    }
+                    for &child in node.children().iter().rev() {
+                        stack.push(child);
+                    }
+                }
+                labels
+            };
+
+            // Holding `Alt` in the workspace after closing `Surface::Columns` must still reveal
+            // workspace keytip badges (e.g., `"M"` on the application menu button).
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Pressed,
+                event: KeyEvent::named(NamedKey::Alt, PhysicalKey::Code(KeyCode::AltLeft)),
+                modifiers: Modifiers::ALT,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(6);
+            zgui::reactive::flush();
+            harness.settle(4);
+            let workspace_labels = collect_labels(&harness);
+            assert!(
+                workspace_labels.iter().any(|lbl| lbl == "M"),
+                "workspace Alt keytip 'M' must appear after closing Surface::Columns, got {workspace_labels:?}"
+            );
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Released,
+                event: KeyEvent::named(NamedKey::Alt, PhysicalKey::Code(KeyCode::AltLeft)),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(6);
+            zgui::reactive::flush();
+
+            // 3. Select `victim.txt` and press `Shift+Delete` -> `Alt+C` cancels, then `Shift+Delete`
+            //    again -> `Alt+A` confirms permanent deletion.
+            let victim_idx = browser.read_untracked(|state| {
+                state
+                    .tab()
+                    .rows
+                    .iter()
+                    .position(|row| row.label() == "victim.txt")
+                    .expect("victim.txt row")
+            });
+            browser.0.content_focus.focus();
+            browser.select_row(victim_idx, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(6);
+
+            send_key_chord(
+                &mut harness,
+                KeyEvent::named(NamedKey::Delete, PhysicalKey::Code(KeyCode::Delete)),
+                Modifiers::SHIFT,
+            );
+            assert!(
+                matches!(
+                    browser.0.prompt.get_untracked(),
+                    super::Prompt::Confirm { .. }
+                ),
+                "Shift+Delete must open permanent delete confirmation prompt"
+            );
+            assert!(
+                gds::ui::keytips::has_active_modal_scope(),
+                "Prompt::Confirm must activate modal DialogScope"
+            );
+
+            // Holding `Alt` inside `Prompt::Confirm` must mount the modal `"A"` and `"C"` keytip
+            // badges while suppressing workspace `"M"`.
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Pressed,
+                event: KeyEvent::named(NamedKey::Alt, PhysicalKey::Code(KeyCode::AltLeft)),
+                modifiers: Modifiers::ALT,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(6);
+            zgui::reactive::flush();
+            harness.settle(4);
+            let modal_labels = collect_labels(&harness);
+            assert!(
+                modal_labels.iter().any(|lbl| lbl == "A")
+                    && modal_labels.iter().any(|lbl| lbl == "C")
+                    && !modal_labels.iter().any(|lbl| lbl == "M"),
+                "holding Alt inside Shift+Delete confirmation must show modal 'A'/'C' keytips and suppress workspace 'M', got {modal_labels:?}"
+            );
+            harness.deliver_to_first(SurfaceEvent::Key {
+                state: KeyState::Released,
+                event: KeyEvent::named(NamedKey::Alt, PhysicalKey::Code(KeyCode::AltLeft)),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(6);
+            zgui::reactive::flush();
+
+            // Cancel via `Alt+C`.
+            send_key_chord(&mut harness, KeyEvent::character("c"), Modifiers::ALT);
+            assert!(
+                matches!(browser.0.prompt.get_untracked(), super::Prompt::Closed),
+                "Alt+C must cancel the Shift+Delete confirmation dialog"
+            );
+            assert!(
+                !gds::ui::keytips::has_active_modal_scope(),
+                "cancelling Prompt::Confirm must release its modal DialogScope"
+            );
+            assert!(home.join("victim.txt").exists());
+
+            // Re-open with `Shift+Delete` and confirm via `Alt+A`.
+            browser.0.content_focus.focus();
+            browser.select_row(victim_idx, Modifiers::NONE);
+            zgui::reactive::flush();
+            harness.settle(6);
+            send_key_chord(
+                &mut harness,
+                KeyEvent::named(NamedKey::Delete, PhysicalKey::Code(KeyCode::Delete)),
+                Modifiers::SHIFT,
+            );
+            assert!(matches!(
+                browser.0.prompt.get_untracked(),
+                super::Prompt::Confirm { .. }
+            ));
+
+            send_key_chord(&mut harness, KeyEvent::character("a"), Modifiers::ALT);
+            assert!(
+                matches!(browser.0.prompt.get_untracked(), super::Prompt::Closed),
+                "Alt+A must confirm the Shift+Delete permanent deletion dialog"
+            );
+            let delete_deadline = Instant::now() + Duration::from_secs(3);
+            while home.join("victim.txt").exists() {
+                assert!(
+                    Instant::now() < delete_deadline,
+                    "timed out waiting for Alt+A permanent delete to remove victim.txt"
+                );
+                harness.advance(Duration::from_millis(25));
+                harness.pump();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(1280.0, 800.0)
+            .run_on(driver, move || {
+                let scope: Scope = bg_scope.clone();
+                let app = Gds::install(scope.clone());
+                app.appearance().motion().set_enabled(false);
+                let _ = app.appearance().install_window_sheet();
+                app.i18n().install_catalog(
+                    files_i18n::prepare(Language::English).expect("English catalog"),
+                );
+                let _prefs =
+                    preferences::Service::install(preferences::Preferences::default(), &scope)
+                        .expect("preferences service");
+                let browser = Browser::new(
+                    LaunchOptions {
+                        places: Ok(Places::default()),
+                        start: start.clone(),
+                        home: start.clone(),
+                        picker: None,
+                    },
+                    volumes::Service::new(scope),
+                    Rc::new(|_| {}),
+                );
+                *slot_for_view.borrow_mut() = Some(browser.clone());
+                browser.view()
+            })
+            .expect("context menu, modal scope cleanup, and Shift+Delete Alt mnemonics harness");
     }
 }

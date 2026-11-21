@@ -31,7 +31,7 @@ use crate::app::Gds;
 use crate::ui::button::{ButtonProps, ButtonVariant};
 use crate::ui::icon::IconName;
 use crate::ui::keytips::{
-    DialogScopeId, allocate_dialog_scope_id, push_modal_scope, remove_modal_scope,
+    DialogScopeId, KeytipRegistry, allocate_dialog_scope_id, push_modal_scope, remove_modal_scope,
 };
 
 const SHEET: &str = css!(
@@ -120,11 +120,12 @@ impl DialogScope {
     pub fn enter() -> Self {
         let raw_id = allocate_dialog_scope_id();
         let id = DialogScopeId(raw_id);
+        let registry = KeytipRegistry::current();
         if zgui::reactive::is_ui_thread() {
             provide_local_context(id);
         }
-        push_modal_scope(raw_id);
-        on_cleanup_local(move || remove_modal_scope(raw_id));
+        push_modal_scope(registry, raw_id);
+        on_cleanup_local(move || remove_modal_scope(registry, raw_id));
         Self { id }
     }
 
@@ -133,19 +134,20 @@ impl DialogScope {
     pub fn use_open(open: Signal<bool, LocalStorage>) -> Self {
         let raw_id = allocate_dialog_scope_id();
         let id = DialogScopeId(raw_id);
+        let registry = KeytipRegistry::current();
         if zgui::reactive::is_ui_thread() {
             provide_local_context(id);
         }
         let fx = RenderEffect::new(move |_| {
             if open.get() {
-                push_modal_scope(raw_id);
+                push_modal_scope(registry, raw_id);
             } else {
-                remove_modal_scope(raw_id);
+                remove_modal_scope(registry, raw_id);
             }
         });
         on_cleanup_local(move || {
             drop(fx);
-            remove_modal_scope(raw_id);
+            remove_modal_scope(registry, raw_id);
         });
         Self { id }
     }
@@ -626,11 +628,16 @@ mod tests {
             harness.settle(4);
             assert_eq!(decisions_check.get(), Some(DialogDecision::Confirm));
             assert!(!open_sig.get_untracked());
+            assert!(
+                !has_active_modal_scope(),
+                "closed ModalDialog must release DialogScope"
+            );
 
             // Re-open and press Alt+C to cancel.
             decisions_check.set(None);
             open_sig.set(true);
             harness.settle(4);
+            assert!(has_active_modal_scope());
             harness.deliver_to_first(SurfaceEvent::Key {
                 state: KeyState::Pressed,
                 event: KeyEvent::character("c"),
@@ -639,6 +646,10 @@ mod tests {
             });
             harness.settle(4);
             assert_eq!(decisions_check.get(), Some(DialogDecision::Cancel));
+            assert!(
+                !has_active_modal_scope(),
+                "cancelled ModalDialog must release DialogScope"
+            );
 
             harness.shut_down();
             Ok(())

@@ -6,8 +6,8 @@ use std::{
 };
 
 use gds::ui::feedback::dialog::{
-    DialogActionsProps, DialogDecision, DialogFooterProps, DialogHeaderProps, DialogTitleProps,
-    handle_dialog_key_down,
+    DialogActionsProps, DialogCommand, DialogDecision, DialogFooterProps, DialogHeaderProps,
+    DialogTitleProps, handle_dialog_key_down,
 };
 use gds::ui::{IconName, IconProps};
 use zgui::prelude::*;
@@ -23,8 +23,97 @@ use crate::{
     shared::i18n,
 };
 
-pub(super) type PromptDecisionHandler =
-    Rc<RefCell<Option<(Rc<Cell<bool>>, UnsyncCallback<DialogDecision>)>>>;
+#[derive(Clone, Default)]
+pub(super) struct PromptDecisionSlot(Rc<RefCell<PromptDecisionState>>);
+
+#[derive(Default)]
+struct PromptDecisionState {
+    next_token: u64,
+    active: Option<PromptDecisionEntry>,
+}
+
+#[derive(Clone)]
+struct PromptDecisionEntry {
+    token: u64,
+    confirm_disabled: bool,
+    composing: Option<Rc<Cell<bool>>>,
+    on_decision: UnsyncCallback<DialogDecision>,
+}
+
+impl PromptDecisionSlot {
+    pub(super) fn register(
+        &self,
+        confirm_disabled: bool,
+        composing: Option<Rc<Cell<bool>>>,
+        on_decision: UnsyncCallback<DialogDecision>,
+    ) {
+        let token = {
+            let mut state = self.0.borrow_mut();
+            state.next_token = state.next_token.wrapping_add(1);
+            let token = state.next_token;
+            state.active = Some(PromptDecisionEntry {
+                token,
+                confirm_disabled,
+                composing,
+                on_decision,
+            });
+            token
+        };
+        let slot = Rc::clone(&self.0);
+        on_cleanup_local(move || {
+            let mut state = slot.borrow_mut();
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|entry| entry.token == token)
+            {
+                state.active = None;
+            }
+        });
+    }
+
+    pub(super) fn clear(&self) {
+        self.0.borrow_mut().active = None;
+    }
+
+    pub(super) fn confirm(&self) -> bool {
+        let entry = self.0.borrow().active.clone();
+        let Some(entry) = entry else {
+            return false;
+        };
+        if entry.confirm_disabled || entry.composing.as_ref().is_some_and(|c| c.get()) {
+            return false;
+        }
+        entry.on_decision.run(DialogDecision::Confirm);
+        true
+    }
+
+    pub(super) fn handle_key_down(
+        &self,
+        ev: &mut EventCx<'_, zgui::view::events::KeyDown>,
+    ) -> bool {
+        let entry = self.0.borrow().active.clone();
+        let Some(entry) = entry else {
+            return false;
+        };
+        if entry.composing.as_ref().is_some_and(|c| c.get()) {
+            return false;
+        }
+        if !entry.confirm_disabled && DialogCommand::Confirm.matches_event(ev, ev.modifiers) {
+            entry.on_decision.run(DialogDecision::Confirm);
+            ev.prevent_default();
+            ev.stop_propagation();
+            true
+        } else if DialogCommand::Cancel.matches_event(ev, ev.modifiers) {
+            entry.on_decision.run(DialogDecision::Cancel);
+            ev.prevent_default();
+            ev.stop_propagation();
+            true
+        } else {
+            false
+        }
+    }
+}
 
 const NAME_FORM_SHEET: &str = "gds-files-name-form";
 const NAME_FORM_CSS: &str = css!(
@@ -179,7 +268,7 @@ impl NameForm {
         browser: &Browser,
         generation: u64,
         submit: Rc<dyn Fn(OsString)>,
-        decision_slot: &PromptDecisionHandler,
+        decision_slot: &PromptDecisionSlot,
     ) -> AnyView {
         if zgui::view::current_host().is_some() {
             install_stylesheet(NAME_FORM_SHEET, NAME_FORM_CSS);
@@ -286,13 +375,7 @@ impl NameForm {
             }
         });
 
-        *decision_slot.borrow_mut() = Some((Rc::clone(&composing), decision_cb));
-        {
-            let cleanup_slot = Rc::clone(decision_slot);
-            on_cleanup_local(move || {
-                *cleanup_slot.borrow_mut() = None;
-            });
-        }
+        decision_slot.register(false, Some(Rc::clone(&composing)), decision_cb);
 
         let key_submit = submit_action;
         let key_cancel = Rc::clone(&cancel_action);

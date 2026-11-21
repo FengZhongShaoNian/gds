@@ -138,9 +138,13 @@ fn reactive_appearance_emits_gds_and_zui_css_tokens() {
             initial_tokens.control.ghost_hover, initial_tokens.color.accent,
             "ghost hover must use neutral 8% foreground tint instead of selection accent"
         );
-        assert_eq!(
-            initial_tokens.control.ghost_hover,
-            initial_tokens.control.outline_hover
+        assert_ne!(
+            initial_tokens.control.outline_hover, initial_tokens.color.accent,
+            "outline hover must use opaque neutral control hover instead of selection accent"
+        );
+        assert_ne!(
+            initial_tokens.control.ghost_hover, initial_tokens.control.outline_hover,
+            "raised outline hover must stay opaque over --gds-control while ghost hover stays translucent"
         );
 
         app.theme()

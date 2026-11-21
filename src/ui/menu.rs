@@ -1,18 +1,22 @@
 //! Declarative and model-driven popup / context menus wrapping `zgui-ui` (`shortcuts.md` §3).
 
+use std::cell::Cell;
+
 use zgui::geom::{Css, CssPx, Point};
 use zgui::prelude::*;
-use zgui::reactive::{LocalStorage, StoredValue, UnsyncCallback};
+use zgui::reactive::{LocalStorage, RenderEffect, StoredValue, UnsyncCallback};
 use zgui::view::current_host;
 use zgui::vocab::{Key, NamedKey};
 use zgui::{component, css, view};
+use zgui_ui::menu::MenuContext;
+use zgui_ui::overlay::OverlayState;
 use zgui_ui::{
     ContextMenuContentProps, ContextMenuPlace, ContextMenuProps, ContextMenuTriggerProps,
     DropdownMenuContentProps, DropdownMenuProps, DropdownMenuTriggerProps, MenuCheckboxItemProps,
     MenuItemProps, MenuLabelProps, MenuSeparatorProps, MenuSubContentProps, MenuSubProps,
     MenuSubTriggerProps,
 };
-use zgui_ui_primitives::{Binding, Placement};
+use zgui_ui_primitives::{Binding, Placement, RovingContext};
 
 use crate::ui::icon::{IconName, IconProps};
 use crate::ui::{Shortcut, ShortcutBadgeProps};
@@ -36,6 +40,7 @@ const SHEET: &str = css!(
     r#"
     .gds-menu-content,
     .gds-menu-content.gds-menu-content {
+        position: relative;
         --zui-surface-fill: var(--gds-panel);
         --zui-surface-ink: var(--gds-panel-foreground);
         --zui-surface-border: 1px solid var(--gds-border);
@@ -51,6 +56,20 @@ const SHEET: &str = css!(
         overflow-y: auto;
         font-family: var(--gds-font-sans);
         font-size: var(--gds-font-size-small, 14px);
+    }
+
+    .gds-menu-focus-park {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 0;
+        height: 0;
+        padding: 0;
+        margin: 0;
+        border: none;
+        outline: none;
+        opacity: 0;
+        pointer-events: none;
     }
 
     .gds-menu-content.gds-menu-content.gds-menu-content--context {
@@ -228,96 +247,165 @@ fn has_leading_column(entries: &[MenuEntry]) -> bool {
     })
 }
 
+/// Zero-size neutral focus target placed at the top of every menu surface so
+/// `FocusTrapOptions::MODAL` enters the menu without highlighting the first item until the user
+/// navigates via keyboard or hovers an item with the pointer.
+#[component]
+pub fn MenuFocusPark() -> impl IntoView {
+    install_menu_stylesheet();
+    let park_ref = NodeRef::new();
+    let group = RovingContext::current();
+    let surface_ref = OverlayState::current()
+        .or_else(|| MenuContext::current().map(|menu| menu.root()))
+        .map(|state| state.content());
+
+    if current_host().is_some() {
+        let entered = Cell::new(false);
+        let enter_watch = RenderEffect::new(move |_| {
+            if park_ref.get().is_some() && !entered.get() {
+                entered.set(true);
+                park_ref.focus();
+            }
+        });
+        on_cleanup_local(move || drop(enter_watch));
+    }
+
+    if let (Some(host), Some(surface)) = (current_host(), surface_ref) {
+        let host_focus = host.focused();
+        let focus_watch = RenderEffect::new(move |_| {
+            if let Some(holder) = host_focus.get()
+                && surface.get_untracked() == Some(holder)
+            {
+                park_ref.focus();
+            }
+        });
+        on_cleanup_local(move || drop(focus_watch));
+    }
+
+    view! {
+        box(
+            node_ref = park_ref,
+            class = "gds-menu-focus-park",
+            a11y:hidden = true,
+            tabindex = move || {
+                if group.is_some_and(|g| g.active().is_some()) {
+                    Focus::Programmatic
+                } else {
+                    Focus::Sequential
+                }
+            },
+            on:key_down = move |ev: &mut EventCx<'_, zgui::view::events::KeyDown>| {
+                let mods = ev.modifiers.held();
+                if mods.control() || mods.alt() || mods.meta() {
+                    return;
+                }
+                let Some(group) = group else {
+                    return;
+                };
+                let moved = match &ev.key {
+                    Key::Named(NamedKey::ArrowDown | NamedKey::Home) => group.go_to_end(false),
+                    Key::Named(NamedKey::ArrowUp | NamedKey::End) => group.go_to_end(true),
+                    _ => false,
+                };
+                if moved {
+                    ev.prevent_default();
+                    ev.stop_propagation();
+                }
+            }
+        )
+    }
+}
+
 /// Renders a slice of [`MenuEntry`] values into `zgui-ui` menu items with `22px` trailing
 /// [`ShortcutBadge`] keycaps (`24px` gap, `14px` text) and AT-SPI shortcut metadata.
 #[must_use]
 pub fn render_entries(entries: Vec<MenuEntry>) -> Vec<AnyView> {
     install_menu_stylesheet();
     let align_column = has_leading_column(&entries);
-    entries
-        .into_iter()
-        .map(|entry| match entry {
-            MenuEntry::Item {
-                label,
-                icon,
-                shortcut,
-                disabled,
-                destructive,
-                on_select,
-            } => {
-                let inset = align_column && icon.is_none();
-                let mut item_attrs = Attrs::new();
-                if let Some(ref key) = shortcut {
-                    let hint = zgui::vocab::SharedString::from(key.label());
-                    item_attrs =
-                        item_attrs.a11y_from(A11yBinding::unspecified().keyboard_shortcut(hint));
-                }
-                AnyView::new(view! {
-                    MenuItem(
-                        disabled = disabled,
-                        destructive = destructive,
-                        inset = inset,
-                        on_select = on_select,
-                        {..item_attrs}
-                    ) {
-                        row(class = "gds-menu-item-body") {
-                            row(class = "gds-menu-item-row") {
-                                {icon.map(|name| view! { Icon(name = name) }.into_view())}
-                                text(class = "gds-menu-item-label") {{label}}
-                            }
-                            {shortcut.map(|key| {
-                                view! {
-                                    box(class = "gds-menu-item-shortcut", a11y:hidden = true) {
-                                        ShortcutBadge(shortcut = key)
-                                    }
-                                }
-                                .into_view()
-                            })}
-                        }
-                    }
-                })
+    let mut views = Vec::with_capacity(entries.len() + 1);
+    views.push(AnyView::new(view! { MenuFocusPark() }));
+    views.extend(entries.into_iter().map(|entry| match entry {
+        MenuEntry::Item {
+            label,
+            icon,
+            shortcut,
+            disabled,
+            destructive,
+            on_select,
+        } => {
+            let inset = align_column && icon.is_none();
+            let mut item_attrs = Attrs::new();
+            if let Some(ref key) = shortcut {
+                let hint = zgui::vocab::SharedString::from(key.label());
+                item_attrs =
+                    item_attrs.a11y_from(A11yBinding::unspecified().keyboard_shortcut(hint));
             }
-            MenuEntry::Checkbox {
-                label,
-                checked,
-                disabled,
-                on_toggle,
-            } => AnyView::new(view! {
-                MenuCheckboxItem(
-                    default_checked = checked,
+            AnyView::new(view! {
+                MenuItem(
                     disabled = disabled,
-                    on_change = on_toggle
+                    destructive = destructive,
+                    inset = inset,
+                    on_select = on_select,
+                    {..item_attrs}
                 ) {
-                    {label}
-                }
-            }),
-            MenuEntry::Submenu {
-                label,
-                icon,
-                entries,
-            } => {
-                let inset = align_column && icon.is_none();
-                let sub_entries = StoredValue::new_local(entries);
-                AnyView::new(view! {
-                    MenuSub {
-                        MenuSubTrigger(inset = inset) {
-                            row(class = "gds-menu-item-row") {
-                                {icon.map(|name| view! { Icon(name = name) }.into_view())}
-                                text(class = "gds-menu-item-label") {{label}}
-                            }
+                    row(class = "gds-menu-item-body") {
+                        row(class = "gds-menu-item-row") {
+                            {icon.map(|name| view! { Icon(name = name) }.into_view())}
+                            text(class = "gds-menu-item-label") {{label}}
                         }
-                        MenuSubContent(class = "gds-menu-content gds-menu-content--context") {
-                            {sub_entries.with_value(|list| render_entries(list.clone()))}
+                        {shortcut.map(|key| {
+                            view! {
+                                box(class = "gds-menu-item-shortcut", a11y:hidden = true) {
+                                    ShortcutBadge(shortcut = key)
+                                }
+                            }
+                            .into_view()
+                        })}
+                    }
+                }
+            })
+        }
+        MenuEntry::Checkbox {
+            label,
+            checked,
+            disabled,
+            on_toggle,
+        } => AnyView::new(view! {
+            MenuCheckboxItem(
+                default_checked = checked,
+                disabled = disabled,
+                on_change = on_toggle
+            ) {
+                {label}
+            }
+        }),
+        MenuEntry::Submenu {
+            label,
+            icon,
+            entries,
+        } => {
+            let inset = align_column && icon.is_none();
+            let sub_entries = StoredValue::new_local(entries);
+            AnyView::new(view! {
+                MenuSub {
+                    MenuSubTrigger(inset = inset) {
+                        row(class = "gds-menu-item-row") {
+                            {icon.map(|name| view! { Icon(name = name) }.into_view())}
+                            text(class = "gds-menu-item-label") {{label}}
                         }
                     }
-                })
-            }
-            MenuEntry::Label(title) => {
-                AnyView::new(view! { MenuLabel(inset = align_column) {{title}} })
-            }
-            MenuEntry::Separator => AnyView::new(view! { MenuSeparator() }),
-        })
-        .collect()
+                    MenuSubContent(class = "gds-menu-content gds-menu-content--context") {
+                        {sub_entries.with_value(|list| render_entries(list.clone()))}
+                    }
+                }
+            })
+        }
+        MenuEntry::Label(title) => {
+            AnyView::new(view! { MenuLabel(inset = align_column) {{title}} })
+        }
+        MenuEntry::Separator => AnyView::new(view! { MenuSeparator() }),
+    }));
+    views
 }
 
 pub(crate) fn install_menu_stylesheet() {
@@ -425,7 +513,7 @@ pub fn ContextMenuHost(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::{HashMap, HashSet};
     use std::rc::Rc;
     use std::sync::Arc;
@@ -444,7 +532,11 @@ mod tests {
     use zgui::runtime::AppError;
     use zgui::scene::Scene;
     use zgui::view;
-    use zgui::vocab::{Modifiers, PointerAction, PointerButton, PointerEvent, Role, Timestamp};
+    use zgui::view::current_host;
+    use zgui::vocab::{
+        KeyCode, KeyEvent, KeyState, Modifiers, NamedKey, PhysicalKey, PointerAction,
+        PointerButton, PointerEvent, Role, Timestamp,
+    };
     use zgui_platform_headless::{Harness, OffscreenSurface};
 
     use super::{
@@ -592,7 +684,7 @@ mod tests {
             );
             assert!(has_leading_column(&mixed.entries));
             let rendered = render_entries(mixed.entries);
-            assert_eq!(rendered.len(), 3);
+            assert_eq!(rendered.len(), 4);
         });
         scope.unmount();
     }
@@ -743,5 +835,275 @@ mod tests {
                 }
             })
             .expect("menu height harness");
+    }
+
+    fn live_menu_item_rects(surface: &OffscreenSurface) -> Vec<(f64, f64, f64, f64)> {
+        let mut nodes = HashMap::new();
+        let mut root = None;
+        for update in surface.a11y_log() {
+            if let Some(tree) = update.tree {
+                root = Some(tree.root);
+            }
+            for (id, node) in update.nodes {
+                nodes.insert(id, node);
+            }
+        }
+        let Some(root_id) = root else {
+            return Vec::new();
+        };
+        let mut stack = vec![root_id];
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        while let Some(id) = stack.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            let Some(node) = nodes.get(&id) else {
+                continue;
+            };
+            if node.role() == Role::MenuItem
+                && let Some(rect) = node.bounds()
+            {
+                out.push((rect.x0, rect.y0, rect.x1, rect.y1));
+            }
+            for &child in node.children().iter().rev() {
+                stack.push(child);
+            }
+        }
+        out
+    }
+
+    fn send_named_key(harness: &mut Harness<Box<dyn AppHandler>>, key: NamedKey, code: KeyCode) {
+        let event = KeyEvent::named(key, PhysicalKey::Code(code));
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Pressed,
+            event: event.clone(),
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.deliver_to_first(SurfaceEvent::Key {
+            state: KeyState::Released,
+            event,
+            modifiers: Modifiers::NONE,
+            timestamp: Timestamp::ORIGIN,
+        });
+        harness.settle(8);
+    }
+
+    #[test]
+    fn menu_opens_without_highlighting_first_item_until_keyboard_or_hover() {
+        let selected: Rc<Cell<Option<usize>>> = Rc::new(Cell::new(None));
+        let selected_view = Rc::clone(&selected);
+        let focus_slot: Rc<RefCell<Option<Signal<Option<NodeId>, LocalStorage>>>> =
+            Rc::new(RefCell::new(None));
+        let focus_slot_view = Rc::clone(&focus_slot);
+
+        let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+            let mut harness = Harness::new(handler);
+            let offscreen = harness
+                .platform()
+                .offscreens()
+                .first()
+                .cloned()
+                .expect("offscreen surface");
+            offscreen.set_a11y_listener(true);
+            harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+                DevicePx(800.0),
+                DevicePx(600.0),
+            )));
+            harness.settle(12);
+
+            let host_focus = focus_slot.borrow().expect("host focus signal");
+
+            // 1. Right-click near bottom of window (menu flips upward above pointer, just like
+            // right-clicking a bottom row in Files). Focus must enter `MenuFocusPark` — NOT item 0!
+            let open_pos = Point::new(CssPx(160.0), CssPx(540.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(open_pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(open_pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+
+            let items = live_menu_item_rects(&offscreen);
+            assert_eq!(items.len(), 3, "expected 3 menu items");
+            let initial_focus = host_focus.get_untracked().expect("menu park focused");
+
+            // Pressing Enter while no item is highlighted must NOT activate item 0 ("Open").
+            send_named_key(&mut harness, NamedKey::Enter, KeyCode::Enter);
+            assert_eq!(
+                selected.get(),
+                None,
+                "opening context menu must not pre-highlight/focus item 0"
+            );
+
+            // 2. First ArrowDown highlights item 0 ("Open"); second ArrowDown moves to item 1.
+            send_named_key(&mut harness, NamedKey::ArrowDown, KeyCode::ArrowDown);
+            let item0_focus = host_focus.get_untracked().expect("item 0 focused");
+            assert_ne!(
+                item0_focus, initial_focus,
+                "ArrowDown must move focus from neutral park onto item 0"
+            );
+            send_named_key(&mut harness, NamedKey::ArrowDown, KeyCode::ArrowDown);
+            let item1_focus = host_focus.get_untracked().expect("item 1 focused");
+            assert_ne!(
+                item1_focus, item0_focus,
+                "second ArrowDown must advance from item 0 to item 1"
+            );
+
+            // 3. Close with Escape, reopen near top (160, 80) so menu opens downward from (160, 80),
+            // hover item 2 ("Copy"), then slide pointer onto separator between item 1 and item 2:
+            // highlight clears back to `MenuFocusPark`, AND ArrowDown from there still works!
+            send_named_key(&mut harness, NamedKey::Escape, KeyCode::Escape);
+            let top_pos = Point::new(CssPx(160.0), CssPx(80.0));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(top_pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(top_pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+
+            let items = live_menu_item_rects(&offscreen);
+            assert_eq!(items.len(), 3);
+            let park_top = host_focus.get_untracked().expect("menu park focused");
+            let h0 = (items[0].3 - items[0].1) as f32;
+            let h1 = (items[1].3 - items[1].1) as f32;
+            let h2 = (items[2].3 - items[2].1) as f32;
+            let item2_center = Point::new(
+                CssPx(160.0 + 60.0),
+                CssPx(80.0 + 5.0 + h0 + h1 + 9.0 + h2 * 0.5),
+            );
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Moved,
+                event: PointerEvent::mouse(item2_center),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(8);
+            let item2_focus = host_focus.get_untracked().expect("item 2 focused");
+            assert_ne!(item2_focus, park_top, "hovering item 2 must focus item 2");
+
+            let separator_pos = Point::new(CssPx(160.0 + 60.0), CssPx(80.0 + 5.0 + h0 + h1 + 4.5));
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Moved,
+                event: PointerEvent::mouse(separator_pos),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(8);
+            assert_eq!(
+                host_focus.get_untracked(),
+                Some(park_top),
+                "leaving item onto separator must return focus to MenuFocusPark"
+            );
+
+            // ArrowDown after defocusing onto separator highlights item 0, and Enter selects it!
+            send_named_key(&mut harness, NamedKey::ArrowDown, KeyCode::ArrowDown);
+            let reopened_item0 = host_focus.get_untracked().expect("item 0 focused");
+            assert_ne!(reopened_item0, park_top);
+            assert_ne!(reopened_item0, item2_focus);
+            send_named_key(&mut harness, NamedKey::Enter, KeyCode::Enter);
+            assert_eq!(
+                selected.get(),
+                Some(0),
+                "Enter after ArrowDown must select item 0 ('Open')"
+            );
+
+            // 4. Reopen menu and press ArrowUp: must highlight last item (item 2).
+            selected.set(None);
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Pressed,
+                event: PointerEvent::mouse(open_pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.deliver_to_first(SurfaceEvent::Pointer {
+                action: PointerAction::Released,
+                event: PointerEvent::mouse(open_pos).with_button(PointerButton::Secondary),
+                modifiers: Modifiers::NONE,
+                timestamp: Timestamp::ORIGIN,
+            });
+            harness.settle(16);
+            send_named_key(&mut harness, NamedKey::ArrowUp, KeyCode::ArrowUp);
+            send_named_key(&mut harness, NamedKey::Enter, KeyCode::Enter);
+            assert_eq!(
+                selected.get(),
+                Some(2),
+                "ArrowUp from neutral open state must highlight the last item"
+            );
+
+            harness.shut_down();
+            Ok(())
+        };
+
+        zgui::app()
+            .with_fonts(Fonts::shipped_only())
+            .with_renderer(Box::new(noop_renderer))
+            .with_size(800.0, 600.0)
+            .run_on(driver, move || {
+                let app = Gds::install(Scope::default());
+                app.appearance().motion().set_enabled(false);
+                let _ = app.appearance().install_window_sheet();
+                *focus_slot_view.borrow_mut() = current_host().map(|h| h.focused());
+
+                let selected_ctx = Rc::clone(&selected_view);
+                let build_ctx = Rc::new(move || {
+                    let mut m = MenuModel::new();
+                    let s0 = Rc::clone(&selected_ctx);
+                    m.item(
+                        "Open",
+                        Some(IconName::Folder),
+                        Shortcut::parse("Enter"),
+                        false,
+                        false,
+                        UnsyncCallback::new(move |()| s0.set(Some(0))),
+                    );
+                    let s1 = Rc::clone(&selected_ctx);
+                    m.item(
+                        "Open with...",
+                        Some(IconName::Folder),
+                        None,
+                        false,
+                        false,
+                        UnsyncCallback::new(move |()| s1.set(Some(1))),
+                    );
+                    m.separator();
+                    let s2 = Rc::clone(&selected_ctx);
+                    m.item(
+                        "Copy",
+                        Some(IconName::Copy),
+                        Shortcut::parse("Ctrl+C"),
+                        false,
+                        false,
+                        UnsyncCallback::new(move |()| s2.set(Some(2))),
+                    );
+                    m
+                });
+
+                view! {
+                    column(style:width = "100%", style:height = "100%") {
+                        ContextMenuHost(model = build_ctx) {
+                            box(style:width = "800px", style:height = "600px") {
+                                text { "Target area" }
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("menu initial focus harness");
     }
 }

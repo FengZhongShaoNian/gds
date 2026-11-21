@@ -155,6 +155,7 @@ impl Host {
 
         let launch_slot = RefCell::new(Some(launch));
         let command_slot = RefCell::new(command);
+        let runtime_windows = windows.clone();
 
         windows.open(options, move || {
             let launch = launch_slot
@@ -168,6 +169,7 @@ impl Host {
 
             let request_host = host.clone();
             let cleanup_host = host.clone();
+            let quit_windows = runtime_windows.clone();
             let browser = Browser::new(
                 launch,
                 host.0.volumes.clone(),
@@ -189,12 +191,12 @@ impl Host {
             if let Some(command) = command_slot.borrow_mut().take() {
                 browser.apply_desktop_command(command);
             }
-            on_cleanup_local(move || cleanup_host.closed(id, picking));
+            on_cleanup_local(move || cleanup_host.closed(id, picking, &quit_windows));
             browser.view()
         });
     }
 
-    fn closed(&self, id: WindowId, picking: bool) {
+    fn closed(&self, id: WindowId, picking: bool, windows: &zgui::runtime::Windows) {
         let idle = {
             let mut state = self.0.state.borrow_mut();
             state
@@ -202,9 +204,7 @@ impl Host {
                 .retain(|window| window.handle.id() != id && window.handle.is_open());
             state.windows.is_empty() && state.pending == 0
         };
-        if (picking || (idle && !self.0.keep_alive))
-            && let Some(windows) = try_use_windows()
-        {
+        if picking || (idle && !self.0.keep_alive) {
             windows.quit();
         }
     }

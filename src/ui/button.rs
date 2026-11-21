@@ -72,18 +72,35 @@ const SHEET: &str = css!(
         cursor: default;
     }
 
-    .zui-button.gds-button[data-variant="ghost"]:not([data-toggled="true"]):not([data-active="true"]):hover,
+    .zui-button.gds-button[data-variant="outline"]:not([data-toggled="true"]):not([data-active="true"]),
+    .zui-button.gds-icon-button[data-variant="outline"]:not([data-toggled="true"]):not([data-active="true"]) {
+        background-color: var(--gds-control);
+        color: var(--gds-control-foreground);
+        border-color: var(--gds-control-border);
+    }
+
     .zui-button.gds-button[data-variant="outline"]:not([data-toggled="true"]):not([data-active="true"]):hover,
-    .zui-button.gds-icon-button[data-variant="ghost"]:not([data-toggled="true"]):not([data-active="true"]):hover,
     .zui-button.gds-icon-button[data-variant="outline"]:not([data-toggled="true"]):not([data-active="true"]):hover {
+        background-color: var(--gds-control-hover);
+        color: var(--gds-control-foreground);
+        border-color: var(--gds-control-border);
+    }
+
+    .zui-button.gds-button[data-variant="outline"]:not([data-toggled="true"]):not([data-active="true"]):active,
+    .zui-button.gds-icon-button[data-variant="outline"]:not([data-toggled="true"]):not([data-active="true"]):active {
+        background-color: var(--gds-control-pressed);
+        color: var(--gds-control-foreground);
+        border-color: var(--gds-control-border);
+    }
+
+    .zui-button.gds-button[data-variant="ghost"]:not([data-toggled="true"]):not([data-active="true"]):hover,
+    .zui-button.gds-icon-button[data-variant="ghost"]:not([data-toggled="true"]):not([data-active="true"]):hover {
         background-color: var(--gds-hover);
         color: inherit;
     }
 
     .zui-button.gds-button[data-variant="ghost"]:not([data-toggled="true"]):not([data-active="true"]):active,
-    .zui-button.gds-button[data-variant="outline"]:not([data-toggled="true"]):not([data-active="true"]):active,
-    .zui-button.gds-icon-button[data-variant="ghost"]:not([data-toggled="true"]):not([data-active="true"]):active,
-    .zui-button.gds-icon-button[data-variant="outline"]:not([data-toggled="true"]):not([data-active="true"]):active {
+    .zui-button.gds-icon-button[data-variant="ghost"]:not([data-toggled="true"]):not([data-active="true"]):active {
         background-color: var(--gds-pressed);
         color: inherit;
     }

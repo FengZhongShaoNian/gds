@@ -81,6 +81,12 @@ fn parse_kde(ini: &Ini, mode: Mode) -> Result<Palette, Error> {
     palette.tooltip_foreground =
         optional(ini, "Colors:Tooltip", "ForegroundNormal")?.unwrap_or(palette.sidebar_foreground);
     palette.link = optional(ini, "Colors:View", "ForegroundLink")?.unwrap_or(palette.primary);
+    palette.sync_material_defaults(mode);
+    if let Some(button_bg) = optional(ini, "Colors:Button", "BackgroundNormal")? {
+        palette.control = button_bg;
+        palette.control_foreground =
+            optional(ini, "Colors:Button", "ForegroundNormal")?.unwrap_or(palette.foreground);
+    }
     palette.terminal_fallback(mode);
     Ok(palette)
 }

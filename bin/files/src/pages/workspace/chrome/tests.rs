@@ -289,6 +289,9 @@ fn collect_live_buttons(surface: &OffscreenSurface) -> Vec<LiveButton> {
         let Some(node) = nodes.get(&id) else {
             continue;
         };
+        if node.is_hidden() {
+            continue;
+        }
         let next_world = match node.transform() {
             Some(t) => compose_affine(world, t.as_coeffs()),
             None => world,
@@ -873,6 +876,9 @@ fn has_live_tooltip(surface: &OffscreenSurface) -> bool {
         let Some(node) = nodes.get(&id) else {
             continue;
         };
+        if node.is_hidden() {
+            continue;
+        }
         if node.role() == Role::Tooltip {
             return true;
         }

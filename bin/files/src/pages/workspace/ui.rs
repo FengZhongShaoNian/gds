@@ -24,7 +24,7 @@ use super::{
         AddressPresentation, BackgroundTask, BackgroundTasks, ConfirmOptions, Contents,
         FILES_TASK_KEY, Operation, Pages, Pane, Prompt, State, Tab,
     },
-    name_form::{NameForm, NamePurpose},
+    name_form::{NameForm, NamePurpose, PromptDecisionSlot},
 };
 use crate::{
     entities::{
@@ -183,6 +183,7 @@ pub(super) struct Workspace {
     pub prompt_generation: RwSignal<u64, LocalStorage>,
     pub prompt_about: RwSignal<bool, LocalStorage>,
     pub confirm_options: RwSignal<ConfirmOptions, LocalStorage>,
+    pub prompt_decisions: PromptDecisionSlot,
     pub address: RwSignal<String, LocalStorage>,
     pub filter: RwSignal<String, LocalStorage>,
     pub save_name: RwSignal<String, LocalStorage>,
@@ -360,6 +361,7 @@ impl Browser {
             prompt_generation: RwSignal::new_local(0),
             prompt_about: RwSignal::new_local(false),
             confirm_options: RwSignal::new_local(ConfirmOptions::default()),
+            prompt_decisions: PromptDecisionSlot::default(),
             address: RwSignal::new_local(location.display_address()),
             filter: RwSignal::new_local(String::new()),
             save_name: RwSignal::new_local(save_name),
@@ -738,8 +740,13 @@ impl Browser {
     }
 
     pub(super) fn open_prompt(&self, prompt: Prompt) {
+        self.open_prompt_with_options(prompt, ConfirmOptions::default());
+    }
+
+    fn open_prompt_with_options(&self, prompt: Prompt, options: ConfirmOptions) {
         debug_assert!(!matches!(prompt, Prompt::Closed));
-        self.0.confirm_options.set(ConfirmOptions::default());
+        self.0.menus.close();
+        self.0.confirm_options.set(options);
         self.0.prompt_about.set(matches!(prompt, Prompt::About));
         self.0
             .prompt_generation
@@ -755,13 +762,15 @@ impl Browser {
         options: ConfirmOptions,
         accept: impl Fn() + 'static,
     ) {
-        self.open_prompt(Prompt::Confirm {
-            title,
-            message,
-            primary,
-            accept: Rc::new(accept),
-        });
-        self.0.confirm_options.set(options);
+        self.open_prompt_with_options(
+            Prompt::Confirm {
+                title,
+                message,
+                primary,
+                accept: Rc::new(accept),
+            },
+            options,
+        );
     }
 
     pub(super) fn prompt_name(
@@ -807,6 +816,7 @@ impl Browser {
         if matches!(prompt, Prompt::Closed) {
             return;
         }
+        self.0.prompt_decisions.clear();
         self.0.prompt.set(Prompt::Closed);
         if let Prompt::Name {
             cancel: Some(cancel),

@@ -122,15 +122,15 @@ pub(crate) fn allocate_dialog_scope_id() -> u64 {
     })
 }
 
-pub(crate) fn push_modal_scope(scope_id: u64) {
+pub(crate) fn push_modal_scope(registry: Option<KeytipRegistry>, scope_id: u64) {
     FALLBACK_MODAL_SCOPES.with(|stack| {
         let mut stack = stack.borrow_mut();
         if !stack.contains(&scope_id) {
             stack.push(scope_id);
         }
     });
-    if let Some(reg) = KeytipRegistry::current() {
-        reg.modal_scopes.update(|stack| {
+    if let Some(reg) = registry {
+        let _ = reg.modal_scopes.try_update(|stack| {
             if !stack.contains(&scope_id) {
                 stack.push(scope_id);
             }
@@ -138,12 +138,12 @@ pub(crate) fn push_modal_scope(scope_id: u64) {
     }
 }
 
-pub(crate) fn remove_modal_scope(scope_id: u64) {
+pub(crate) fn remove_modal_scope(registry: Option<KeytipRegistry>, scope_id: u64) {
     FALLBACK_MODAL_SCOPES.with(|stack| {
         stack.borrow_mut().retain(|&id| id != scope_id);
     });
-    if let Some(reg) = KeytipRegistry::current() {
-        reg.modal_scopes.update(|stack| {
+    if let Some(reg) = registry {
+        let _ = reg.modal_scopes.try_update(|stack| {
             stack.retain(|&id| id != scope_id);
         });
     }
@@ -321,7 +321,7 @@ impl KeytipRegistry {
 
         let hints = self.hints;
         on_cleanup_local(move || {
-            hints.update(|list| list.retain(|entry| entry.id != id));
+            let _ = hints.try_update(|list| list.retain(|entry| entry.id != id));
         });
     }
 }

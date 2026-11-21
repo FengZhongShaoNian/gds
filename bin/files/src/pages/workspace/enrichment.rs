@@ -221,8 +221,69 @@ struct EnrichPlan {
 
 impl Browser {
     pub(super) fn enrich_directory(&self, id: u64) {
+        self.preload_mime_descriptions(id);
         let initial_scroll = self.current_scroll_top_css(id);
         self.start_enrichment(id, initial_scroll, false);
+    }
+
+    fn preload_mime_descriptions(&self, id: u64) {
+        let details_open = self.0.details.get_untracked();
+        let missing: Vec<Arc<str>> = {
+            let state = self.0.state.borrow();
+            let Some(tab) = state.tabs.iter().find(|tab| tab.id == id) else {
+                return;
+            };
+            if !matches!(tab.contents, Contents::Directory) {
+                return;
+            }
+            let needs_descriptions = (tab.mode == ViewMode::List
+                && tab.columns.contains(Column::DetailedType))
+                || tab.sort.key == sorting::Key::DetailedType
+                || details_open;
+            if !needs_descriptions {
+                return;
+            }
+            let Some(snapshot) = tab.navigation.directory() else {
+                return;
+            };
+            let mut seen = HashSet::new();
+            snapshot
+                .entries
+                .iter()
+                .filter_map(|entry| entry.details.display_content()?.mime.as_ref())
+                .filter(|mime| {
+                    !directory::mime_descriptions::is_cached(mime) && seen.insert(Arc::clone(mime))
+                })
+                .cloned()
+                .collect()
+        };
+        if missing.is_empty() {
+            return;
+        }
+        let browser = self.clone();
+        let task = self
+            .0
+            .tasks
+            .spawn_blocking_named("Load MIME descriptions", move || {
+                directory::mime_descriptions::preload_mimes(missing)
+            });
+        drop(spawn_local(async move {
+            let Ok(true) = task.await else {
+                return;
+            };
+            let sort_by_detailed_type = browser.read_untracked(|state| {
+                state
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .is_some_and(|tab| tab.sort.key == sorting::Key::DetailedType)
+            });
+            if sort_by_detailed_type {
+                browser.reproject(id);
+            } else {
+                browser.changed();
+            }
+        }));
     }
 
     pub(super) fn viewport_changed(&self, position: Point<zgui::geom::CssPx, zgui::geom::Css>) {
@@ -232,7 +293,9 @@ impl Browser {
         let scale = self.0.list.scale().max(1.0);
         let viewport_h = self.viewport_height_css();
         let details_open = self.0.details.get_untracked();
-        let probe_budget = self.0.preferences.snapshot().files.probe_budget;
+        let files_prefs = self.0.preferences.snapshot().files;
+        let probe_budget = files_prefs.probe_budget;
+        let content_probing = files_prefs.enrichment.content_probing;
         enum Action {
             None,
             StartViewportOnly(u64),
@@ -257,7 +320,13 @@ impl Browser {
             if visible.is_empty() {
                 return;
             }
-            let (need, _) = enrichment_need_of(tab, probe_budget, details_open, has_picker_filter);
+            let (need, _) = enrichment_need_of(
+                tab,
+                probe_budget,
+                content_probing,
+                details_open,
+                has_picker_filter,
+            );
             if need.is_empty() {
                 return;
             }
@@ -345,8 +414,13 @@ impl Browser {
                 return;
             };
             let revision = tab.navigation.revision();
-            let (mut need, sort_depends_on_metadata) =
-                enrichment_need_of(tab, probe_budget, details_open, has_picker_filter);
+            let (mut need, sort_depends_on_metadata) = enrichment_need_of(
+                tab,
+                probe_budget,
+                prefs.content_probing,
+                details_open,
+                has_picker_filter,
+            );
             if viewport_only {
                 need.budget = directory::ProbeBudget::Bounded(0);
             }
@@ -626,12 +700,13 @@ fn viewport_entries_from(
 fn enrichment_need_of(
     tab: &Tab,
     probe_budget: usize,
+    content_probing: bool,
     details_open: bool,
     has_picker_filter: bool,
 ) -> (EnrichmentNeed, bool) {
     let children = (tab.mode == ViewMode::List && tab.columns.contains(Column::Size))
         || tab.sort.key == sorting::Key::Size;
-    let content = (tab.mode == ViewMode::List
+    let wants_content = (tab.mode == ViewMode::List
         && (tab.columns.contains(Column::Type) || tab.columns.contains(Column::DetailedType)))
         || matches!(
             tab.sort.key,
@@ -639,7 +714,9 @@ fn enrichment_need_of(
         )
         || details_open
         || has_picker_filter;
-    let symlinks = content || (tab.mode == ViewMode::List && tab.columns.contains(Column::Type));
+    let content = content_probing && wants_content;
+    let symlinks =
+        wants_content || (tab.mode == ViewMode::List && tab.columns.contains(Column::Type));
     let sort_depends_on_metadata = matches!(
         tab.sort.key,
         sorting::Key::Type | sorting::Key::DetailedType | sorting::Key::Size

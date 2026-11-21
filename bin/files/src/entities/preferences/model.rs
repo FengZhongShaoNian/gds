@@ -105,6 +105,8 @@ impl StreamingPreferences {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EnrichmentPreferences {
+    /// Whether background enrichment may read up to 8 KiB of ambiguous or unknown files.
+    pub content_probing: bool,
     /// Maximum viewport-priority entries retained during rapid scrolling before shedding older rows.
     pub priority_limit: usize,
     /// Batch flush coalescing window (ms) when secondary metadata cannot alter row order.
@@ -129,6 +131,7 @@ impl Default for EnrichmentPreferences {
             DEFAULT_REORDER_COALESCE_MS,
         };
         Self {
+            content_probing: true,
             priority_limit: DEFAULT_PRIORITY_LIMIT,
             coalesce_ms: DEFAULT_COALESCE_MS,
             reorder_coalesce_ms: DEFAULT_REORDER_COALESCE_MS,
@@ -320,6 +323,7 @@ mod tests {
             min_entries: 150,
         };
         custom.files.enrichment = EnrichmentPreferences {
+            content_probing: false,
             priority_limit: 96,
             coalesce_ms: 24,
             reorder_coalesce_ms: 120,

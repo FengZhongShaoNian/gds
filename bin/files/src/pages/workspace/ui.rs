@@ -873,14 +873,21 @@ impl Browser {
             } else if prior.files.enrichment != preferences.files.enrichment
                 || prior.files.probe_budget != preferences.files.probe_budget
             {
-                let ids = browser
-                    .0
-                    .state
-                    .borrow()
-                    .tabs
-                    .iter()
-                    .map(|tab| tab.id)
-                    .collect::<Vec<_>>();
+                let reset_running = prior.files.enrichment.content_probing
+                    != preferences.files.enrichment.content_probing;
+                let ids = {
+                    let mut state = browser.0.state.borrow_mut();
+                    state
+                        .tabs
+                        .iter_mut()
+                        .map(|tab| {
+                            if reset_running {
+                                tab.enrichment = None;
+                            }
+                            tab.id
+                        })
+                        .collect::<Vec<_>>()
+                };
                 for id in ids {
                     browser.enrich_directory(id);
                 }
@@ -941,6 +948,24 @@ impl Browser {
             }
         });
         on_cleanup_local(move || drop(error_fx));
+
+        let browser = self.clone();
+        let lang_fx = RenderEffect::new(move |_| {
+            let _ = gds::app::Gds::current().i18n().language();
+            let ids = browser
+                .0
+                .state
+                .borrow()
+                .tabs
+                .iter()
+                .filter(|tab| tab.sort.key == crate::entities::file::sorting::Key::DetailedType)
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            for id in ids {
+                browser.reproject(id);
+            }
+        });
+        on_cleanup_local(move || drop(lang_fx));
     }
 }
 

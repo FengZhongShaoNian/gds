@@ -1,4 +1,5 @@
 details-format = 格式
+details-mime = MIME 类型
 details-created = 创建时间
 details-target = 目标
 details-dimensions = 尺寸

@@ -130,15 +130,20 @@ fn enrichment_need_switches_to_full_budget_for_metadata_sorts() {
         direction: sorting::Direction::Ascending,
     };
 
-    let (need, sort_dep) = enrichment_need_of(&tab, 50, false, false);
+    let (need, sort_dep) = enrichment_need_of(&tab, 50, true, false, false);
     assert!(need.children);
     assert!(need.content);
     assert!(need.symlinks);
     assert_eq!(need.budget, directory::ProbeBudget::Bounded(50));
     assert!(!sort_dep);
 
+    let (no_probe_need, _) = enrichment_need_of(&tab, 50, false, false, false);
+    assert!(no_probe_need.children);
+    assert!(!no_probe_need.content);
+    assert!(no_probe_need.symlinks);
+
     tab.sort.key = sorting::Key::DetailedType;
-    let (sort_need, sort_dep) = enrichment_need_of(&tab, 50, false, false);
+    let (sort_need, sort_dep) = enrichment_need_of(&tab, 50, true, false, false);
     assert_eq!(sort_need.budget, directory::ProbeBudget::Full);
     assert!(sort_dep);
 }

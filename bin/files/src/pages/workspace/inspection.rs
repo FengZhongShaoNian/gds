@@ -46,7 +46,7 @@ use zgui_ui::{ButtonProps, CheckboxProps, Checked, LabelProps, SpinnerProps};
 use zgui_ui_primitives::Binding;
 
 use crate::entities::file::{
-    directory::{Entry, EntryKind},
+    directory::{self, Entry, EntryKind},
     ui::{EntryPresentation, FileIcon, UNKNOWN_VALUE},
 };
 use crate::entities::location::{Location, volumes};
@@ -679,6 +679,7 @@ struct PropertiesInner {
     cache: Cache,
     entry: RwSignal<EntryState, LocalStorage>,
     tags: RwSignal<Option<Result<Vec<String>, String>>, LocalStorage>,
+    description_version: RwSignal<u64, LocalStorage>,
     tags_enabled: bool,
 }
 
@@ -699,6 +700,7 @@ impl Properties {
             cache,
             entry: RwSignal::new_local(EntryState::Loading),
             tags: RwSignal::new_local(None),
+            description_version: RwSignal::new_local(0),
             tags_enabled,
         });
         let props = Self(inner);
@@ -708,15 +710,25 @@ impl Properties {
 
     fn from_entry(entry: Entry, cache: Cache, scope: Scope, tags_enabled: bool) -> Self {
         let path = entry.path.clone();
+        let missing_mime = entry
+            .details
+            .display_content()
+            .and_then(|content| content.mime.as_ref())
+            .filter(|mime| !directory::mime_descriptions::is_cached(mime))
+            .cloned();
         let inner = Rc::new(PropertiesInner {
             path,
             scope,
             cache,
             entry: RwSignal::new_local(EntryState::Ready(entry)),
             tags: RwSignal::new_local(None),
+            description_version: RwSignal::new_local(0),
             tags_enabled,
         });
         let props = Self(inner);
+        if let Some(mime) = missing_mime {
+            props.load_description(mime);
+        }
         if tags_enabled {
             props.load_tags();
         }
@@ -860,24 +872,40 @@ impl Properties {
         }));
     }
 
-    fn format_label<'a>(entry: &'a Entry, metadata: Option<&'a Metadata>) -> Option<String> {
-        match metadata {
-            Some(Metadata::File(FileFacts::Image(img))) => Some(img.format.label().to_owned()),
-            Some(Metadata::File(FileFacts::Audio(audio))) => Some(audio.format.label().to_owned()),
-            Some(Metadata::File(FileFacts::Video(video))) => Some(video.format.label().to_owned()),
-            Some(Metadata::File(FileFacts::Text(_))) => Some(i18n::text("content-text")),
-            _ => {
-                let detailed = EntryPresentation::detailed_type(entry);
-                (!detailed.is_empty() && detailed != UNKNOWN_VALUE).then_some(detailed)
-            }
-        }
+    fn load_description(&self, mime: Arc<str>) {
+        let weak = Rc::downgrade(&self.0);
+        let task = self
+            .0
+            .scope
+            .spawn_blocking_named("Load MIME description", move || {
+                directory::mime_descriptions::preload_mime(&mime)
+            });
+        drop(spawn_local(async move {
+            let Ok(true) = task.await else {
+                return;
+            };
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            inner
+                .description_version
+                .update(|version| *version = version.wrapping_add(1));
+        }));
     }
 
-    fn base_rows(&self, entry: &Entry, metadata: Option<&Metadata>) -> Vec<AnyView> {
+    fn format_label(entry: &Entry) -> Option<String> {
+        let detailed = EntryPresentation::detailed_type(entry);
+        (!detailed.is_empty() && detailed != UNKNOWN_VALUE).then_some(detailed)
+    }
+
+    fn base_rows(&self, entry: &Entry) -> Vec<AnyView> {
         let mut rows = Vec::new();
         rows.push(text_row("type", EntryPresentation::type_label(entry)));
-        if let Some(format) = Self::format_label(entry, metadata) {
+        if let Some(format) = Self::format_label(entry) {
             rows.push(text_row("details-format", format));
+        }
+        if let Some(mime) = EntryPresentation::mime_type(entry) {
+            rows.push(text_row("details-mime", mime.to_owned()));
         }
         rows.push(text_row("size", EntryPresentation::size_label(entry)));
         rows.push(metadata_row(
@@ -1069,6 +1097,7 @@ impl Properties {
     fn view(&self, browser: Option<Browser>, panel_chrome: bool) -> AnyView {
         install_inspection_stylesheet();
         let entry_sig = self.0.entry;
+        let desc_ver = self.0.description_version;
         let props = self.clone();
         let class_name = if panel_chrome {
             "gds-files-details"
@@ -1119,6 +1148,7 @@ impl Properties {
                         Either::Left(Either::Right(details_content_view(hero, body)))
                     }
                     EntryState::Ready(entry) => {
+                        let _ = desc_ver.get();
                         let source = entry.inspection_source();
                         let snap = props.0.cache.request(&source, Request::Metadata);
                         let metadata_ref = match &snap.metadata {
@@ -1135,7 +1165,7 @@ impl Properties {
                         };
                         let hero = details_hero_view(stage, &entry.display_name, panel_chrome);
 
-                        let mut all_rows = props.base_rows(&entry, metadata_ref);
+                        let mut all_rows = props.base_rows(&entry);
                         if let Some(meta) = metadata_ref {
                             all_rows.extend(Self::fact_rows(meta));
                         }

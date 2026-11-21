@@ -132,7 +132,8 @@ ui = [
 ]
 files = [
     "ui", "desktop", "file-tags", "storage", "remote", "dep:clap", "dep:globset",
-    "dep:mime_guess", "dep:xdg-mime", "dep:trash", "dep:tokio-util", "dep:walkdir",
+    "dep:memmap2", "dep:mime_guess", "dep:roxmltree", "dep:xdg-mime", "dep:trash",
+    "dep:tokio-util", "dep:walkdir",
 ]
 image-engine = [
     "file-tags",
@@ -253,7 +254,7 @@ smb = { version = "=0.10.2", default-features = false, features = ["async", "sig
 rust-ini = { version = "0.21", features = ["brackets-in-section-names"], optional = true }
 fluent-bundle = { version = "0.16", optional = true }
 fluent-syntax = { version = "0.12", optional = true }
-unic-langid = { version = "0.9", optional = true }
+unic-langid = { version = "0.9", features = ["likelysubtags"], optional = true }
 
 # Shared UI.
 zgui = { git = "https://github.com/GanDesktop/zgui", branch = "gds-0.1.0", features = ["tokio"], optional = true }
@@ -274,7 +275,9 @@ unicode-width = { version = "0.2", optional = true }
 # The picker matches raw (possibly non-UTF-8) basenames, so globbing is done on
 # `Path` values instead of hand-rolled `String` matching.
 globset = { version = "0.4", optional = true }
+memmap2 = { version = "0.9", optional = true }
 mime_guess = { version = "2", optional = true }
+roxmltree = { version = "0.21", optional = true }
 xdg-mime = { version = "0.4", optional = true }
 trash = { version = "5.3.0", optional = true }
 
@@ -334,6 +337,10 @@ zbus = { version = "5.19", default-features = false, features = ["tokio", "p2p"]
 
 [profile.dev]
 debug = 1
+
+# Keep application code easy to step through while optimizing the UI runtime and its dependencies.
+[profile.dev.package."*"]
+opt-level = 2
 
 # Use standard release optimization while keeping compilation parallel.
 [profile.release]

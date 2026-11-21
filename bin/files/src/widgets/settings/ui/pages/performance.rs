@@ -102,6 +102,12 @@ pub(in crate::widgets::settings::ui) struct PerformanceForm {
     pub stream_min_entries: usize,
 
     #[setting(
+        label = "files-advanced-content-probing",
+        help = "files-advanced-content-probing-help",
+        group = "files-advanced-group-enrichment"
+    )]
+    pub content_probing: bool,
+    #[setting(
         label = "probe-budget",
         help = "probe-budget-help",
         group = "files-advanced-group-enrichment",
@@ -272,6 +278,7 @@ impl From<&FilesPreferences> for PerformanceForm {
             stream_initial_delay_ms: files.streaming.initial_delay_ms,
             stream_interval_ms: files.streaming.interval_ms,
             stream_min_entries: files.streaming.min_entries,
+            content_probing: files.enrichment.content_probing,
             probe_budget: files.probe_budget,
             enrich_max_concurrent_batches: files.enrichment.max_concurrent_batches,
             enrich_batch_size: files.enrichment.batch_size,
@@ -312,6 +319,7 @@ impl PerformanceForm {
         files.streaming.initial_delay_ms = self.stream_initial_delay_ms;
         files.streaming.interval_ms = self.stream_interval_ms;
         files.streaming.min_entries = self.stream_min_entries;
+        files.enrichment.content_probing = self.content_probing;
         files.probe_budget = self.probe_budget;
         files.enrichment.max_concurrent_batches = self.enrich_max_concurrent_batches;
         files.enrichment.batch_size = self.enrich_batch_size;
@@ -433,6 +441,7 @@ mod tests {
         source.streaming.interval_ms = 400;
         source.streaming.min_entries = 350;
         source.probe_budget = 512;
+        source.enrichment.content_probing = false;
         source.enrichment.max_concurrent_batches = 8;
         source.enrichment.batch_size = 64;
         source.enrichment.child_count_limit = 2500;

@@ -108,13 +108,23 @@ fn run_headless_terminal(
     preferences: Preferences,
     run_assertions: impl FnOnce(&mut Harness<Runtime>, &TestHostState),
 ) {
-    run_headless_terminal_with(options, preferences, true, run_assertions);
+    run_headless_terminal_inner(options, preferences, true, false, run_assertions);
 }
 
 fn run_headless_terminal_with(
     options: SpawnOptions,
     preferences: Preferences,
     paint_surface: bool,
+    run_assertions: impl FnOnce(&mut Harness<Runtime>, &TestHostState),
+) {
+    run_headless_terminal_inner(options, preferences, paint_surface, false, run_assertions);
+}
+
+fn run_headless_terminal_inner(
+    options: SpawnOptions,
+    preferences: Preferences,
+    paint_surface: bool,
+    focus_before_mount: bool,
     run_assertions: impl FnOnce(&mut Harness<Runtime>, &TestHostState),
 ) {
     let supervisor = Supervisor::new(false).expect("test Tokio supervisor");
@@ -158,6 +168,9 @@ fn run_headless_terminal_with(
                 .expect("view factory called once");
             let terminal =
                 Terminal::spawn(opts, prefs, &gds.tasks().scope()).expect("spawn test terminal");
+            if focus_before_mount {
+                terminal.focus();
+            }
             let outer_ref = NodeRef::new();
             let next_ref = NodeRef::new();
             let terminal_ref = NodeRef::new();
@@ -1078,6 +1091,34 @@ fn terminal_stylesheet_keeps_status_and_error_lines_transparent_when_host_paints
     )
     .expect("standalone error rule");
     assert!(standalone_error.contains("var(--gds-content-bg, var(--gds-content))"));
+}
+
+#[test]
+fn focus_requested_before_terminal_view_mounts_takes_effect_once_node_binds() {
+    let options = SpawnOptions {
+        cwd: std::env::temp_dir(),
+        args: vec!["-c".into(), "sleep 60".into()],
+        ..SpawnOptions::default()
+    };
+    run_headless_terminal_inner(
+        options,
+        Preferences::default(),
+        true,
+        true,
+        |harness, host| {
+            pump_frames(harness);
+            let terminal_id = host
+                .terminal_ref
+                .get_untracked()
+                .expect("terminal node bound");
+            assert_eq!(
+                host.focused.get_untracked(),
+                Some(terminal_id),
+                "deferred terminal.focus() called before TerminalView mounted must focus the node once bound"
+            );
+            assert!(host.terminal.focused_signal().get_untracked());
+        },
+    );
 }
 
 #[test]

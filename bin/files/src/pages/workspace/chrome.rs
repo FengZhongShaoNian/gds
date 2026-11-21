@@ -38,7 +38,7 @@ use zgui::geom::{DevicePx, Point};
 use zgui::prelude::*;
 use zgui::reactive::{RenderEffect, RwSignal, UnsyncCallback, on_cleanup_local};
 use zgui::view::{Scoped, ScrollBehavior, ScrollTarget, current_host, events, install_stylesheet};
-use zgui::vocab::{Key, Modifiers, NamedKey, PointerButton, Role, SharedString};
+use zgui::vocab::{Key, Modifiers, NamedKey, PointerButton, Role, ScrollDelta, SharedString};
 use zgui::{css, view};
 use zgui_ui::{InputProps, SpinnerProps, TooltipContentProps, TooltipProps, TooltipTriggerProps};
 use zgui_ui_primitives::Binding;
@@ -203,10 +203,8 @@ pub(super) const CHROME_CSS: &str = css!(
         flex: 1 1 0%;
         min-width: 0px;
         height: 100%;
-        overflow-x: auto;
+        overflow-x: hidden;
         overflow-y: hidden;
-        --zgui-scrollbar-thumb: transparent;
-        --zgui-scrollbar-track: transparent;
     }
 
     .gds-files-breadcrumbs-track.gds-files-breadcrumbs-track {
@@ -934,6 +932,7 @@ impl Browser {
     }
 
     fn address_bar(&self) -> AnyView {
+        install_chrome_stylesheets();
         let editing = self.0.address_presentation;
         let is_editing = Signal::derive_local(move || {
             matches!(editing.get(), AddressPresentation::Editing { .. })
@@ -1129,13 +1128,39 @@ impl Browser {
                     let is_current = crumb.current;
                     let label = crumb.label;
                     let a11y_label = label.clone();
+                    let crumb_ref = NodeRef::new();
                     items.push(AnyView::new(view! {
                         box(
+                            node_ref = crumb_ref,
                             class = "gds-files-crumb",
                             attr:data-current = is_current.then(|| "true".to_owned()),
                             tabindex = Focus::Sequential,
                             a11y:role = Role::Button,
                             a11y:label = a11y_label,
+                            on:focus_in = move |_| {
+                                let (Some(port), Some(item)) =
+                                    (scroller.window_bounds(), crumb_ref.window_bounds())
+                                else {
+                                    return;
+                                };
+                                let port_left = port.origin.x.0;
+                                let port_right = port_left + port.size.width.0;
+                                let item_left = item.origin.x.0;
+                                let item_right = item_left + item.size.width.0;
+                                let dx = if item_left < port_left {
+                                    item_left - port_left
+                                } else if item_right > port_right {
+                                    item_right - port_right
+                                } else {
+                                    0.0
+                                };
+                                if dx.abs() > 0.5 {
+                                    scroller.scroll_to(
+                                        ScrollTarget::By(Point::new(DevicePx(dx), DevicePx(0.0))),
+                                        ScrollBehavior::Instant,
+                                    );
+                                }
+                            },
                             on:click = move |ev: &mut EventCx<'_, events::Click>| {
                                 ev.stop_propagation();
                                 if is_current {
@@ -1182,7 +1207,35 @@ impl Browser {
             on_cleanup_local(move || drop(handle));
 
             view! {
-                scroll(node_ref = scroller, class = "gds-files-breadcrumbs") {
+                scroll(
+                    node_ref = scroller,
+                    class = "gds-files-breadcrumbs",
+                    on:wheel = move |ev: &mut EventCx<'_, events::Wheel>| {
+                        let scale = scroller.scale().max(1.0);
+                        let dx = match ev.delta {
+                            ScrollDelta::Lines { x, y } => {
+                                let lines = if x.abs() > 0.001 { x } else { y };
+                                lines * 28.0 * scale
+                            }
+                            ScrollDelta::Pixels(pixels) => {
+                                if pixels.width.0.abs() > 0.001 {
+                                    pixels.width.0
+                                } else {
+                                    pixels.height.0
+                                }
+                            }
+                            _ => 0.0,
+                        };
+                        if dx.abs() > 0.001 {
+                            scroller.scroll_to(
+                                ScrollTarget::By(Point::new(DevicePx(dx), DevicePx(0.0))),
+                                ScrollBehavior::Instant,
+                            );
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                        }
+                    },
+                ) {
                     row(class = "gds-files-breadcrumbs-track") {
                         {crumbs}
                     }

@@ -3724,8 +3724,8 @@ pub(super) mod tests {
             "toolbar spacer must be removed so address bar stretches to WindowControls"
         );
         assert!(
-            super::super::chrome::CHROME_CSS.contains("--zgui-scrollbar-thumb: transparent"),
-            "breadcrumb track must suppress horizontal scrollbar chrome via zgui scrollbar custom properties"
+            super::super::chrome::CHROME_CSS.contains("overflow-x: hidden;"),
+            "breadcrumb track must avoid reserving a horizontal scrollbar gutter so crumbs stay vertically centered"
         );
         assert!(
             !super::super::chrome::CHROME_CSS.contains("scrollbar-width"),

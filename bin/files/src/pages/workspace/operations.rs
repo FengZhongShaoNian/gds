@@ -355,13 +355,18 @@ impl Browser {
     }
 
     pub(super) fn open_file(&self, path: PathBuf, mode: OpenMode) {
+        let cancel = self.0.tasks.token();
         self.work(
             "Open file",
             async move {
-                Desktop::default()
-                    .open_file(&path, mode)
-                    .await
-                    .map_err(|error| error.to_string())
+                let desktop = Desktop::default();
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => Ok(OpenOutcome::Cancelled),
+                    result = desktop.open_file(&path, mode) => {
+                        result.map_err(|error| error.to_string())
+                    }
+                }
             },
             |browser, result| match result {
                 Ok(OpenOutcome::Opened | OpenOutcome::Cancelled) => {}

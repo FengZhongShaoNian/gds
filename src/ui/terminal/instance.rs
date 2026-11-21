@@ -290,10 +290,12 @@ impl Terminal {
     /// Move keyboard focus to the mounted `TerminalView`, or defer until it mounts.
     pub fn focus(&self) {
         let already_focused = self.0.focused.try_get_untracked().unwrap_or(false);
-        self.0.focus_requested.set(!already_focused);
-        if let Some(node) = *self.0.focus_target.borrow() {
-            node.focus();
+        if already_focused {
+            self.0.focus_requested.set(false);
+            return;
         }
+        self.0.focus_requested.set(true);
+        self.apply_pending_focus();
     }
 
     /// Register a callback invoked for [`Event`] transitions on the UI thread.
@@ -370,8 +372,13 @@ impl Terminal {
 
     pub(super) fn register_focus_target(&self, node: Option<NodeRef>) {
         *self.0.focus_target.borrow_mut() = node;
-        if self.0.focus_requested.replace(false)
-            && let Some(target) = node
+        self.apply_pending_focus();
+    }
+
+    pub(super) fn apply_pending_focus(&self) {
+        if let Some(target) = *self.0.focus_target.borrow()
+            && target.get_untracked().is_some()
+            && self.0.focus_requested.replace(false)
         {
             target.focus();
         }

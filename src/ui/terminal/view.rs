@@ -287,6 +287,13 @@ pub fn TerminalView(
     #[cfg(test)]
     TEST_CANVAS_HOST_REF.with(|slot| *slot.borrow_mut() = Some(canvas_ref));
     terminal.register_focus_target(Some(root_ref));
+    let term_for_focus = terminal.clone();
+    let focus_effect = RenderEffect::new(move |_| {
+        if root_ref.get().is_some() {
+            term_for_focus.apply_pending_focus();
+        }
+    });
+    let _focus_effect_store = StoredValue::new_local(focus_effect);
 
     let gds = Gds::try_current();
     let fonts = use_context::<Fonts>().unwrap_or_else(Fonts::system);

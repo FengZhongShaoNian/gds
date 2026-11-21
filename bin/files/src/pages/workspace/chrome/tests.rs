@@ -233,12 +233,22 @@ fn noop_renderer(
 struct LiveButton {
     label: String,
     x0: f64,
+    y0: f64,
     x1: f64,
+    y1: f64,
 }
 
 impl LiveButton {
     fn center_x(&self) -> f64 {
         (self.x0 + self.x1) * 0.5
+    }
+
+    fn center_y(&self) -> f64 {
+        (self.y0 + self.y1) * 0.5
+    }
+
+    fn height(&self) -> f64 {
+        self.y1 - self.y0
     }
 }
 
@@ -253,16 +263,21 @@ fn compose_affine(outer: [f64; 6], inner: [f64; 6]) -> [f64; 6] {
     ]
 }
 
-fn transform_x_span(m: [f64; 6], r: (f64, f64, f64, f64)) -> (f64, f64) {
-    let xs = [
-        m[0] * r.0 + m[2] * r.1 + m[4],
-        m[0] * r.2 + m[2] * r.1 + m[4],
-        m[0] * r.2 + m[2] * r.3 + m[4],
-        m[0] * r.0 + m[2] * r.3 + m[4],
-    ];
-    let min_x = xs.into_iter().fold(f64::INFINITY, f64::min);
-    let max_x = xs.into_iter().fold(f64::NEG_INFINITY, f64::max);
-    (min_x, max_x)
+fn transform_rect(m: [f64; 6], r: (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+    let corners = [(r.0, r.1), (r.2, r.1), (r.2, r.3), (r.0, r.3)];
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for (x, y) in corners {
+        let tx = m[0] * x + m[2] * y + m[4];
+        let ty = m[1] * x + m[3] * y + m[5];
+        min_x = min_x.min(tx);
+        max_x = max_x.max(tx);
+        min_y = min_y.min(ty);
+        max_y = max_y.max(ty);
+    }
+    (min_x, min_y, max_x, max_y)
 }
 
 fn collect_live_buttons(surface: &OffscreenSurface) -> Vec<LiveButton> {
@@ -299,11 +314,13 @@ fn collect_live_buttons(surface: &OffscreenSurface) -> Vec<LiveButton> {
         if node.role() == Role::Button
             && let Some(rect) = node.bounds()
         {
-            let (x0, x1) = transform_x_span(next_world, (rect.x0, rect.y0, rect.x1, rect.y1));
+            let (x0, y0, x1, y1) = transform_rect(next_world, (rect.x0, rect.y0, rect.x1, rect.y1));
             out.push(LiveButton {
                 label: node.label().unwrap_or_default().to_owned(),
                 x0,
+                y0,
                 x1,
+                y1,
             });
         }
         for &child in node.children().iter().rev() {
@@ -1217,4 +1234,100 @@ fn sidebar_volume_rows_eliminate_duplicate_insets_and_center_icons_at_29px_when_
             }
         })
         .expect("headless volume sidebar inset harness");
+}
+
+#[test]
+fn overflowing_address_breadcrumbs_stay_vertically_centered_with_edit_button() {
+    let supervisor = Supervisor::new(false).expect("test runtime");
+    let bg_scope = supervisor.scope();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let deep = temp
+        .path()
+        .join("gds-vm-e2e/run-20261121T114232-573306Z/ubuntu/F19_terminal_writes_in_current_directory/work");
+    std::fs::create_dir_all(&deep).expect("create deep directory");
+
+    let driver = move |handler: Box<dyn AppHandler>| -> Result<(), PlatformError> {
+        let mut harness = Harness::new(handler);
+        let offscreen = harness
+            .platform()
+            .offscreens()
+            .first()
+            .cloned()
+            .expect("offscreen surface");
+        offscreen.set_a11y_listener(true);
+        harness.deliver_to_first(SurfaceEvent::Resized(Size::new(
+            DevicePx(480.0),
+            DevicePx(120.0),
+        )));
+        harness.settle(8);
+
+        let buttons = collect_live_buttons(&offscreen);
+        let root = find_button_by_label(&buttons, "/").expect("root breadcrumb button");
+        let leaf = find_button_by_label(&buttons, "work").expect("leaf breadcrumb button");
+        let edit = find_button_by_label(&buttons, "Edit location").expect("edit location button");
+
+        assert!(
+            leaf.x1 - leaf.x0 > 12.0,
+            "expected leaf breadcrumb text to have measured width > 12px, got {:.2} (leaf={leaf:?})",
+            leaf.x1 - leaf.x0
+        );
+        assert!(
+            root.x0 < 0.0,
+            "expected deep path to overflow horizontally and scroll root crumb offscreen left, got root={root:?}, leaf={leaf:?}, edit={edit:?}"
+        );
+
+        let leaf_height = leaf.height();
+        let leaf_cy = leaf.center_y();
+        let edit_cy = edit.center_y();
+        assert!(
+            (leaf_height - 24.0).abs() <= 1.0,
+            "expected leaf breadcrumb height ~24px (no bottom scrollbar gutter squeezing track), got {leaf_height:.2} (leaf={leaf:?}, edit={edit:?})"
+        );
+        assert!(
+            (leaf_cy - edit_cy).abs() <= 1.0,
+            "expected overflowing breadcrumb center y={leaf_cy:.2} to align with edit button center y={edit_cy:.2} (leaf={leaf:?}, edit={edit:?})"
+        );
+        assert!(
+            leaf.x1 <= edit.x0 + 1.0 && leaf.x0 >= 0.0,
+            "expected overflowing breadcrumb track to scroll right so leaf ({:.1}..{:.1}) stays visible before edit button ({:.1}..{:.1}); all buttons: {buttons:?}",
+            leaf.x0,
+            leaf.x1,
+            edit.x0,
+            edit.x1
+        );
+
+        harness.shut_down();
+        Ok(())
+    };
+
+    zgui::app()
+        .with_fonts(Fonts::system())
+        .with_renderer(Box::new(noop_renderer))
+        .with_size(480.0, 120.0)
+        .run_on(driver, move || {
+            let scope = bg_scope.clone();
+            let app = Gds::install(scope.clone());
+            app.appearance().motion().set_enabled(false);
+            let _ = app.appearance().install_window_sheet();
+            app.i18n()
+                .install_catalog(i18n::prepare(Language::English).expect("English catalog"));
+            let _prefs = preferences::Service::install(preferences::Preferences::default(), &scope)
+                .expect("preferences service");
+            let browser = Browser::new(
+                LaunchOptions {
+                    places: Ok(Places::default()),
+                    start: deep.clone(),
+                    home: deep.clone(),
+                    picker: None,
+                },
+                volumes::Service::new(scope),
+                Rc::new(|_| {}),
+            );
+            view! {
+                row(style:width = "100%", style:height = "48px", style:align_items = "center") {
+                    {browser.address_bar()}
+                }
+            }
+        })
+        .expect("headless overflowing breadcrumb harness");
 }
